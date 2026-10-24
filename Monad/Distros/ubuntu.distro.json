@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "id": "ubuntu",
+  "name": "Ubuntu",
+  "preferred": true,
+  "releases": [
+    { "id": "26.04", "name": "Ubuntu 26.04 LTS", "default": true },
+    { "id": "24.04", "name": "Ubuntu 24.04 LTS" }
+  ],
+  "architectures": { "arm64": "arm64" },
+  "image": {
+    "checksums": {
+      "url": "https://cloud-images.ubuntu.com/releases/{release}/release/SHA256SUMS",
+      "format": "gnu",
+      "algorithm": "sha256"
+    },
+    "signature": {
+      "kind": "detached",
+      "url": "{checksums}.gpg",
+      "keys": ["distro-key-ubuntu-cloud-images.asc"],
+      "fingerprints": ["D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"]
+    },
+    "file": "ubuntu-{release}-server-cloudimg-{arch}.img",
+    "url": "{dir}{file}",
+    "format": "qcow2"
+  },
+  "guest": { "packageManager": "apt" }
+}

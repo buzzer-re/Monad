@@ -1,0 +1,29 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#FFFFFF",
+  "backgroundOpacity" : 1,
+  "blur" : 0,
+  "cursor" : "#7F7F7F",
+  "foreground" : "#1D1D1F",
+  "id" : "monad-light",
+  "name" : "Monad Light",
+  "schema" : 1,
+  "selection" : "#B4D5FE"
+}

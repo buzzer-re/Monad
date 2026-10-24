@@ -1,0 +1,13 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+SHA256 (image.qcow2) = 0123456789abcdef
+  trailing spaces are fine here  
+- - a dash line
+-----BEGIN PGP SIGNATURE-----
+
+iIYEARYIAC4WIQQOiwDVDCepHdA6R5zfPkqxizRkdgUCaruZ9RAcZWRAdGVzdC5p
+bnZhbGlkAAoJEN8+SrGLNGR2hsMA/3JyjnmKaiEQqR2kL4SHexC8ytOW9wOql6Bs
+QGFQVd3qAP0S3Uxmoz4Kl1e9MmZK6tt2CHEMv2GGrycGW4T6qkZwCg==
+=JdWF
+-----END PGP SIGNATURE-----

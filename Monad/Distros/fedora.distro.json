@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "fedora",
+  "name": "Fedora",
+  "releases": [
+    { "id": "44", "name": "Fedora 44 Cloud", "default": true }
+  ],
+  "architectures": { "arm64": "aarch64" },
+  "image": {
+    "checksums": {
+      "index": "https://download.fedoraproject.org/pub/fedora/linux/releases/{release}/Cloud/{arch}/images/",
+      "pattern": "Fedora-Cloud-{release}-*-{arch}-CHECKSUM",
+      "format": "bsd",
+      "algorithm": "sha256"
+    },
+    "signature": {
+      "kind": "clearsigned",
+      "keys": ["distro-key-fedora-44.asc"],
+      "fingerprints": ["36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6"]
+    },
+    "file": "Fedora-Cloud-Base-Generic-{release}-*.{arch}.qcow2",
+    "url": "{dir}{file}",
+    "format": "qcow2"
+  },
+  "guest": { "packageManager": "dnf" }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "macos",
+  "name": "macOS",
+  "kind": "macos",
+  "releases": [
+    { "id": "latest", "name": "macOS (the latest this Mac supports)", "default": true }
+  ],
+  "architectures": { "arm64": "arm64" },
+  "image": {
+    "signature": {
+      "kind": "none",
+      "note": "Apple signs restore images; Virtualization checks the image and Apple personalizes each install."
+    },
+    "file": "restore.ipsw",
+    "url": "apple:latest",
+    "format": "ipsw"
+  }
+}

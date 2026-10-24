@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Xcode per-user state and build products
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# C test build output (make -C CTests)
+CTests/build/
+
+# Local tool/session state
+.claude/

@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "id": "agentic",
+  "name": "Agentic",
+  "summary": "Node.js LTS (nodejs.org), the coding agents Claude Code, Codex, pi and omp (npm, latest), and herdr (herdr.dev's installer) to keep them running.",
+  "steps": [
+    {
+      "id": "base",
+      "title": "Base tools",
+      "packages": {
+        "apt": [
+          "ca-certificates",
+          "curl",
+          "git",
+          "xz-utils",
+          "tar",
+          "build-essential",
+          "python3",
+          "unzip"
+        ],
+        "dnf": [
+          "ca-certificates",
+          "curl",
+          "git",
+          "xz",
+          "tar",
+          "gcc",
+          "gcc-c++",
+          "make",
+          "python3",
+          "unzip"
+        ],
+        "zypper": [
+          "ca-certificates",
+          "curl",
+          "git",
+          "xz",
+          "tar",
+          "gcc",
+          "gcc-c++",
+          "make",
+          "python3",
+          "unzip"
+        ]
+      },
+      "commands": [
+        "git",
+        "curl"
+      ]
+    },
+    {
+      "id": "node",
+      "title": "Node.js LTS",
+      "runtime": "nodejs",
+      "commands": [
+        "node",
+        "npm",
+        "npx"
+      ]
+    },
+    {
+      "id": "agents",
+      "title": "Coding agents",
+      "npm": [
+        "bun",
+        "@anthropic-ai/claude-code",
+        "@openai/codex",
+        "@mariozechner/pi-coding-agent",
+        "@oh-my-pi/pi-coding-agent"
+      ],
+      "commands": [
+        "bun",
+        "claude",
+        "codex",
+        "pi",
+        "omp"
+      ]
+    },
+    {
+      "id": "herdr",
+      "title": "herdr",
+      "script": "# herdr keeps coding agents running in their own terminals while nobody is\n# connected (herdr.dev). Its own installer, saved before it runs (a cut download\n# runs nothing); it checks the binary against the release's SHA-256. Into\n# /usr/local/bin, on every user's PATH. Kept once installed.\nif [ ! -x \"$MONAD_ROOT/usr/local/bin/herdr\" ]; then\n  tmp=$(mktemp -d) || exit 1\n  echo \"› Downloading herdr\"\n  if ! curl -fsSL https://herdr.dev/install.sh -o \"$tmp/install.sh\"; then\n    rm -rf \"$tmp\"; echo 'the herdr installer could not be downloaded'; exit 1\n  fi\n  if ! HERDR_INSTALL_DIR=\"$MONAD_ROOT/usr/local/bin\" sh \"$tmp/install.sh\"; then\n    rm -rf \"$tmp\"; echo 'the herdr install failed'; exit 1\n  fi\n  rm -rf \"$tmp\"\nfi\n",
+      "commands": [
+        "herdr"
+      ]
+    }
+  ]
+}

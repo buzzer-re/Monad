@@ -1,0 +1,31 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#8E3527",
+  "backgroundOpacity" : 0.85,
+  "blur" : 0,
+  "bold" : "#E6C72B",
+  "cursor" : "#FFFFFF",
+  "cursorStyle" : "underline",
+  "foreground" : "#D7C9A7",
+  "id" : "red-sands",
+  "name" : "Red Sands",
+  "schema" : 1,
+  "selection" : "#3D1916"
+}

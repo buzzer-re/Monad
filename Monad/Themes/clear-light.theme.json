@@ -1,0 +1,30 @@
+{
+  "ansi" : [
+    "#2D3840",
+    "#B45648",
+    "#6CAA71",
+    "#C4AC62",
+    "#5685A8",
+    "#AD64BE",
+    "#69C6C9",
+    "#C1C8CC",
+    "#506573",
+    "#DF6C5A",
+    "#79BE7E",
+    "#E5C872",
+    "#49A2E1",
+    "#D389E5",
+    "#77E1E5",
+    "#D8E1E7"
+  ],
+  "background" : "#FFFFFF",
+  "backgroundOpacity" : 0.93,
+  "blur" : 0.5,
+  "bold" : "#313C44",
+  "cursor" : "#919191",
+  "foreground" : "#3A4851",
+  "id" : "clear-light",
+  "name" : "Clear Light",
+  "schema" : 1,
+  "selection" : "#E5ECF1"
+}

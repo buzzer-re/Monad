@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "opensuse",
+  "name": "openSUSE Leap",
+  "releases": [
+    { "id": "16.0", "name": "openSUSE Leap 16.0", "default": true }
+  ],
+  "architectures": { "arm64": "aarch64" },
+  "image": {
+    "checksums": {
+      "url": "https://download.opensuse.org/distribution/leap/{release}/appliances/Leap-{release}-Minimal-VM.{arch}-Cloud.qcow2.sha256",
+      "format": "single",
+      "algorithm": "sha256"
+    },
+    "signature": {
+      "kind": "detached",
+      "url": "{checksums}.asc",
+      "keys": ["distro-key-opensuse.asc"],
+      "fingerprints": ["AD485664E901B867051AB15F35A2F86E29B700A4"]
+    },
+    "file": "Leap-{release}-Minimal-VM.{arch}-Cloud.qcow2",
+    "url": "{dir}{file}",
+    "format": "qcow2"
+  },
+  "guest": { "packageManager": "zypper" }
+}

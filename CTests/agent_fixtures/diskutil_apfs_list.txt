@@ -1,0 +1,34 @@
+APFS Containers (2 found)
+|
++-- Container disk3 1C2E4F
+|   ====================================================
+|   APFS Container Reference:     disk3
+|   Size (Capacity Ceiling):      494384795648 B (494.4 GB)
+|   |
+|   +-< Physical Store disk0s2 99AA
+|   |   -----------------------------------------------------------
+|   |   APFS Physical Store Disk:   disk0s2
+|   |   Size:                       494384795648 B (494.4 GB)
+|   |
+|   +-> Volume disk3s5 77BB
+|       ---------------------------------------------------
+|       APFS Volume Disk (Role):   disk3s5 (Data)
+|       Name:                      Data (Case-insensitive)
+|
++-- Container disk8 3D4E5F
+    ====================================================
+    APFS Container Reference:     disk8
+    |
+    +-< Physical Store disk7s2 11CC
+    |   -----------------------------------------------------------
+    |   APFS Physical Store Disk:   disk7s2
+    |
+    +-> Volume disk8s1 22DD
+    |   ---------------------------------------------------
+    |   APFS Volume Disk (Role):   disk8s1 (System)
+    |   Name:                      Macintosh HD (Case-insensitive)
+    |
+    +-> Volume disk8s5 33EE
+        ---------------------------------------------------
+        APFS Volume Disk (Role):   disk8s5 (Data)
+        Name:                      Data (Case-insensitive)

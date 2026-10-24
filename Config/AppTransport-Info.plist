@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Merged into the generated Info.plist of Monad and MonadHost. macOS refuses
+  plain http unless an app says otherwise; a distribution the user adds may
+  use a mirror on plain http (their choice, docs/DISTROS.md). Which addresses
+  Monad opens stays Monad's own rule: its own distributions are https only
+  (DistroConfig.validate), and image downloads are the only URL loading.
+-->
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

@@ -1,0 +1,30 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#2B66C9",
+  "backgroundOpacity" : 1,
+  "blur" : 0,
+  "bold" : "#FFFFFF",
+  "cursor" : "#929292",
+  "foreground" : "#FFFFFF",
+  "id" : "ocean",
+  "name" : "Ocean",
+  "schema" : 1,
+  "selection" : "#2986FF"
+}

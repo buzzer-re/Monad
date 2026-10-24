@@ -1,0 +1,32 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#13773D",
+  "backgroundOpacity" : 1,
+  "blur" : 0,
+  "bold" : "#FFB03B",
+  "cursor" : "#8E2800",
+  "cursorStyle" : "block",
+  "font" : "Courier",
+  "foreground" : "#FFF0A5",
+  "id" : "grass",
+  "name" : "Grass",
+  "schema" : 1,
+  "selection" : "#B64926"
+}

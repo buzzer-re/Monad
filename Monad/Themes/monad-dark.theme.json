@@ -1,0 +1,29 @@
+{
+  "ansi" : [
+    "#000000",
+    "#E0564E",
+    "#5BC25B",
+    "#D6B84A",
+    "#4E8EE6",
+    "#C06FD0",
+    "#4FB8C7",
+    "#C7C7C7",
+    "#686868",
+    "#FF6E67",
+    "#6FE06F",
+    "#FFE061",
+    "#6FA8FF",
+    "#E38BF2",
+    "#67E0EE",
+    "#FFFFFF"
+  ],
+  "background" : "#1C1C1E",
+  "backgroundOpacity" : 1,
+  "blur" : 0,
+  "cursor" : "#C8C8C8",
+  "foreground" : "#E6E6E6",
+  "id" : "monad-dark",
+  "name" : "Monad Dark",
+  "schema" : 1,
+  "selection" : "#3A4A66"
+}

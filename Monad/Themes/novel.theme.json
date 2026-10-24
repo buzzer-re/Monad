@@ -1,0 +1,31 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#DFDBC3",
+  "backgroundOpacity" : 1,
+  "blur" : 0,
+  "bold" : "#933A21",
+  "cursor" : "#3A2322",
+  "font" : "Courier",
+  "foreground" : "#4D2F2D",
+  "id" : "novel",
+  "name" : "Novel",
+  "schema" : 1,
+  "selection" : "#878563"
+}

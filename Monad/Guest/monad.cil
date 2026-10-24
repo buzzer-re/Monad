@@ -1,0 +1,21 @@
+; Monad's SELinux module, loaded where SELinux is on (Guest/monad-selinux.sh).
+; Only what Monad's own pieces were seen to need; each rule is optional, so a
+; policy without one of these types skips it.
+
+; The guest agent's socket (vsock port 1024) is labeled for systemd itself:
+; the agent is a script in /usr/local/lib. openSUSE Leap 16.0's policy let
+; systemd create and bind it but not listen ("denied { listen } ... init_t
+; ... tclass=vsock_socket"), so the socket failed.
+(optional monad_agent_vsock
+    (allow init_t self (vsock_socket (listen accept))))
+
+; systemd runs that script from /usr/local/lib (lib_t).
+(optional monad_agent_exec
+    (allow init_t lib_t (file (execute execute_no_trans))))
+
+; sshd's login helpers look at the vsock connection they inherit (seen on
+; openSUSE Leap 16.0, where these domains are still permissive).
+(optional monad_sshd_auth_vsock
+    (allow sshd_auth_t sshd_t (vsock_socket (getattr read write))))
+(optional monad_sshd_session_vsock
+    (allow sshd_session_t sshd_t (vsock_socket (getattr read write))))

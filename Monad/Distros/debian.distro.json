@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "id": "debian",
+  "name": "Debian",
+  "releases": [
+    { "id": "13", "name": "Debian 13 (trixie)", "default": true, "vars": { "codename": "trixie" } },
+    { "id": "12", "name": "Debian 12 (bookworm)", "vars": { "codename": "bookworm" } }
+  ],
+  "architectures": { "arm64": "arm64" },
+  "image": {
+    "checksums": {
+      "url": "https://cloud.debian.org/images/cloud/{codename}/latest/SHA512SUMS",
+      "format": "gnu",
+      "algorithm": "sha512"
+    },
+    "signature": {
+      "kind": "none",
+      "note": "Debian publishes SHA512SUMS for its cloud images without an OpenPGP signature. Monad fetches it over HTTPS from cloud.debian.org and checks the image against it."
+    },
+    "file": "debian-{release}-genericcloud-{arch}.qcow2",
+    "url": "{dir}{file}",
+    "format": "qcow2"
+  },
+  "guest": { "packageManager": "apt" }
+}

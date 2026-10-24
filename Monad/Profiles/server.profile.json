@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "id": "server",
+  "name": "Server",
+  "summary": "Docker with Compose, Podman, Buildah, rootless nerdctl and nginx.",
+  "steps": [
+    {
+      "id": "containers",
+      "title": "Docker, Podman, Buildah and nginx",
+      "packages": {
+        "apt": [
+          "podman",
+          "buildah",
+          "docker.io",
+          "docker-compose-v2|docker-compose",
+          "nginx",
+          "uidmap",
+          "dbus-user-session"
+        ],
+        "dnf": [
+          "podman",
+          "buildah",
+          "moby-engine",
+          "docker-compose",
+          "nginx"
+        ],
+        "zypper": [
+          "podman",
+          "buildah",
+          "docker",
+          "docker-compose",
+          "nginx"
+        ]
+      },
+      "commands": [
+        "podman",
+        "buildah",
+        "docker",
+        "nginx"
+      ]
+    },
+    {
+      "id": "nerdctl",
+      "title": "nerdctl",
+      "script": "# nerdctl is not packaged by these distributions: the official nerdctl-full\n# release for this CPU (nerdctl with containerd, BuildKit, RootlessKit and the\n# CNI plugins), checked against the release's SHA256SUMS. In its own folder,\n# with only nerdctl's tools linked into /usr/local/bin: Docker keeps its own\n# containerd and runc. Kept once installed.\ndir=\"$MONAD_ROOT/opt/monad/nerdctl\"\nif [ ! -x \"$dir/bin/nerdctl\" ]; then\n  case \"$(uname -m)\" in\n    aarch64|arm64) arch=arm64 ;;\n    x86_64|amd64) arch=amd64 ;;\n    *) echo \"no nerdctl build for $(uname -m)\"; exit 1 ;;\n  esac\n  url=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/containerd/nerdctl/releases/latest) || exit 1\n  tag=${url##*/}\n  printf '%s\\n' \"$tag\" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+$' || { echo \"odd nerdctl release: $tag\"; exit 1; }\n  file=\"nerdctl-full-${tag#v}-linux-$arch.tar.gz\"\n  base=\"https://github.com/containerd/nerdctl/releases/download/$tag\"\n  tmp=$(mktemp -d) || exit 1\n  echo \"› Downloading nerdctl-full $tag (about 250 MB)\"\n  if ! curl -fsSL \"$base/SHA256SUMS\" -o \"$tmp/SHA256SUMS\" || ! curl -fsSL \"$base/$file\" -o \"$tmp/$file\"; then\n    rm -rf \"$tmp\"; echo 'the nerdctl download failed'; exit 1\n  fi\n  if ! (cd \"$tmp\" && awk -v f=\"$file\" '$2 == f' SHA256SUMS | grep -q . && awk -v f=\"$file\" '$2 == f' SHA256SUMS | sha256sum -c - >/dev/null 2>&1); then\n    rm -rf \"$tmp\"; echo 'the nerdctl download does not match its checksum'; exit 1\n  fi\n  rm -rf \"$dir.part\" && mkdir -p \"$dir.part\" && tar -xzf \"$tmp/$file\" -C \"$dir.part\" \\\n    || { rm -rf \"$tmp\" \"$dir.part\"; echo 'the nerdctl archive could not be unpacked'; exit 1; }\n  rm -rf \"$tmp\"\n  mv \"$dir.part\" \"$dir\" || exit 1\nfi\nmkdir -p \"$MONAD_ROOT/usr/local/bin\" || exit 1\nfor tool in nerdctl buildctl containerd-rootless-setuptool.sh; do\n  ln -sfn \"$dir/bin/$tool\" \"$MONAD_ROOT/usr/local/bin/$tool\" || exit 1\ndone\n# nerdctl looks for the CNI plugins in /opt/cni/bin first.\nif [ ! -e \"$MONAD_ROOT/opt/cni/bin\" ]; then\n  mkdir -p \"$MONAD_ROOT/opt/cni\" && ln -sfn \"$dir/libexec/cni\" \"$MONAD_ROOT/opt/cni/bin\" || exit 1\nfi\n# Ubuntu lets only programs AppArmor allows make user namespaces: rootlesskit,\n# outside the distribution's own path, needs this profile.\nif [ \"$(cat \"$MONAD_ROOT/proc/sys/kernel/apparmor_restrict_unprivileged_userns\" 2>/dev/null)\" = 1 ]; then\n  aa=\"$MONAD_ROOT/etc/apparmor.d/opt.monad.nerdctl.bin.rootlesskit\"\n  cat > \"$aa\" <<'EOF'\nabi <abi/4.0>,\ninclude <tunables/global>\n\n\"/opt/monad/nerdctl/bin/rootlesskit\" flags=(unconfined) {\n  userns,\n\n  include if exists <local/opt.monad.nerdctl.bin.rootlesskit>\n}\nEOF\n  apparmor_parser -r \"$aa\" || { echo 'the AppArmor profile for rootlesskit could not be loaded'; exit 1; }\nfi\n",
+      "commands": [
+        "nerdctl"
+      ]
+    },
+    {
+      "id": "services",
+      "title": "Services",
+      "script": "# Docker and its containerd running, the login user in the docker group (from\n# its next login), nginx serving.\nsystemctl enable --now containerd docker nginx\ngetent group docker >/dev/null && usermod -aG docker \"$MONAD_USER\"\n"
+    },
+    {
+      "id": "rootless",
+      "title": "Rootless containerd for nerdctl",
+      "script": "# nerdctl run by the login user is rootless: its own containerd and BuildKit,\n# set up by nerdctl's tool as that user, running without a login (lingering).\nuser=\"$MONAD_USER\"\nentry=$(getent passwd \"$user\") || { echo \"no user $user\"; exit 1; }\nuid=$(printf '%s' \"$entry\" | cut -d: -f3)\nhome=$(printf '%s' \"$entry\" | cut -d: -f6)\n# Subordinate IDs: the containers' users map into them.\nfor kind in uid gid; do\n  file=\"$MONAD_ROOT/etc/sub$kind\"\n  [ -f \"$file\" ] && grep -q \"^$user:\" \"$file\" && continue\n  start=$(awk -F: 'BEGIN { m = 100000 } { e = $2 + $3; if (e > m) m = e } END { print m }' \"$file\" 2>/dev/null)\n  [ -n \"$start\" ] || start=100000\n  usermod \"--add-sub${kind}s\" \"$start-$((start + 65535))\" \"$user\" || { echo \"cannot give $user subordinate ${kind}s\"; exit 1; }\ndone\nloginctl enable-linger \"$user\" || exit 1\ni=0\nwhile [ ! -e \"$MONAD_ROOT/run/user/$uid/bus\" ] && [ \"$i\" -lt 30 ]; do sleep 1; i=$((i + 1)); done\n[ -e \"$MONAD_ROOT/run/user/$uid/bus\" ] || { echo \"the user session of $user did not start\"; exit 1; }\nas_user() {\n  runuser -u \"$user\" -- env HOME=\"$home\" XDG_RUNTIME_DIR=\"/run/user/$uid\" \\\n    DBUS_SESSION_BUS_ADDRESS=\"unix:path=/run/user/$uid/bus\" \\\n    PATH=\"/opt/monad/nerdctl/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" \"$@\"\n}\nif ! as_user systemctl --user is-active --quiet containerd.service; then\n  echo \"› Setting up rootless containerd for $user\"\n  as_user containerd-rootless-setuptool.sh install || exit 1\nfi\nif ! as_user systemctl --user is-active --quiet buildkit.service; then\n  echo \"› Setting up rootless BuildKit for $user\"\n  as_user containerd-rootless-setuptool.sh install-buildkit || exit 1\nfi\n"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "ansi" : [
+    "#000000",
+    "#C23621",
+    "#25BC24",
+    "#ADAD27",
+    "#492EE1",
+    "#D338D3",
+    "#33BBC8",
+    "#CBCCCD",
+    "#818383",
+    "#FC391F",
+    "#31E722",
+    "#EAEC23",
+    "#5833FF",
+    "#F935F8",
+    "#14F0F0",
+    "#E9EBEB"
+  ],
+  "background" : "#929292",
+  "backgroundOpacity" : 0.5,
+  "blur" : 1,
+  "bold" : "#FFFFFF",
+  "cursor" : "#E0E0E0",
+  "foreground" : "#000000",
+  "id" : "silver-aerogel",
+  "name" : "Silver Aerogel",
+  "schema" : 1,
+  "selection" : "#787A9C"
+}
