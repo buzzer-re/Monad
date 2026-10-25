@@ -62,6 +62,8 @@ jobs:
       - name: C and shell tests (Apple clang)
         run: make -C CTests
       - name: MonadTests (Debug, warnings are errors)
+        # Runs even when the C tests failed, so one push shows every problem.
+        if: ${{ !cancelled() }}
         # Skipped here, run on a developer's Mac: two tests that need an ICMP
         # echo reply from the network (hosted runners get none), and one that
         # measures the test process's CPU and needs a quiet machine.
@@ -78,6 +80,7 @@ jobs:
             SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES \
             COMPILER_INDEX_STORE_ENABLE=NO
       - name: Release build (warnings are errors)
+        if: ${{ !cancelled() }}
         run: |
           set -o pipefail
           xcodebuild build \

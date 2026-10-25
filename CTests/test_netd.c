@@ -84,6 +84,20 @@ static void pump(rig *r, int ms) {
     while (mnd_loop_now() < end) mnd_netd_run_once(r->d, mnd_loop_now() + 5);
 }
 
+/* netd's open sockets once it has worked through what it was sent: polled
+   while it runs, up to ms, since a slow machine (CI, sanitizers) takes a while.
+   Says the count when it is not the one expected. */
+static int open_sockets_settled(rig *r, int expect, int ms) {
+    uint64_t end = mnd_loop_now() + (uint64_t)ms;
+    int n = mnd_netd_open_sockets(r->d);
+    while (n != expect && mnd_loop_now() < end) {
+        mnd_netd_run_once(r->d, mnd_loop_now() + 5);
+        n = mnd_netd_open_sockets(r->d);
+    }
+    if (n != expect) fprintf(stderr, "    netd holds %d sockets, not %d\n", n, expect);
+    return n;
+}
+
 static void vm_send(rig *r, const uint8_t *frame, size_t len) { CHECK(send(r->vm, frame, len, 0) == (ssize_t)len); }
 
 /* The next frame for the VM, running netd while waiting (up to ms). */
@@ -348,8 +362,7 @@ static void test_nothing_leaks(void) {
     socklen_t al = sizeof a;
     getsockname(lst, (struct sockaddr *)&a, &al);
     for (int i = 0; i < 5; i++) vm_tcp(&r, (uint16_t)(41000 + i), ntohs(a.sin_port), 100, 0, MND_TCP_SYN, NULL, 0);
-    pump(&r, 100);
-    CHECK(mnd_netd_open_sockets(r.d) == 10);
+    CHECK(open_sockets_settled(&r, 10, 3000) == 10);
     /* The VM goes away: its sockets close. */
     mnd_netd_remove_port(r.d, r.port);
     CHECK(mnd_netd_open_sockets(r.d) == 0);
@@ -365,8 +378,7 @@ static void test_nothing_leaks(void) {
     r.vm = sv[1];
     fcntl(r.vm, F_SETFL, fcntl(r.vm, F_GETFL) | O_NONBLOCK);
     for (int i = 0; i < 3; i++) vm_udp(&r, r.lan, (uint16_t)(7000 + i), uport, "x", 1);
-    pump(&r, 50);
-    CHECK(mnd_netd_open_sockets(r.d) == 3);
+    CHECK(open_sockets_settled(&r, 3, 3000) == 3);
     teardown(&r);
     close(lst);
     close(srv);

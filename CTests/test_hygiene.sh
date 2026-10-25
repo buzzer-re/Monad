@@ -29,6 +29,10 @@ GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 export HOME GIT_CONFIG_NOSYSTEM GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
+# The personal paths this test feeds the script are put together here, never
+# written out, so the check it tests has nothing to flag in this file.
+USERS=/Users HOMES=/home
+
 REPO="$WORK/repo"
 g() { git -C "$REPO" "$@"; }
 put() { mkdir -p "$(dirname "$REPO/$1")"; cat >"$REPO/$1"; } # put PATH < content
@@ -65,7 +69,7 @@ g add -A
 g commit -q -m base
 g tag base
 
-change() { g checkout -q -f -B change base; } # a new change from the base
+change() { g checkout -q -f -B change base; g clean -fdq; } # a new change from the base
 commit() { g add -A; g commit -q -m change; }
 run() { out=$(cd "$REPO" && GITHUB_ACTIONS='' "$SH" "$HYGIENE" "$@" 2>&1); st=$?; }
 has() { case "$out" in *"$1"*) echo yes ;; *) echo no ;; esac; }
@@ -91,16 +95,16 @@ check "untested: warns about STATUS" yes "$(has 'docs/STATUS.md')"
 
 # A personal home path in an added line fails, and says where.
 change
-printf 'let thing = 4\nlet home = "/Users/alice/src"\n' >"$REPO/Monad/VM/Thing.swift"
+printf 'let thing = 4\nlet home = "%s/alice/src"\n' "$USERS" >"$REPO/Monad/VM/Thing.swift"
 echo 'let tested = 4' >"$REPO/MonadTests/ThingTests.swift"
 commit
 run base
 check "home path: status" 1 "$st"
 check "home path: where" yes "$(has 'Monad/VM/Thing.swift:2')"
-check "home path: which" yes "$(has '/Users/alice')"
+check "home path: which" yes "$(has "$USERS/alice")"
 
 change
-echo 'cd /home/alice.guest/work' >>"$REPO/Monad/Guest/agent.sh"
+echo "cd $HOMES/alice.guest/work" >>"$REPO/Monad/Guest/agent.sh"
 commit
 run base
 check "linux home path: status" 1 "$st"
@@ -156,6 +160,18 @@ commit
 run base
 check "conflict markers: status" 1 "$st"
 
+# A new file not committed yet is part of the change too, and the
+# repository's own index is left as it was.
+change
+printf 'let home = "%s/alice"\n' "$USERS" >"$REPO/Monad/VM/New.swift"
+printf '{ "id": \n' >"$REPO/Monad/Distros/new.distro.json"
+run base
+check "untracked: status" 1 "$st"
+check "untracked: where" yes "$(has 'Monad/VM/New.swift:1')"
+check "untracked: JSON too" yes "$(has 'new.distro.json')"
+check "untracked: index untouched" "?? Monad/Distros/new.distro.json
+?? Monad/VM/New.swift" "$(g status --short)"
+
 # Without a base only the whole-tree checks run; an unknown base is a usage error.
 change
 run
@@ -165,7 +181,7 @@ check "unknown base: status" 2 "$st"
 
 # On GitHub, errors become annotations on the line.
 change
-printf 'let home = "/Users/alice"\n' >"$REPO/Monad/VM/Thing.swift"
+printf 'let home = "%s/alice"\n' "$USERS" >"$REPO/Monad/VM/Thing.swift"
 echo 'let tested = 7' >"$REPO/MonadTests/ThingTests.swift"
 commit
 out=$(cd "$REPO" && GITHUB_ACTIONS=true "$SH" "$HYGIENE" base 2>&1); st=$?

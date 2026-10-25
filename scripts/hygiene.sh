@@ -22,6 +22,17 @@ cd "$(git rev-parse --show-toplevel)" || exit 2
 # Home folders that are placeholders, not anyone's account.
 PLACEHOLDERS="dev x someone user username you me name runner Shared example"
 
+# Files not committed yet are part of the change too: a scratch copy of the
+# index marks them intent-to-add, so every check below sees them. The
+# repository's own index is never touched.
+index=$(mktemp)
+trap 'rm -f "$index"' EXIT
+if cp "$(git rev-parse --git-path index)" "$index" 2>/dev/null; then
+    GIT_INDEX_FILE=$index
+    export GIT_INDEX_FILE
+    git ls-files -z --others --exclude-standard | git add -N --pathspec-from-file=- --pathspec-file-nul 2>/dev/null
+fi
+
 failed=0
 say() { # say error|warning MESSAGE [FILE [LINE]]
     if [ "${GITHUB_ACTIONS:-}" = true ]; then
