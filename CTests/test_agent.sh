@@ -33,6 +33,18 @@ check() { # check NAME EXPECTED ACTUAL
     fi
 }
 
+# wait_ended PID TENTHS: waits up to TENTHS/10 s for this shell's child PID to
+# exit, and sets $ended to gone or alive. Never call it inside $(...): only
+# this shell reaps its children, so from a subshell a dead one looks alive.
+wait_ended() {
+    tries=0
+    while kill -0 "$1" 2>/dev/null && [ "$tries" -lt "$2" ]; do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    if kill -0 "$1" 2>/dev/null; then ended=alive; else ended=gone; fi
+}
+
 run_agent() { # stdin → agent with fixture proc root
     MONAD_PROC="$1" MONAD_TRACEFS=/nonexistent MONAD_AGENT_INTERVAL="${2:-1}" $SH "$AGENT"
 }
@@ -133,9 +145,11 @@ sleep 0.5
 check "event-driven close" "port- tcp 0.0.0.0 8082" "$(grep '^port- tcp 0.0.0.0 8082' "$REACT")"
 kill "$REACT_PID" 2>/dev/null
 exec 3>&-
-sleep 0.5
+# Teardown alone retries rmdir for up to 0.25 s, so a fixed wait here failed
+# on a busy machine; 2 s is what the stop test below allows too.
+wait_ended "$REACT_PID" 20
+check "reactive agent gone" "gone" "$ended"
 check "tracepoint disabled on exit" "0" "$(cat "$INST/events/sock/inet_sock_set_state/enable" 2>/dev/null)"
-check "reactive agent gone" "gone" "$(kill -0 "$REACT_PID" 2>/dev/null && echo alive || echo gone)"
 check "reactive agent left nothing behind" "0" "$(reap_agents "$TRACEFS")"
 
 # Reactive mode: when the host hangs up (input EOF), the agent exits and
