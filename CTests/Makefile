@@ -79,7 +79,7 @@ $(BUILD)/fuzz_vt: fuzz_vt.c $(VT_SRC) $(wildcard $(SRC)/vt/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 # Longer runs: make fuzz FUZZ_ITERS=200000 [FUZZ_SEED=n]
-fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt
+fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt $(BUILD)/fuzz_decoders $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_net
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_vt
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),20000) $(BUILD)/fuzz_decoders $(BUILD)
@@ -140,6 +140,8 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then SELINUX_SHELL=bash sh test_selinux.sh $(BUILD)/selinux-bash; fi
 	@INSTALL_SHELL=sh sh test_install.sh $(BUILD)/install-sh
 	@if command -v bash >/dev/null; then INSTALL_SHELL=bash sh test_install.sh $(BUILD)/install-bash; fi
+	@HYGIENE_SHELL=sh sh test_hygiene.sh $(BUILD)/hygiene-sh
+	@if command -v bash >/dev/null; then HYGIENE_SHELL=bash sh test_hygiene.sh $(BUILD)/hygiene-bash; fi
 	@sh test_agent_live.sh
 
 clean:

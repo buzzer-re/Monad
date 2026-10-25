@@ -1,0 +1,96 @@
+# Every pull request and every push to main: hygiene, the C and shell tests on
+# Linux and macOS, and the Swift tests and a Release build on Xcode 27.
+# AGENTS.md › Continuous integration says what each job checks.
+#
+# Pull requests from forks run with read-only permissions and no secrets.
+# Actions are pinned to commits; nothing else from outside is used.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the change
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/hygiene.sh "$BASE"
+
+  c-linux:
+    name: C and shell tests (Linux, gcc)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: zlib headers
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends zlib1g-dev
+      - name: make -C CTests
+        run: make -C CTests
+
+  macos:
+    name: Swift tests and builds (macOS, Xcode 27)
+    # GitHub's image with Xcode 27 is still a preview; move to its GA label once there is one.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Xcode
+        run: xcodebuild -version
+      - name: C and shell tests (Apple clang)
+        run: make -C CTests
+      - name: MonadTests (Debug, warnings are errors)
+        # Skipped here, run on a developer's Mac: two tests that need an ICMP
+        # echo reply from the network (hosted runners get none), and one that
+        # measures the test process's CPU and needs a quiet machine.
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Monad.xcodeproj -scheme Monad -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/MonadTests.xcresult \
+            -skip-testing:MonadTests/NetdTests/testPingThroughMacICMPSockets \
+            -skip-testing:MonadTests/NetdProcessTests/testTheSandboxAllowsTheNetworkAndNothingElse \
+            -skip-testing:MonadTests/TerminalSessionTests/testFollowingAVMThroughItsLifeStaysIdle \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO
+      - name: Release build (warnings are errors)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Monad.xcodeproj -scheme Monad -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData-Release \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO
+      - name: Keep the test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MonadTests.xcresult
+          path: build/MonadTests.xcresult
+          retention-days: 14
+          if-no-files-found: ignore

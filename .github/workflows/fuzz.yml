@@ -1,0 +1,57 @@
+# The three fuzzers, every night, about ten minutes each, with a fresh seed.
+# A failure prints the seed: replay it with
+#   make -C CTests build/<fuzzer> && FUZZ_SEED=<seed> FUZZ_ITERS=<n> CTests/build/<fuzzer>
+# (fuzz_decoders also takes the build folder: CTests/build/fuzz_decoders CTests/build).
+
+name: Fuzz
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Seed to replay (empty for a random one)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.fuzzer }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fuzzer: fuzz_net
+            iterations: 3000000
+          - fuzzer: fuzz_vt
+            iterations: 200000
+          - fuzzer: fuzz_decoders
+            iterations: 150000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: zlib headers
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends zlib1g-dev
+      - name: Build
+        env:
+          FUZZER: ${{ matrix.fuzzer }}
+        run: make -C CTests "build/$FUZZER" build/fx_v3_512.qcow2 build/xz_mixed.xz build/tar_plain.tar
+      - name: Fuzz
+        env:
+          FUZZER: ${{ matrix.fuzzer }}
+          FUZZ_ITERS: ${{ matrix.iterations }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          seed=${SEED:-$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')}
+          echo "$FUZZER: seed $seed, $FUZZ_ITERS iterations" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$FUZZER" = fuzz_decoders ]; then
+            FUZZ_SEED=$seed CTests/build/fuzz_decoders CTests/build
+          else
+            FUZZ_SEED=$seed "CTests/build/$FUZZER"
+          fi

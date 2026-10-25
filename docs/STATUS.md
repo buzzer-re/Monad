@@ -59,6 +59,11 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 | `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest agent's shell tests |
 | `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,115 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
+| `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
+
+CI (`.github/workflows/ci.yml`) runs all of these but the UI tests on every pull request and push
+to `main`: hygiene, `CTests` on Linux and macOS, then `MonadTests` and a Release build on Xcode 27
+with warnings as errors. `fuzz.yml` runs each fuzzer for about ten minutes every night.
 
 Known environmental failures on the development Mac: two ICMP tests (no echo reply), and
 `TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle`, which measures the whole test
