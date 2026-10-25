@@ -565,6 +565,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             let item = window.addItem(withTitle: title, action: action, keyEquivalent: String(Character(UnicodeScalar(key)!)))
             item.keyEquivalentModifierMask = [.command]
         }
+        // A pane's contexts: ⇧⌘ and an arrow, in the order of its Switch Context menu.
+        let contexts: [(String, Selector, Int)] = [
+            ("Show Previous Context", #selector(TerminalWindowController.showPreviousContext(_:)), NSLeftArrowFunctionKey),
+            ("Show Next Context", #selector(TerminalWindowController.showNextContext(_:)), NSRightArrowFunctionKey),
+        ]
+        for (title, action, key) in contexts {
+            let item = window.addItem(withTitle: title, action: action, keyEquivalent: String(Character(UnicodeScalar(key)!)))
+            item.keyEquivalentModifierMask = [.command, .shift]
+        }
         window.addItem(.separator())
         for n in 1...9 {
             let title = n == 9 ? "Select Last Tab" : "Select Tab \(n)"

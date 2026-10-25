@@ -41,6 +41,47 @@ final class TerminalPanesTests: XCTestCase {
         XCTAssertEqual(panes.vms, ["web", "db"])
     }
 
+    /// ⇧⌘→ and ⇧⌘←: the next or previous context comes to front, and the
+    /// one left keeps its session (the same one), running, to come back to.
+    func testCyclingContextsKeepsEverySession() throws {
+        let panes = TerminalPanes(target: .vm("web"), host: host)
+        panes.addContext(.vm("db"))
+        let web = try XCTUnwrap(panes.allSessions.first { $0.target == .vm("web") })
+        let db = try XCTUnwrap(panes.focusedSession)
+        panes.cycleContext(by: 1)
+        XCTAssertTrue(panes.focusedSession === web)
+        panes.cycleContext(by: -1)
+        XCTAssertTrue(panes.focusedSession === db, "back to the same session, not a new one")
+        XCTAssertEqual(panes.contextCount, 2)
+        XCTAssertTrue(panes.allSessions.contains { $0 === web })
+    }
+
+    /// Past its contexts, ⇧⌘→ goes on to a running VM the pane has no
+    /// context on and opens one there. The contexts left keep running, and
+    /// one already there is shown, not opened again.
+    func testCyclingOpensAContextOnTheNextRunningVM() throws {
+        let panes = TerminalPanes(target: .vm("web"), host: host, turnedOn: { ["web", "db"] })
+        let web = try XCTUnwrap(panes.focusedSession)
+        panes.cycleContext(by: 1)
+        XCTAssertEqual(panes.focusedSession?.target, .vm("db"), "a context opened on db")
+        XCTAssertEqual(panes.contextCount, 2)
+        let db = try XCTUnwrap(panes.focusedSession)
+        panes.cycleContext(by: 1)
+        XCTAssertTrue(panes.focusedSession === web, "round to web, the same session")
+        panes.cycleContext(by: 1)
+        XCTAssertTrue(panes.focusedSession === db, "db's context shown, not opened again")
+        XCTAssertEqual(panes.contextCount, 2)
+    }
+
+    /// A tab with one context and no other VM on stays as it is.
+    func testNothingElseOnLeavesTheTabAsItIs() throws {
+        let panes = TerminalPanes(target: .vm("web"), host: host, turnedOn: { ["web"] })
+        let web = try XCTUnwrap(panes.focusedSession)
+        panes.cycleContext(by: 1)
+        XCTAssertTrue(panes.focusedSession === web)
+        XCTAssertEqual(panes.contextCount, 1)
+    }
+
     /// The last context is the owner's to close (a window closes, the
     /// canvas hides its dock).
     func testTheOwnerHearsWhenTheLastContextGoes() {

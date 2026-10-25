@@ -45,7 +45,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   start at login, groups with firewall tags.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
-- **Terminal:** Monad's own emulator, tabs per VM, split panes with contexts, themes (Terminal.app
+- **Terminal:** Monad's own emulator, tabs per VM, split panes with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM), OSC 52 within limits.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role
@@ -82,7 +82,7 @@ warnings, this file updated, and no private names or paths in what is committed.
 - **Limits:** a VM's disk cannot grow after it is made; distributions without systemd (Alpine)
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
-- **Not yet tried on the Mac:** dragging a pane by its header and the pane menu's contexts; the
+- **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
   per-distro first boot of every built-in distribution.
 - **Later:** Developer ID signing and notarization; growing disks; a Homebrew profile for macOS
   guests.

@@ -19,6 +19,9 @@ final class TerminalPanes: NSObject {
     private var grids: [ContextID: (cols: Int, rows: Int)] = [:]
     private var started: Set<ContextID> = []
     private let host: HostClient?
+    /// The VMs that are on (PaneMenu.turnedOn): what the pane menu and
+    /// ⇧⌘←/→ may switch to. Tests give their own.
+    private let turnedOn: @MainActor () -> [String]
     /// Tells a drag of these panes from another set's.
     private let dragScope = UUID().uuidString
 
@@ -36,8 +39,11 @@ final class TerminalPanes: NSObject {
     /// The panes changed shape or the font changed (a window's resize steps).
     var onLayoutChange: (() -> Void)?
 
-    init(target: SessionTarget, host: HostClient? = nil) {
+    init(target: SessionTarget, host: HostClient? = nil, turnedOn: (@MainActor () -> [String])? = nil) {
         self.host = host
+        self.turnedOn = turnedOn ?? {
+            PaneMenu.turnedOn((host ?? HostAgent.client).instances.map { ($0.name, $0.state) })
+        }
         let context = ContextID.make()
         layout = PaneLayout(context: context, pane: .make())
         super.init()
@@ -179,6 +185,28 @@ final class TerminalPanes: NSObject {
         focusTerminal()
     }
 
+    /// ⇧⌘→ and ⇧⌘←: the next or previous entry of the focused pane's Switch
+    /// Context list (PaneMenu.cycle): one of its contexts in front, or a new
+    /// context on a running VM it has none on. A VM is never started, and
+    /// the context left keeps its session, running. A beep when there is
+    /// nothing else to go to.
+    func cycleContext(by step: Int) {
+        let pane = layout.tree.focused
+        switch PaneMenu.cycle(pane, in: layout, vms: contextVMs, running: turnedOn(), by: step) {
+        case .show(let id)?:
+            layout.show(id)
+            refreshPanes()
+            focusTerminal()
+        case .open(let target)?:
+            addContext(target)
+        default:
+            NSSound.beep()
+        }
+    }
+
+    /// The VM of each context, by what it was opened on (host shells have none).
+    private var contextVMs: [ContextID: String] { sessions.compactMapValues(Self.vmName) }
+
     /// ⌘W with more than one context: the one in front closes, and its pane
     /// when it was the last there. False when it is the only one.
     func closeContextInFront() -> Bool {
@@ -276,9 +304,7 @@ final class TerminalPanes: NSObject {
         var names: [ContextID: String] = [:]
         for (id, session) in sessions { names[id] = titles[id] ?? session.displayName }
         let items = PaneMenu.items(
-            for: pane, in: layout, names: names,
-            vms: sessions.compactMapValues { $0.vm?.name },
-            running: client.instances.filter(\.isRunning).map(\.name),
+            for: pane, in: layout, names: names, vms: contextVMs, running: turnedOn(),
             all: client.instances.filter { !$0.config.ephemeral }.map(\.name))
         return items.map { menuItem($0, pane: pane) }
     }

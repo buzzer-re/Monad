@@ -106,6 +106,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     @objc func selectPaneAbove(_ sender: Any?) { terminals.moveFocus(.up) }
     @objc func selectPaneBelow(_ sender: Any?) { terminals.moveFocus(.down) }
 
+    /// ⇧⌘→ and ⇧⌘←: the focused pane's next or previous context.
+    @objc func showNextContext(_ sender: Any?) { terminals.cycleContext(by: 1) }
+    @objc func showPreviousContext(_ sender: Any?) { terminals.cycleContext(by: -1) }
+
     /// ⌘W with more than one context: the one in front closes, and its pane
     /// when it was the last there. False when it is the window's only one.
     func closeContextInFront() -> Bool { terminals.closeContextInFront() }

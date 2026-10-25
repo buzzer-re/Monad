@@ -62,7 +62,7 @@ Tick a profile in New VM and the VM is set up on its first boot. Agentic brings 
 
 ![A tab split in three: a Next.js server and git log on the VM web, and a pane whose menu is switching it to the VM db.](docs/images/splits.png)
 
-⇧⌘V and ⇧⌘H split a tab side by side or stacked. A pane holds several contexts, a VM session each, so one window can watch a web server, its repository and its database. Switch a pane's context from its menu, and drag a pane by its header to move it. Each VM also gets its own tab group, and the "…" in a tab opens tabs on other VMs.
+⇧⌘V and ⇧⌘H split a tab side by side or stacked. A pane holds several contexts, a VM session each, so one window can watch a web server, its repository and its database. Switch a pane's context from its menu, or with ⇧⌘← and ⇧⌘→ without leaving the keyboard. They go through the menu's list in order: the pane's contexts, then every other VM that is on, where they open a context (a stopped VM is never started). The context you leave keeps running. Drag a pane by its header to move it. Each VM also gets its own tab group, and the "…" in a tab opens tabs on other VMs.
 
 ## Ports forward themselves
 
@@ -145,6 +145,8 @@ Host commands give a VM's agents the Mac commands you defined for it as tools: a
 | ⇧⌘T | New ephemeral VM: deleted when its last tab closes |
 | ⌥⌘N | Host shell (no VM, for when you need the Mac itself) |
 | ⇧⌘V / ⇧⌘H | Split side by side / stacked |
+| ⌘ and an arrow | Select the pane in that direction |
+| ⇧⌘← / ⇧⌘→ | The pane's previous / next context, or a new one on the next VM that is on (the others keep running) |
 | ⇧⌘M | Virtual Machines window |
 | ⇧⌘K | Canvas |
 | ⌥⌘, | Settings of the VM in front |

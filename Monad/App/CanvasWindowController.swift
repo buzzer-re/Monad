@@ -174,11 +174,14 @@ final class CanvasWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @objc func selectPaneRight(_ sender: Any?) { dock?.moveFocus(.right) }
     @objc func selectPaneAbove(_ sender: Any?) { dock?.moveFocus(.up) }
     @objc func selectPaneBelow(_ sender: Any?) { dock?.moveFocus(.down) }
+    @objc func showNextContext(_ sender: Any?) { dock?.cycleContext(by: 1) }
+    @objc func showPreviousContext(_ sender: Any?) { dock?.cycleContext(by: -1) }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(splitSideBySide(_:)), #selector(splitStacked(_:)), #selector(selectPaneLeft(_:)),
-             #selector(selectPaneRight(_:)), #selector(selectPaneAbove(_:)), #selector(selectPaneBelow(_:)):
+             #selector(selectPaneRight(_:)), #selector(selectPaneAbove(_:)), #selector(selectPaneBelow(_:)),
+             #selector(showNextContext(_:)), #selector(showPreviousContext(_:)):
             return dockHasFocus
         default:
             return true

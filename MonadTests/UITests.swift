@@ -62,6 +62,28 @@ final class TabSelectionTests: XCTestCase {
         }
     }
 
+    /// ⇧⌘ and an arrow show the focused pane's previous or next context.
+    func testContextsCycleWithShiftCommandAndAnArrow() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        let expected: [Selector: Int] = [
+            #selector(TerminalWindowController.showPreviousContext(_:)): NSLeftArrowFunctionKey,
+            #selector(TerminalWindowController.showNextContext(_:)): NSRightArrowFunctionKey,
+        ]
+        var found: [Selector: NSMenuItem] = [:]
+        func walk(_ m: NSMenu) {
+            for item in m.items {
+                if let action = item.action, expected[action] != nil { found[action] = item }
+                if let sub = item.submenu { walk(sub) }
+            }
+        }
+        walk(menu)
+        XCTAssertEqual(Set(found.keys), Set(expected.keys))
+        for (action, item) in found {
+            XCTAssertEqual(item.keyEquivalent.unicodeScalars.first.map { Int($0.value) }, expected[action])
+            XCTAssertEqual(item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask), [.command, .shift], "\(action)")
+        }
+    }
+
     /// The tab bar shows its "+" only when the window's responder chain
     /// answers newWindowForTab.
     func testTheTabBarHasItsPlus() {
