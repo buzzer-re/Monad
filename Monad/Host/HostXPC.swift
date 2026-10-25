@@ -124,7 +124,7 @@ final class HostXPCListener: NSObject, NSXPCListenerDelegate, @unchecked Sendabl
     init(listener: NSXPCListener, service: HostService, peerRequirement: String?) {
         self.listener = listener
         self.service = service
-        self.requirement = peerRequirement.map { r in { r } }
+        self.requirement = peerRequirement.map { r in { @Sendable in r } }
         super.init()
         listener.delegate = self
     }
