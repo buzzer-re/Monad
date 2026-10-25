@@ -65,18 +65,25 @@ MainActor.assumeIsolated {
     // Clients are pinned to Monad's binaries as installed, read for each connection.
     let listener = HostXPCListener(listener: NSXPCListener(machServiceName: HostXPCSecurity.machServiceName),
                                    service: service, requirement: { HostXPCSecurity.clientRequirement() })
-    let lifetime = HostLifetime(service: service, grace: 30) { exit(EXIT_SUCCESS) }
+    let lifetime = HostLifetime(service: service, grace: 30) {
+        manager.flushLogs()
+        exit(EXIT_SUCCESS)
+    }
     // An app with a newer embedded host asked us to make way (only when idle).
     service.onShutdown = {
         listener.invalidate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(EXIT_SUCCESS) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            manager.flushLogs()
+            exit(EXIT_SUCCESS)
+        }
     }
 
     let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     term.setEventHandler {
         Task { @MainActor in
             Log.host.notice("SIGTERM: stopping VMs")
-            await manager.stopAll()
+            await manager.stopAll(because: "MonadHost is quitting (launchd asked it to: a logout, a restart or an unload)")
+            manager.flushLogs()
             exit(EXIT_SUCCESS)
         }
     }

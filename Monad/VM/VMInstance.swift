@@ -178,6 +178,29 @@ final class VMInstance: ObservableObject, Identifiable {
     /// A line in this VM's log from what makes or runs it (VMManager).
     func note(_ message: String) { debug(message) }
 
+    private static let markStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    /// The machine runs: say since when, until its stop event takes it away.
+    private func writeRunningMark() {
+        try? Data(Self.markStamp.string(from: env.clock.now()).utf8).write(to: paths.runningMark, options: .atomic)
+    }
+
+    /// At MonadHost's start: a mark left behind is a machine the last
+    /// MonadHost never saw stop (killed, crashed, the Mac lost power), so the
+    /// guest was powered off without a shutdown. Said once.
+    func noteUncleanStop() {
+        guard let data = try? Data(contentsOf: paths.runningMark) else { return }
+        try? FileManager.default.removeItem(at: paths.runningMark)
+        let started = String(decoding: data.prefix(32), as: UTF8.self).filter { $0.isNumber || " -:".contains($0) }
+        debug("MonadHost ended while this VM was running (its machine started \(started.isEmpty ? "earlier" : started)): "
+              + "it was powered off without a shutdown, which can damage its disk")
+    }
+
     /// What this VM does, step by step: its own log, and Settings › Logs.
     private func debug(_ message: @autoclosure () -> String) {
         let text = message()
@@ -827,6 +850,7 @@ final class VMInstance: ObservableObject, Identifiable {
             return
         }
         guard state == .starting, !Task.isCancelled else { return }
+        writeRunningMark()
         persistMAC(m)
         if config.memoryTargetGiB != nil { applyMemoryTarget() }
         // Current ssh settings for VMs made by older versions (e.g. a
@@ -1041,7 +1065,7 @@ final class VMInstance: ObservableObject, Identifiable {
         state = .failed(message)
         disconnectGuest()
         agentAvailable = false
-        await m.forceStop()
+        await powerOff(m)
         poweringOff = false
         diskLock = nil
         m.stopBridge()
@@ -1419,6 +1443,7 @@ final class VMInstance: ObservableObject, Identifiable {
         }
         if attaching {
             // Still waiting for its NIC: nothing runs yet.
+            debug("stop: stopped while waiting for its network card (nothing ran yet)")
             lifecycleTask?.cancel()
             state = .stopped
             return
@@ -1434,7 +1459,7 @@ final class VMInstance: ObservableObject, Identifiable {
         } catch {
             // The guest cannot receive the request (e.g. still in firmware).
             debug("stop: the guest cannot take the request (\(error.localizedDescription)), powering off")
-            await m.forceStop()
+            await powerOff(m)
         }
         let deadline = env.clock.now().addingTimeInterval(timeout)
         while state == .stopping && env.clock.now() < deadline {
@@ -1443,7 +1468,7 @@ final class VMInstance: ObservableObject, Identifiable {
         if state == .stopping {
             debug("stop: the guest did not shut down in time, powering off")
             Log.vm.info("\(self.name, privacy: .public) did not shut down in time; powering off")
-            await m.forceStop()
+            await powerOff(m)
             finishStop()
         }
     }
@@ -1455,8 +1480,18 @@ final class VMInstance: ObservableObject, Identifiable {
         lifecycleTask?.cancel()
         stopForwarding()
         await closeSSHMaster()
-        await m.forceStop()
+        await powerOff(m)
         finishStop()
+    }
+
+    /// Set while Monad powers the machine off, so its stop event says who
+    /// stopped it (Virtualization reports the stop before the power-off returns).
+    private var poweringOffByMonad = false
+
+    private func powerOff(_ m: VirtualMachineControlling) async {
+        poweringOffByMonad = true
+        defer { poweringOffByMonad = false }
+        await m.forceStop()
     }
 
     private func closeSSHMaster() async {
@@ -1672,7 +1707,16 @@ final class VMInstance: ObservableObject, Identifiable {
     // MARK: Runtime events
 
     private func handle(_ event: VMRuntimeEvent) {
-        debug("machine: \(event)")
+        // Whichever way, the machine no longer runs.
+        try? FileManager.default.removeItem(at: paths.runningMark)
+        switch event {
+        case .stopped:
+            debug("machine: " + (poweringOffByMonad ? "powered off by Monad"
+                                 : state == .stopping ? "the guest shut down as asked"
+                                 : "the guest powered itself off (Monad did not ask it to)"))
+        case .failed(let message):
+            debug("machine: Virtualization stopped it with an error: \(message)")
+        }
         switch event {
         case .stopped:
             Log.vm.info("\(self.name, privacy: .public) stopped")

@@ -77,7 +77,7 @@ Under `~/.monad` (Release) or `~/.monad-debug` (Debug), see `Monad/Support/Paths
 | Path | What |
 |---|---|
 | `_cache/images/` | Downloaded cloud images and the converted bases VMs are cloned from |
-| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log`, `vm.log`, and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
+| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log`, `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
 | `instances/order.json` | The VMs' order; the default VM is chosen there |
 | `networks/`, `firewall-tags/` | Monad networks and firewall tags, one JSON file each |
 | `distros/`, `profiles/`, `themes/` | What the user added, next to the ones in the app bundle |

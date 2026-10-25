@@ -1423,6 +1423,71 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.machine.bridgeStopped, 1)
     }
 
+    private func vmLog(_ vm: VMInstance) -> String {
+        vm.log.flush()
+        return (try? String(contentsOf: vm.paths.vmLog, encoding: .utf8)) ?? ""
+    }
+
+    /// Every stop says why in the VM's log: the guest powering itself off, a
+    /// shutdown Monad asked for, Monad powering it off, or an error from
+    /// Virtualization. A VM once went from booting to stopped with no word.
+    func testEveryStopSaysWhy() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        factory.machine.emit(.stopped)
+        XCTAssertTrue(vmLog(vm).contains("machine: the guest powered itself off (Monad did not ask it to)"), vmLog(vm))
+
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        await vm.stop()
+        XCTAssertTrue(vmLog(vm).contains("machine: the guest shut down as asked"), vmLog(vm))
+
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        factory.machine.stopsGracefully = false
+        await vm.stop(timeout: 20)
+        XCTAssertTrue(vmLog(vm).contains("machine: powered off by Monad"), vmLog(vm))
+
+        factory.machine.stopsGracefully = true
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        factory.machine.emit(.failed("guest panicked"))
+        XCTAssertTrue(vmLog(vm).contains("machine: Virtualization stopped it with an error: guest panicked"), vmLog(vm))
+    }
+
+    /// While its machine runs, a VM has a mark in its folder, gone once the
+    /// machine has stopped, however it stopped. A MonadHost that finds one
+    /// at its start knows the VM was never shut down (VMManager.load).
+    func testARunningMachineLeavesAMarkUntilItStops() async throws {
+        let vm = try makeInstance()
+        let mark = vm.paths.runningMark.path
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mark))
+        await vm.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mark), "a shutdown")
+
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        factory.machine.emit(.failed("guest panicked"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mark), "an error")
+
+        factory.machine.canStart = false
+        factory.machine = FakeVM()
+        factory.machine.probeAnswers = [false]
+        vm.start()
+        await assertEventually { vm.isFailed }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mark), "a boot that never answered, powered off")
+
+        factory.machine.canStart = false
+        factory.machine = FakeVM()
+        factory.machine.startError = TestError("no memory")
+        vm.start()
+        await assertEventually { vm.isFailed }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mark), "never started")
+    }
+
     // MARK: Stop
 
     func testGracefulStop() async throws {

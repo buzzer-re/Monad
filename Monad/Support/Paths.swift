@@ -79,6 +79,9 @@ struct InstancePaths {
     var serialLog: URL { dir.appendingPathComponent("serial.log") }
     /// What Monad did with the VM, for its Log page (VMLog).
     var vmLog: URL { dir.appendingPathComponent("vm.log") }
+    /// There while the VM's machine runs (when it started); one left behind
+    /// means MonadHost ended without seeing the machine stop.
+    var runningMark: URL { dir.appendingPathComponent("running") }
     /// Profiles set up in the VM (not run again at boot).
     var appliedProfiles: URL { dir.appendingPathComponent("profiles.json") }
     /// The whole output of a profile's latest run (`id` is a profile id).

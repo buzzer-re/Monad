@@ -100,6 +100,7 @@ final class VMManager: ObservableObject {
                 continue
             }
             let vm = makeInstance(cfg)
+            vm.noteUncleanStop()
             // Checked as on create and update: the file may have been changed
             // outside Monad. Such a VM is listed but does not start.
             do {
@@ -680,9 +681,11 @@ final class VMManager: ObservableObject {
 
     var hasRunningVMs: Bool { instances.contains { $0.isRunning } }
 
-    func stopAll() async {
+    /// Shuts every running VM down; each one's log says why first.
+    func stopAll(because reason: String) async {
         await withTaskGroup(of: Void.self) { group in
             for vm in instances where vm.isRunning {
+                vm.note("\(reason): shutting the VM down")
                 group.addTask { @MainActor in
                     if vm.config.ephemeral { await vm.forceStop() } else { await vm.stop(timeout: 15) }
                 }
@@ -692,5 +695,11 @@ final class VMManager: ObservableObject {
             vm.log.flush()
             try? FileManager.default.removeItem(at: vm.paths.dir)
         }
+    }
+
+    /// Every VM's log written out, before MonadHost exits: lines still
+    /// queued are lost with the process (the last stop's reason among them).
+    func flushLogs() {
+        for vm in instances { vm.log.flush() }
     }
 }

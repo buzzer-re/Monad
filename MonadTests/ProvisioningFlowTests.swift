@@ -626,6 +626,47 @@ final class ProvisioningFlowTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: vm.paths.dir.path))
     }
 
+    /// A VM still running when MonadHost ended (killed, crashed, the Mac
+    /// lost power) was powered off without a shutdown, which can damage its
+    /// disk: the next MonadHost says so in its log, once.
+    func testAVMLeftRunningWhenMonadHostEndedIsNoted() async throws {
+        let vm = try await createdVM("unit")
+        manager.start(vm)
+        await assertEventually { vm.state == .ready }
+        // This MonadHost ends here, never seeing the VM stop.
+        let restarted = fixture.makeManager()
+        restarted.load()
+        let again = try XCTUnwrap(restarted.existing("unit"))
+        again.log.flush()
+        let log = try String(contentsOf: again.paths.vmLog, encoding: .utf8)
+        XCTAssertTrue(log.contains("MonadHost ended while this VM was running (its machine started "), log)
+        XCTAssertTrue(log.contains("it was powered off without a shutdown, which can damage its disk"), log)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: again.paths.runningMark.path))
+        let third = fixture.makeManager()
+        third.load()
+        third.flushLogs()
+        let after = try String(contentsOf: again.paths.vmLog, encoding: .utf8)
+        XCTAssertEqual(after.components(separatedBy: "MonadHost ended while").count, 2, "said once")
+    }
+
+    /// MonadHost quitting (launchd's SIGTERM at a logout or restart) says so
+    /// in each running VM's log before it shuts the VM down, and every log is
+    /// written out before it exits.
+    func testQuittingSaysWhyInEachRunningVMsLog() async throws {
+        let vm = try await createdVM("unit")
+        let idle = try await createdVM("idle")
+        manager.start(vm)
+        await assertEventually { vm.state == .ready }
+        await manager.stopAll(because: "MonadHost is quitting")
+        manager.flushLogs()
+        let log = try String(contentsOf: vm.paths.vmLog, encoding: .utf8)
+        let why = try XCTUnwrap(log.range(of: "MonadHost is quitting: shutting the VM down"), log)
+        let asked = try XCTUnwrap(log.range(of: "stop: asking the guest to shut down"), log)
+        XCTAssertLessThan(why.lowerBound, asked.lowerBound)
+        XCTAssertFalse(((try? String(contentsOf: idle.paths.vmLog, encoding: .utf8)) ?? "").contains("quitting"),
+                       "a VM that was not running has nothing to say")
+    }
+
     func testAFailedEphemeralVMLeavesNothing() async throws {
         images.error = TestError("offline")
         let vm = manager.createEphemeral()

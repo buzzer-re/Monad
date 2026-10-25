@@ -598,7 +598,7 @@ final class HostConnection {
             return answer(target)
 
         case .stopAll:
-            await manager.stopAll()
+            await manager.stopAll(because: "Monad asked to stop every VM")
             return HostResponse(id: r.id)
 
         case .answerFirewall:
