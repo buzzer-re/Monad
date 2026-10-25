@@ -117,7 +117,7 @@ struct DiskReport: Equatable {
         guard !found.isEmpty else {
             return "Monad checked its disk and found its partitions and filesystems intact, so the cause is inside the guest."
         }
-        return "Monad checked its disk: " + found.joined(separator: "; ") + "." + (repairable ? " It needs a filesystem check." : "")
+        return "Monad checked its disk: " + found.joined(separator: "; ") + "." + (repairable ? " Repair Disk, in its ⋯ menu, can check and repair it." : "")
     }
 
     /// Everything it found, on one line for the VM's log.

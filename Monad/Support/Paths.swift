@@ -55,6 +55,8 @@ struct InstancePaths {
 
     var config: URL { dir.appendingPathComponent("instance.json") }
     var disk: URL { dir.appendingPathComponent("disk.raw") }
+    /// The disk as it was before Repair Disk last ran (an APFS clone).
+    var diskBeforeRepair: URL { dir.appendingPathComponent("disk.before-repair.raw") }
     var seed: URL { dir.appendingPathComponent("cidata.iso") }
     var efiVars: URL { dir.appendingPathComponent("efi-vars.fd") }
     var machineID: URL { dir.appendingPathComponent("machine-id.bin") }

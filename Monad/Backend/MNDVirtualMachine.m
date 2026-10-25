@@ -124,6 +124,8 @@ static NSError *MNDNoInput(NSString *what) {
     dispatch_queue_t _consoleQueue;
     dispatch_source_t _console;
     mnd_rotlog *_consoleLog;
+    // The disk attached while running (Repair Disk); used on _queue only.
+    id _usbDisk;
 }
 
 + (BOOL)isSupported {
@@ -136,6 +138,11 @@ static NSError *MNDNoInput(NSString *what) {
 
 + (uint64_t)maximumMemoryBytes {
     return MIN(VZVirtualMachineConfiguration.maximumAllowedMemorySize, NSProcessInfo.processInfo.physicalMemory);
+}
+
++ (BOOL)canAttachDisksWhileRunning {
+    if (@available(macOS 15, *)) return YES;
+    return NO;
 }
 
 - (instancetype)initWithConfig:(MNDVMConfig *)config error:(NSError **)error {
@@ -443,6 +450,11 @@ static NSError *MNDNoInput(NSString *what) {
         fs.share = share;
         vzc.directorySharingDevices = @[ fs ];
     }
+
+    // Repair Disk's temporary VM only: a disk comes once it runs.
+    if (c.usbDisks) {
+        if (@available(macOS 15, *)) vzc.usbControllers = @[ [[VZXHCIControllerConfiguration alloc] init] ];
+    }
     return vzc;
 }
 
@@ -535,6 +547,57 @@ static NSError *MNDNoInput(NSString *what) {
 - (void)virtualMachine:(VZVirtualMachine *)virtualMachine didStopWithError:(NSError *)error {
     os_log_error(MNDLog(), "virtual machine stopped with error: %{public}@", error);
     [self setState:MNDVirtualMachineStateError error:error];
+}
+
+#pragma mark - A disk while running (Repair Disk)
+
+- (void)attachDiskAtPath:(NSString *)path completion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 15, *)) {
+        dispatch_async(_queue, ^{
+            VZUSBController *usb = self->_vm.usbControllers.firstObject;
+            NSError *err = nil;
+            VZDiskImageStorageDeviceAttachment *disk =
+                usb && !self->_usbDisk
+                    ? [[VZDiskImageStorageDeviceAttachment alloc] initWithURL:[NSURL fileURLWithPath:path]
+                                                                     readOnly:NO
+                                                                  cachingMode:VZDiskImageCachingModeAutomatic
+                                                          synchronizationMode:VZDiskImageSynchronizationModeFull
+                                                                        error:&err]
+                    : nil;
+            if (!disk) {
+                if (!err) err = MNDError(7, usb ? @"A disk is attached already." : @"This VM was started without a USB controller.");
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+                return;
+            }
+            VZUSBMassStorageDevice *device =
+                [[VZUSBMassStorageDevice alloc] initWithConfiguration:[[VZUSBMassStorageDeviceConfiguration alloc] initWithAttachment:disk]];
+            [usb attachDevice:device completionHandler:^(NSError *_Nullable attachErr) {
+                if (!attachErr) self->_usbDisk = device;
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(attachErr); });
+            }];
+        });
+    } else {
+        completion(MNDError(7, @"Attaching a disk to a running VM needs macOS 15 or later."));
+    }
+}
+
+- (void)detachDiskWithCompletion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 15, *)) {
+        dispatch_async(_queue, ^{
+            VZUSBController *usb = self->_vm.usbControllers.firstObject;
+            id<VZUSBDevice> device = self->_usbDisk;
+            if (!usb || !device) {
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+                return;
+            }
+            [usb detachDevice:device completionHandler:^(NSError *_Nullable err) {
+                if (!err) self->_usbDisk = nil;
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+            }];
+        });
+    } else {
+        completion(nil);
+    }
 }
 
 #pragma mark - vsock

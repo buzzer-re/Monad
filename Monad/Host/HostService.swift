@@ -544,6 +544,13 @@ final class HostConnection {
             try target.openDesktop()
             return answer(target)
 
+        case .repairDisk:
+            let target = try vm(r.name)
+            let summary = try await manager.repairDisk(target)
+            var response = answer(target)
+            response.message = summary
+            return response
+
         case .delete:
             service.cancelMacSetup(r.name!)
             try await manager.delete(try vm(r.name))

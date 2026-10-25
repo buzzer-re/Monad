@@ -77,7 +77,7 @@ final class DiskCheckTests: XCTestCase {
         XCTAssertTrue(report.repairable)
         XCTAssertEqual(report.problems, ["the filesystem cloudimg-rootfs has a damaged superblock (a backup copy at block 32768 is intact)"])
         XCTAssertTrue(report.summary.hasPrefix("Monad checked its disk: the filesystem cloudimg-rootfs has a damaged superblock"), report.summary)
-        XCTAssertTrue(report.summary.hasSuffix("It needs a filesystem check."), report.summary)
+        XCTAssertTrue(report.summary.hasSuffix("Repair Disk, in its ⋯ menu, can check and repair it."), report.summary)
     }
 
     func testRecordedErrorsAreNamedWithTheLastOne() throws {

@@ -26,7 +26,7 @@ final class VMManager: ObservableObject {
 
     /// Directory holding one sub-directory per instance.
     let root: URL
-    private let env: VMEnvironment
+    let env: VMEnvironment
     /// Who asks the user for a macOS VM's setup (MonadHost's service);
     /// without one, the environment's.
     weak var macSetupAsker: MacSetupAuthorizing?
@@ -630,6 +630,7 @@ final class VMManager: ObservableObject {
     }
 
     func delete(_ vm: VMInstance) async throws {
+        if vm.isRepairing { throw MonadError("\(vm.name)'s disk is being repaired. Delete it once that is done.") }
         startWhenMade.remove(vm.name)
         if let task = creating[vm.name] { _ = try? await task.value }
         if vm.isRunning { await vm.stop() }
@@ -646,6 +647,7 @@ final class VMManager: ObservableObject {
 
     /// Starts `vm`, or, while it is still being made, once it is.
     func start(_ vm: VMInstance) {
+        if vm.isRepairing { return }
         if vm.state.isPreparing {
             startWhenMade.insert(vm.name)
         } else {

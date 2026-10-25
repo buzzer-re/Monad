@@ -80,7 +80,7 @@ extension ProcessRunner.Result {
 
 /// A controllable virtual machine.
 @MainActor
-final class FakeVM: VirtualMachineControlling, MacRecoveryInput {
+final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
     /// "release" (keys let go), "wake" (a lone shift), "key" (anything else), in order.
     private(set) var inputLog: [String] = []
 
@@ -157,6 +157,21 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput {
         memoryTargets.append(bytes)
     }
 
+    /// Disks attached while running, in order, and how many were taken away.
+    private(set) var attachedDisks: [URL] = []
+    private(set) var detachedDisks = 0
+    var attachError: Error?
+    /// Runs once a disk is attached (the guest sees a new block device).
+    var onAttach: (() -> Void)?
+
+    func attachDisk(_ url: URL) async throws {
+        if let attachError { throw attachError }
+        attachedDisks.append(url)
+        onAttach?()
+    }
+
+    func detachDisk() async throws { detachedDisks += 1 }
+
     func forceStop() async {
         forceStops += 1
         onEvent?(.stopped)
@@ -217,6 +232,18 @@ final class FakeMachineFactory: VirtualMachineFactory {
         if let makeError { throw makeError }
         recoveries.append((config, nic))
         return recoveryMachine
+    }
+
+    /// Machines built able to take a disk while running (Repair Disk's helper).
+    private(set) var diskMachines: [InstanceConfig] = []
+
+    func makeDiskMachine(config: InstanceConfig, paths: InstancePaths,
+                         nic: FileHandle?) throws -> VirtualMachineControlling & DiskAttaching {
+        if let makeError { throw makeError }
+        made.append((config, paths))
+        nics.append(nic)
+        diskMachines.append(config)
+        return machine
     }
 }
 

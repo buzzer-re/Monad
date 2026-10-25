@@ -163,10 +163,22 @@ struct DesktopAction {
     let run: @MainActor () async -> Void
 }
 
+/// A machine that takes a disk while it runs: Repair Disk's temporary VM,
+/// given the disk to repair once it has booted (a disk made from the same
+/// cloud image has the same labels and UUIDs, so never at boot).
+@MainActor
+protocol DiskAttaching: AnyObject {
+    func attachDisk(_ url: URL) async throws
+    func detachDisk() async throws
+}
+
 @MainActor
 protocol VirtualMachineFactory: AnyObject {
     /// `nic`: the VM's socket to monad-netd when its network is a Monad network.
     func makeMachine(config: InstanceConfig, paths: InstancePaths, nic: FileHandle?) throws -> VirtualMachineControlling
+    /// The same, able to take a disk while it runs (DiskAttaching).
+    func makeDiskMachine(config: InstanceConfig, paths: InstancePaths,
+                         nic: FileHandle?) throws -> VirtualMachineControlling & DiskAttaching
     /// A macOS VM that boots into its recoveryOS, with a display, a keyboard
     /// and a pointer Monad drives (System Integrity Protection).
     func makeRecoveryMachine(config: InstanceConfig, paths: InstancePaths,
@@ -177,6 +189,11 @@ extension VirtualMachineFactory {
     func makeRecoveryMachine(config: InstanceConfig, paths: InstancePaths,
                              nic: FileHandle?) throws -> VirtualMachineControlling & MacRecoveryInput {
         throw MonadError("This Monad cannot start a VM in macOS recovery.")
+    }
+
+    func makeDiskMachine(config: InstanceConfig, paths: InstancePaths,
+                         nic: FileHandle?) throws -> VirtualMachineControlling & DiskAttaching {
+        throw MonadError("This Monad cannot attach a disk to a running VM.")
     }
 }
 
@@ -309,6 +326,8 @@ struct VMEnvironment {
     /// here (`GuestOS.ready`; tests set it).
     var macInstaller: MacInstalling = VZMacInstaller()
     var allowsMacGuests = false
+    /// Whether a disk can be attached to a running VM (Repair Disk; macOS 15).
+    var disksAttachWhileRunning = false
     /// Asks the app for the setup's admin prompt (HostService); nil: no app.
     var macSetup: MacSetupAuthorizing?
     /// monad-guestd, copied into macOS guests: this MonadHost.
@@ -337,6 +356,7 @@ struct VMEnvironment {
         var env = VMEnvironment(runner: LoggingCommandRunner(SystemCommandRunner()), machines: VZMachineFactory(), clock: SystemClock(),
                                 virtualizationSupported: MNDVirtualMachine.isSupported(), networks: NetdSupervisor.shared)
         env.allowsMacGuests = GuestOS.ready.contains(.macos)
+        env.disksAttachWhileRunning = MNDVirtualMachine.canAttachDisksWhileRunning()
         return env
     }
 }

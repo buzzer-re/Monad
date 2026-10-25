@@ -23,25 +23,33 @@ final class VZMachineFactory: VirtualMachineFactory {
                              nic: FileHandle?) throws -> VirtualMachineControlling & MacRecoveryInput {
         try VZMachine(config: config, paths: paths, nic: nic, recovery: true)
     }
+
+    func makeDiskMachine(config: InstanceConfig, paths: InstancePaths,
+                         nic: FileHandle?) throws -> VirtualMachineControlling & DiskAttaching {
+        try VZMachine(config: config, paths: paths, nic: nic, takesDisks: true)
+    }
 }
 
 @MainActor
-final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, MNDVirtualMachineDelegate {
+final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, DiskAttaching, MNDVirtualMachineDelegate {
     private let vm: MNDVirtualMachine
     var onEvent: ((VMRuntimeEvent) -> Void)?
 
-    init(config: InstanceConfig, paths: InstancePaths, nic: FileHandle?, recovery: Bool = false) throws {
-        vm = try MNDVirtualMachine(config: Self.vmConfig(for: config, paths: paths, nic: nic, recovery: recovery))
+    init(config: InstanceConfig, paths: InstancePaths, nic: FileHandle?, recovery: Bool = false, takesDisks: Bool = false) throws {
+        vm = try MNDVirtualMachine(config: Self.vmConfig(for: config, paths: paths, nic: nic, recovery: recovery,
+                                                         takesDisks: takesDisks))
         super.init()
         vm.delegate = self
     }
 
     /// The backend description of `config`. Pure apart from checking whether
     /// the seed ISO exists; DeviceModelTests builds the real VZ configuration
-    /// from it. `nic` is the VM's socket to monad-netd (Monad networks only).
+    /// from it. `nic` is the VM's socket to monad-netd (Monad networks only);
+    /// `takesDisks`: Repair Disk's temporary VM (a USB controller).
     nonisolated static func vmConfig(for config: InstanceConfig, paths: InstancePaths,
-                                     nic: FileHandle? = nil, recovery: Bool = false) -> MNDVMConfig {
+                                     nic: FileHandle? = nil, recovery: Bool = false, takesDisks: Bool = false) -> MNDVMConfig {
         let c = MNDVMConfig()
+        c.usbDisks = takesDisks
         if config.guestOS == .macos {
             // Its desktop (opened from Monad); recovery is driven on it.
             c.recovery = recovery
@@ -89,6 +97,10 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, MN
     func forceStop() async { try? await vm.forceStop() }
 
     func setMemoryTarget(bytes: UInt64) { vm.setMemoryTarget(bytes: bytes) }
+
+    func attachDisk(_ url: URL) async throws { try await vm.attachDisk(atPath: url.path) }
+
+    func detachDisk() async throws { try await vm.detachDisk() }
 
     func setShares(_ shares: [SharedFolder]) async throws {
         try await vm.setSharedDirectories(Self.directories(shares))

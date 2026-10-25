@@ -286,12 +286,15 @@ final class HostProtocolTests: XCTestCase {
         invalid(HostRequest(id: 1, op: .clone, config: config))
         invalid(HostRequest(id: 1, op: .clone, name: "../etc", config: config))
         invalid(HostRequest(id: 1, op: .clone, name: "dev", config: bad))
+        invalid(HostRequest(id: 1, op: .repairDisk))
+        invalid(HostRequest(id: 1, op: .repairDisk, name: "../etc"))
 
         XCTAssertNoThrow(try HostRequest(id: 1, op: .hello, version: 1).validate())
         XCTAssertNoThrow(try HostRequest(id: 1, op: .list).validate())
         XCTAssertNoThrow(try HostRequest(id: 1, op: .stop, name: "dev").validate())
         XCTAssertNoThrow(try HostRequest(id: 1, op: .create, config: config).validate())
         XCTAssertNoThrow(try HostRequest(id: 1, op: .clone, name: "dev", config: config).validate())
+        XCTAssertNoThrow(try HostRequest(id: 1, op: .repairDisk, name: "dev").validate())
     }
 
     func testStopDefaultsToGraceful() {

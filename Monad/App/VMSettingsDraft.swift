@@ -97,6 +97,13 @@ struct VMSettingsDraft {
         shareVerdict(hostPath, places: .init(home: home, monad: home + "/.monad")) != .fine
     }
 
+    /// Repair Disk's confirmation: what it does and leaves.
+    static let repairDiskText = "Monad starts a temporary VM of the same distribution, attaches this VM's disk to it "
+        + "once it runs, and checks each filesystem with the distribution's own tools (e2fsck, fsck.vfat, xfs_repair, "
+        + "btrfs), repairing what they can. A copy of the disk as it is now is kept first, as disk.before-repair.raw in "
+        + "the VM's folder. It takes a few minutes and needs the distribution's image, downloaded if Monad no longer has "
+        + "it. The VM's log has every step."
+
     static let confirmShareText = "This folder is outside your home folder, is your whole home folder, or holds keys "
         + "and app data (~/.ssh, ~/Library). The VM will be able to read it, and to change it if you turn off Read-only. "
         + "Your whole home folder reaches the VM as its visible folders only: no hidden folders (~/.ssh, Monad's own), "

@@ -85,6 +85,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case answerMacSetup  // name, macSetupWork or macSetupError: a macOS VM's setup step done or not (Phase 14)
         case openDesktop     // name: a macOS VM's desktop in a window (shown by the host) → instance
         case clone           // name, config: a copy of the stopped VM `name` with these settings → instance
+        case repairDisk      // name: Repair Disk on the stopped Linux VM (minutes) → instance, message: what it did
     }
 
     var id: UInt64
@@ -136,7 +137,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop:
+             .openDesktop, .repairDisk:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
             }
@@ -220,6 +221,8 @@ struct HostResponse: Codable, Equatable, Sendable {
     /// list, reorder, setDefault: the default VM (the chosen one, else the
     /// top of the order).
     var defaultVM: String?
+    /// repairDisk: what it did, in a few sentences.
+    var message: String?
 
     init(id: UInt64, version: Int? = nil, instance: VMSnapshot? = nil, instances: [VMSnapshot]? = nil) {
         self.id = id

@@ -605,6 +605,11 @@ final class HostClient: ObservableObject {
         try await request(.openDesktop, name: name)
     }
 
+    /// Repair Disk (it takes minutes): what it did.
+    func repairDisk(_ name: String) async throws -> String {
+        try await request(.repairDisk, name: name).message ?? ""
+    }
+
     func delete(_ name: String) async throws {
         try await request(.delete, name: name)
         remove(name)

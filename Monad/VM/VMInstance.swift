@@ -415,7 +415,7 @@ final class VMInstance: ObservableObject, Identifiable {
                 m = existing
             } else {
                 if config.sharing.runtimeEnabled { try Self.makeExchange(paths) }
-                m = try env.machines.makeMachine(config: config, paths: paths, nic: nil)
+                m = try makeMachine(nic: nil)
                 m.onEvent = { [weak self] event in self?.handle(event) }
                 replaceMachine(m, nic: nil)
             }
@@ -456,7 +456,7 @@ final class VMInstance: ObservableObject, Identifiable {
         let m: VirtualMachineControlling
         do {
             if config.sharing.runtimeEnabled { try Self.makeExchange(paths) }
-            m = try env.machines.makeMachine(config: config, paths: paths, nic: attachment.handle)
+            m = try makeMachine(nic: attachment.handle)
         } catch {
             attachment.detach()
             state = .failed(error.localizedDescription)
@@ -819,6 +819,48 @@ final class VMInstance: ObservableObject, Identifiable {
         try? c.save(to: paths.config)
         config = c
         if machineConfig != nil { edit(&machineConfig!) }
+    }
+
+    /// Repair Disk's temporary VM: its machine takes a disk while it runs.
+    var takesDisks = false
+
+    private func makeMachine(nic: FileHandle?) throws -> VirtualMachineControlling {
+        takesDisks ? try env.machines.makeDiskMachine(config: config, paths: paths, nic: nic)
+                   : try env.machines.makeMachine(config: config, paths: paths, nic: nic)
+    }
+
+    /// Another VM's disk, attached while this (Repair Disk's) VM runs.
+    func attachDisk(_ url: URL) async throws {
+        guard state == .ready, let m = machine as? DiskAttaching else { throw MonadError("\(name) cannot take a disk now.") }
+        debug("disk: attaching \(url.path)")
+        try await m.attachDisk(url)
+    }
+
+    func detachDisk() async throws {
+        guard let m = machine as? DiskAttaching else { return }
+        debug("disk: detaching it")
+        try await m.detachDisk()
+    }
+
+    // MARK: Repair Disk (VMManager.repairDisk)
+
+    /// While its disk is repaired the VM does not start, change or go.
+    private(set) var isRepairing = false
+
+    func beginRepair(_ step: String) {
+        isRepairing = true
+        repairStep(step)
+    }
+
+    func repairStep(_ step: String) {
+        debug("repair: " + step)
+        state = .preparing(step)
+    }
+
+    /// Back to stopped, or failed with why.
+    func endRepair(failure: String?) {
+        isRepairing = false
+        state = failure.map { .failed($0) } ?? .stopped
     }
 
     /// A new machine replaces the old one, whose NIC (if any) leaves netd.

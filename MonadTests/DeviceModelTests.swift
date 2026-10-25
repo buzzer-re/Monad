@@ -119,6 +119,20 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertTrue(vz.bootLoader is VZEFIBootLoader)
     }
 
+    /// Repair Disk's temporary VM, and only it, has a USB controller: the
+    /// disk being repaired is attached to it once it runs, never at boot.
+    func testOnlyRepairDisksHelperHasAUSBController() throws {
+        let helper = VZMachine.vmConfig(for: defaults, paths: paths, takesDisks: true)
+        XCTAssertTrue(helper.usbDisks)
+        XCTAssertFalse(VZMachine.vmConfig(for: defaults, paths: paths).usbDisks)
+        let vz = try MNDVirtualMachine.virtualMachineConfiguration(for: helper)
+        if #available(macOS 15.0, *) {
+            XCTAssertEqual(vz.usbControllers.count, 1)
+            XCTAssertTrue(vz.usbControllers.first is VZXHCIControllerConfiguration)
+        }
+        XCTAssertEqual(vz.storageDevices.count, 1, "no other disk at boot")
+    }
+
     func testRootDiskIsWritableAndSeedIsReadOnly() throws {
         try Data(count: 2048).write(to: paths.seed)
         let vz = try build(defaults)

@@ -70,6 +70,10 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 @property (nonatomic) NSUInteger displayWidth;
 @property (nonatomic) NSUInteger displayHeight;
 @property (nonatomic) NSUInteger displayPixelsPerInch;
+/// Repair Disk's temporary VM: a USB controller, to which another VM's disk
+/// is attached once this one runs (-attachDiskAtPath:completion:). macOS 15
+/// and later; ignored before.
+@property (nonatomic) BOOL usbDisks;
 @end
 
 @class MNDVirtualMachine;
@@ -97,6 +101,8 @@ NS_SWIFT_SENDABLE
 /// Host limits clamped to what Virtualization.framework accepts.
 + (NSUInteger)maximumCPUCount;
 + (uint64_t)maximumMemoryBytes;
+/// Whether a disk can be attached to a running VM (macOS 15 and later).
++ (BOOL)canAttachDisksWhileRunning;
 
 /// The complete virtual hardware for `config`. This is the only place
 /// devices are added: anything not built here does not exist in the guest.
@@ -139,6 +145,11 @@ NS_SWIFT_SENDABLE
 /// Ask the guest (through the memory balloon) to use at most `bytes`;
 /// clamped to the memory the VM booted with. Ignored while stopped.
 - (void)setMemoryTargetBytes:(uint64_t)bytes NS_SWIFT_NAME(setMemoryTarget(bytes:));
+
+/// A disk image as a USB disk of the running VM (one at a time), on the
+/// controller usbDisks gave it; then taken away again.
+- (void)attachDiskAtPath:(NSString *)path completion:(void (^)(NSError *_Nullable error))completion;
+- (void)detachDiskWithCompletion:(void (^)(NSError *_Nullable error))completion;
 
 /// Serve guest vsock `port` on a unix socket at `path` (0600).
 - (BOOL)startBridgeAtPath:(NSString *)path port:(uint32_t)port error:(NSError **)error;

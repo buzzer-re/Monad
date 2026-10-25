@@ -54,6 +54,9 @@ struct VMManagerView: View {
     @State private var duplicating: String?
     @State private var copyName = ""
     @State private var copyNotice: String?
+    /// The VM whose disk is to be repaired (asked first), and what Repair Disk did.
+    @State private var repairing: String?
+    @State private var repairNotice: String?
     @State private var dropGroup: String??
 
     struct GroupNaming: Identifiable {
@@ -178,6 +181,18 @@ struct VMManagerView: View {
         } message: {
             Text(copyNotice ?? "")
         }
+        .confirmationDialog("Repair the disk of “\(repairing ?? "")”?", isPresented: Binding(
+            get: { repairing != nil }, set: { if !$0 { repairing = nil } }), titleVisibility: .visible) {
+            Button("Repair Disk") { if let name = repairing { repairDisk(name) } }
+            Button("Cancel", role: .cancel) { repairing = nil }
+        } message: {
+            Text(VMSettingsDraft.repairDiskText)
+        }
+        .alert("Repair Disk", isPresented: Binding(get: { repairNotice != nil }, set: { if !$0 { repairNotice = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(repairNotice ?? "")
+        }
         .alert("Something went wrong", isPresented: Binding(get: { errorMessage != nil },
                                                            set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -286,7 +301,8 @@ struct VMManagerView: View {
                      onDuplicate: {
                          copyName = InstanceConfig.copyName(of: vm.name, taken: host.instances.map(\.name))
                          duplicating = vm.name
-                     })
+                     },
+                     onRepair: { repairing = vm.name })
             .onDrop(of: [.plainText], isTargeted: Binding(
                 get: { dropTarget == vm.name },
                 set: { over in
@@ -415,6 +431,13 @@ struct VMManagerView: View {
         c.group = group
         Task { @MainActor in
             do { try await host.update(c) } catch { errorMessage = HostAgent.describe(error) }
+        }
+    }
+
+    /// Repair Disk takes minutes; the row shows each step meanwhile.
+    private func repairDisk(_ name: String) {
+        Task { @MainActor in
+            do { repairNotice = try await host.repairDisk(name) } catch { errorMessage = HostAgent.describe(error) }
         }
     }
 
@@ -638,6 +661,8 @@ private struct VMRow: View {
     var onNewGroup: () -> Void
     /// Duplicate… (macOS VMs): the list asks for the copy's name.
     var onDuplicate: () -> Void = {}
+    /// Repair Disk… (Linux VMs of Monad's own): the list asks first.
+    var onRepair: () -> Void = {}
     @State private var confirmDelete = false
     @State private var overHandle = false
 
@@ -691,6 +716,12 @@ private struct VMRow: View {
                     Button("Open macOS Desktop") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
                         .disabled(!vm.isRunning)
                     Button("Duplicate…") { onDuplicate() }
+                        .disabled(vm.isRunning || vm.state.isPreparing)
+                        .help(vm.isRunning ? "Stop it first: its disk is in use while it runs." : "")
+                    Divider()
+                }
+                if vm.config.guestOS == .linux, vm.config.attached == nil, !vm.config.ephemeral {
+                    Button("Repair Disk…") { onRepair() }
                         .disabled(vm.isRunning || vm.state.isPreparing)
                         .help(vm.isRunning ? "Stop it first: its disk is in use while it runs." : "")
                     Divider()
