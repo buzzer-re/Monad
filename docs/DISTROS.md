@@ -152,7 +152,8 @@ keys may vouch for the images, so Settings shows the host and the fingerprints f
    restart it. The boot tab shows the console; the guest prints `MONAD| ` lines about its setup
    (SELinux, vsock, sshd, the user and its key) and, until Monad logs in, every sshd error and
    SELinux denial about ssh or vsock (`Guest/monad-report.sh`). If the boot fails, the error ends
-   with "The guest says: ..." and Settings › Logs has every line.
+   with "The guest says: ..." and with what Monad found on the VM's disk once it was off (its partitions,
+   and whether each filesystem's superblock or only a backup is intact); Settings › Logs has every line.
 5. Once it logs in: check that a port opened in the VM is forwarded (the guest agent works) and
    that a shared folder mounts.
 

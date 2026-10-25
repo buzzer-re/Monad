@@ -53,6 +53,7 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 | A host command runs only what the user defined | The VM never names a program; values are parsed by Monad (no shell) and matched against anchored patterns before anything runs; the program runs in a folder the VM shares, in its own process group, with a time limit, one at a time | `HostCommandTests`, `HostCommandServerTests` |
 | A settings file cannot bring Mac access in unnoticed | Shares, bridges, host commands, forwards into the Mac, LAN access, images and an agent role are set aside on import and confirmed on edit | `VMConfigFileTests` |
 | Images are what the distro published | OpenPGP signatures with pinned keys where the distro signs, never an older signed checksum file than one seen before, unsigned checksums only from their own site over HTTPS, then the image's digest | `OpenPGPTests`, `ImagePipelineTests`, `ParserFuzzTests` |
+| A VM's disk cannot steer MonadHost when Monad reads it | `mnd_diskcheck` reads fixed places only (the GPT and its table, superblocks; 4 KiB at a time), bounds every count and offset it reads, reports printable text only, and reads a VM's disk only once the VM is off, read only | `test_diskcheck.c`, `fuzz_decoders.c`, `DiskCheckTests`, `VMLifecycleTests` |
 
 The decoders (`mnd_qcow2`, `mnd_xz`, `mnd_tar`) only see verified images today; `fuzz_decoders.c`
 keeps them safe if that ever changes. `fuzz_net.c` drives the whole network core with invariants.

@@ -9,7 +9,7 @@ BUILD ?= build
 
 VT_SRC := $(wildcard $(SRC)/vt/*.c)
 
-TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd
+TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck
 
 all: run
 
@@ -72,14 +72,14 @@ $(BUILD)/test_net_peers: test_net_peers.c net_test_gw.h $(NET_SRC) $(wildcard $(
 $(BUILD)/fuzz_net: fuzz_net.c $(NET_SRC) $(wildcard $(SRC)/net/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
-$(BUILD)/fuzz_decoders: fuzz_decoders.c $(SRC)/mnd_qcow2.c $(SRC)/mnd_tar.c $(SRC)/mnd_xz.c $(SRC)/mnd_unpack.c | $(BUILD)
+$(BUILD)/fuzz_decoders: fuzz_decoders.c $(SRC)/mnd_qcow2.c $(SRC)/mnd_tar.c $(SRC)/mnd_xz.c $(SRC)/mnd_unpack.c $(SRC)/mnd_diskcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(BUILD)/fuzz_vt: fuzz_vt.c $(VT_SRC) $(wildcard $(SRC)/vt/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 # Longer runs: make fuzz FUZZ_ITERS=200000 [FUZZ_SEED=n]
-fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt $(BUILD)/fuzz_decoders $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar
+fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt $(BUILD)/fuzz_decoders $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar $(BUILD)/disk_cloud.regions
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_net
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_vt
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),20000) $(BUILD)/fuzz_decoders $(BUILD)
@@ -126,7 +126,13 @@ $(BUILD)/xz_mixed.xz: gen_xz_fixtures.py | $(BUILD)
 $(BUILD)/fx_v3_512.qcow2: gen_qcow2_fixture.py | $(BUILD)
 	python3 gen_qcow2_fixture.py $(BUILD)
 
-run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar
+$(BUILD)/test_diskcheck: test_diskcheck.c $(SRC)/mnd_diskcheck.c $(SRC)/mnd_diskcheck.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+$(BUILD)/disk_cloud.regions: gen_disk_fixtures.py | $(BUILD)
+	python3 gen_disk_fixtures.py $(BUILD)
+
+run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar $(BUILD)/disk_cloud.regions
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do $$t $(BUILD); done
 	@AGENT_SHELL=sh sh test_agent.sh $(BUILD)/agent-sh
 	@if command -v bash >/dev/null; then AGENT_SHELL=bash sh test_agent.sh $(BUILD)/agent-bash; fi

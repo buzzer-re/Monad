@@ -43,7 +43,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **At runtime:** CPUs, memory (balloon), shared folders, port and socket forwards both ways,
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),
   start at login, groups with firewall tags, a log per VM that says why each stop happened (and, at
-  the next start, that MonadHost ended while the VM ran).
+  the next start, that MonadHost ended while the VM ran); a Linux boot that fails says what the VM's
+  disk shows (partition table, superblocks and their backups).
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Monad's own emulator, tabs per VM, split panes with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app

@@ -930,7 +930,7 @@ final class VMInstance: ObservableObject, Identifiable {
         if let unanswered {
             await fail(m, "Guest isolation check failed (no answer: \(unanswered.isEmpty ? "ssh said nothing" : unanswered)).\(guestSays) The VM was powered off.")
         } else {
-            await fail(m, "The guest did not become reachable over SSH.\(guestSays) See \(paths.serialLog.path)")
+            await failBoot(m, "The guest did not become reachable over SSH.\(guestSays) See \(paths.serialLog.path)")
         }
     }
 
@@ -1056,6 +1056,26 @@ final class VMInstance: ObservableObject, Identifiable {
                 Log.vm.error("\(self.name, privacy: .public): agent install failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// A boot that never reached sshd: powered off first, so nothing writes
+    /// to the disk any more, then its disk is read for the error.
+    private func failBoot(_ m: VirtualMachineControlling, _ message: String) async {
+        await fail(m, message)
+        await addDiskCheck(to: message)
+    }
+
+    /// Reads a stopped Linux VM's disk (DiskReport): all it found goes to the
+    /// log, its summary joins `message` while that is still the VM's error.
+    private func addDiskCheck(to message: String) async {
+        guard config.guestOS == .linux, !isRunning else { return }
+        let disk = config.attached?.disk ?? paths.disk
+        guard let report = await Task.detached(operation: { DiskReport.check(disk: disk) }).value else {
+            debug("disk: could not be read")
+            return
+        }
+        debug("disk: \(report.logLine)")
+        if state == .failed(message) { state = .failed(message + " " + report.summary) }
     }
 
     /// Power off and end in `failed` (a later `.stopped` event keeps the error).
@@ -1721,7 +1741,12 @@ final class VMInstance: ObservableObject, Identifiable {
         case .stopped:
             Log.vm.info("\(self.name, privacy: .public) stopped")
             lifecycleTask?.cancel()
+            // Off before Monad reached it, and not asked to: a failed boot.
+            let failedBoot = !poweringOffByMonad && (state == .starting || state == .booting)
+            let message = "The guest powered itself off before Monad could reach it. See \(paths.serialLog.path)"
+            if failedBoot { state = .failed(message) }
             finishStop()
+            if failedBoot { Task { [weak self] in await self?.addDiskCheck(to: message) } }
         case .failed(let message):
             lifecycleTask?.cancel()
             endFirewallSession()

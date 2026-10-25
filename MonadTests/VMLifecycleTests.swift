@@ -150,6 +150,43 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertEqual(attempts, 3)
     }
 
+    /// A boot that never reached sshd: once the VM is off, Monad reads its
+    /// disk and the error says what it found (here the root's superblock
+    /// zeroed, as one VM's was); the details go to its log.
+    func testABootThatNeverAnswersSaysWhatItsDiskShows() async throws {
+        let vm = try makeInstance()
+        try DiskCheckTests.writeDisk(vm.paths.disk, primary: nil)
+        factory.machine.probeAnswers = [false]
+        vm.start()
+        await assertEventually("state: \(vm.state)") {
+            if case .failed(let m) = vm.state { return m.contains("Monad checked its disk") }
+            return false
+        }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.hasPrefix("The guest did not become reachable over SSH."), message)
+        XCTAssertTrue(message.contains("the filesystem cloudimg-rootfs has a damaged superblock"), message)
+        XCTAssertTrue(vmLog(vm).contains("disk: no partition table; the whole disk: ext, damaged superblock, backup at block 32768"),
+                      vmLog(vm))
+    }
+
+    /// A guest that powers itself off before Monad reached it failed its
+    /// boot (it used to end as plainly stopped): it says so, with its disk.
+    func testAGuestThatPowersOffWhileBootingFails() async throws {
+        let vm = try makeInstance()
+        try DiskCheckTests.writeDisk(vm.paths.disk, primary: DiskCheckTests.ext4Superblock(label: "cloudimg-rootfs"))
+        factory.machine.probeAnswers = [false]
+        vm.start()
+        await assertEventually { vm.state == .booting }
+        factory.machine.emit(.stopped)
+        await assertEventually("state: \(vm.state)") {
+            if case .failed(let m) = vm.state { return m.contains("Monad checked its disk") }
+            return false
+        }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.hasPrefix("The guest powered itself off before Monad could reach it."), message)
+        XCTAssertTrue(message.contains("found its partitions and filesystems intact"), message)
+    }
+
     func testTimesOutWhenGuestNeverAnswers() async throws {
         let vm = try makeInstance()
         factory.machine.probeAnswers = [false]

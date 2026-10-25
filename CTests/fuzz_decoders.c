@@ -3,12 +3,16 @@
  * mnd_qcow2 and mnd_unpack (.xz and .gz images) get mutated copies of the test fixtures (flipped bytes,
  * overwritten spans, cuts, splices) and random bytes. They only see
  * verified data in Monad today; this keeps them safe if that ever changes.
+ * mnd_diskcheck reads what a guest wrote to its own disk, so it gets the
+ * disk fixtures with their regions mutated the same way, and odd sizes.
  *
  * Invariants: no crash or sanitizer report; output stays within what was
- * asked for; on failure tar, qcow2 and unpack leave no output file.
+ * asked for; on failure tar, qcow2 and unpack leave no output file; a disk
+ * report stays within the disk, its bounds and printable text.
  *
  *   fuzz_decoders <build dir> [iterations] [seed]
  */
+#include "../Monad/Backend/mnd_diskcheck.h"
 #include "../Monad/Backend/mnd_qcow2.h"
 #include "../Monad/Backend/mnd_tar.h"
 #include "../Monad/Backend/mnd_unpack.h"
@@ -231,6 +235,102 @@ static void fuzz_unpack(const blob *in, int kind, const char *src, const char *d
     unlink(src);
 }
 
+/* ---- disks ------------------------------------------------------------------------ */
+
+/* A disk fixture from gen_disk_fixtures.py: its size and regions; the rest
+ * reads as zeros. */
+typedef struct {
+    uint64_t size;
+    int count;
+    uint64_t off[64];
+    blob data[64];
+} vdisk;
+
+static uint64_t le(const uint8_t *p, int n) {
+    uint64_t v = 0;
+    for (int i = n - 1; i >= 0; i--) v = v << 8 | p[i];
+    return v;
+}
+
+static vdisk disk_seed(const char *dir, const char *name) {
+    vdisk d = {0};
+    blob b = load(dir, name);
+    if (b.len < 20 || memcmp(b.data, "MNDDISK1", 8)) {
+        free(b.data);
+        return d;
+    }
+    d.size = le(b.data + 8, 8);
+    size_t pos = 20;
+    for (uint64_t i = 0, n = le(b.data + 16, 4); i < n && d.count < 64 && pos + 12 <= b.len; i++) {
+        uint64_t len = le(b.data + pos + 8, 4);
+        if (len > b.len - pos - 12) break;
+        d.off[d.count] = le(b.data + pos, 8);
+        d.data[d.count].data = malloc(len ? len : 1);
+        memcpy(d.data[d.count].data, b.data + pos + 12, len);
+        d.data[d.count].len = len;
+        d.count++;
+        pos += 12 + len;
+    }
+    free(b.data);
+    return d;
+}
+
+static int read_disk(void *ctx, uint64_t off, void *buf, size_t len) {
+    const vdisk *d = ctx;
+    if (off > d->size || len > d->size - off) fail("diskcheck read outside the disk it was given");
+    if (len > (4u << 20)) fail("diskcheck asked for more than 4 MiB at once");
+    memset(buf, 0, len);
+    for (int i = 0; i < d->count; i++) {
+        uint64_t a = off > d->off[i] ? off : d->off[i];
+        uint64_t e = d->off[i] + d->data[i].len, b = off + len < e ? off + len : e;
+        if (a < b) memcpy((uint8_t *)buf + (a - off), d->data[i].data + (a - d->off[i]), (size_t)(b - a));
+    }
+    return rnd() % 512 == 0 ? -1 : 0; /* now and then a read fails */
+}
+
+static void printable(const char *s, size_t cap) {
+    size_t n = strnlen(s, cap);
+    if (n == cap) fail("diskcheck text is not terminated");
+    for (size_t i = 0; i < n; i++)
+        if (s[i] < 0x20 || s[i] > 0x7e) fail("diskcheck text is not printable");
+}
+
+static void fuzz_disk(const vdisk *seeds, int nseeds) {
+    const vdisk *s = &seeds[rnd() % (unsigned)nseeds];
+    vdisk d = *s;
+    for (int i = 0; i < d.count; i++) d.data[i] = (blob){0};
+    for (int i = 0; i < d.count; i++) {
+        if (rnd() % 3 == 0) {
+            d.data[i] = mutate(&s->data[i], 1);
+        } else {
+            d.data[i].len = s->data[i].len;
+            d.data[i].data = malloc(d.data[i].len ? d.data[i].len : 1);
+            memcpy(d.data[i].data, s->data[i].data, d.data[i].len);
+        }
+        if (rnd() % 64 == 0) d.off[i] ^= (uint64_t)1 << (rnd() % 40);
+    }
+    if (rnd() % 16 == 0) d.size = rnd() % 8 ? d.size >> (rnd() % 20) : (uint64_t)rnd() << (rnd() % 20);
+    mnd_disk_report r;
+    int rc = mnd_disk_check(read_disk, &d, d.size, &r);
+    if (rc == 0) {
+        if (r.count > MND_DISK_MAX_PARTS || (r.gpt == MND_GPT_NONE && r.count != 1)) fail("diskcheck reported too much");
+        for (unsigned i = 0; i < r.count; i++) {
+            const mnd_disk_part *p = &r.parts[i];
+            printable(p->name, sizeof p->name);
+            printable(p->label, sizeof p->label);
+            printable(p->first_error_func, sizeof p->first_error_func);
+            printable(p->last_error_func, sizeof p->last_error_func);
+            if (p->first_lba > p->last_lba || p->last_lba >= d.size / 512 + (r.gpt == MND_GPT_NONE))
+                fail("diskcheck partition outside the disk");
+            if ((p->primary_ok || p->backup_ok) && p->fs == MND_FS_UNKNOWN) fail("diskcheck found nothing yet says it is intact");
+            if (p->backup_ok && p->fs == MND_FS_EXT &&
+                (p->block_size < 1024 || p->backup_block * p->block_size >= (p->last_lba - p->first_lba + 1) * 512))
+                fail("diskcheck backup outside its partition");
+        }
+    }
+    for (int i = 0; i < d.count; i++) free(d.data[i].data);
+}
+
 static long number(const char *s, long fallback) {
     char *end;
     long v = s && *s ? strtol(s, &end, 0) : 0;
@@ -265,7 +365,18 @@ int main(int argc, char **argv) {
     char packed[1100];
     snprintf(packed, sizeof packed, "%s/in.packed", tmp);
     blob gz = gzip_seed();
+    static const char *const disk_names[] = {"disk_cloud.regions", "disk_zeroed_root.regions", "disk_root_errors.regions",
+                                             "disk_others.regions", "disk_bare_ext4.regions", "disk_many.regions",
+                                             "disk_gpt_backup.regions"};
+    vdisk disks[7];
+    int ndisks = 0;
+    for (int i = 0; i < 7; i++) if ((disks[ndisks] = disk_seed(dir, disk_names[i])).count) ndisks++;
+    if (!ndisks) {
+        fprintf(stderr, "fuzz_decoders: disk fixtures missing in %s (run make first)\n", dir);
+        return 1;
+    }
     for (long it = 0; it < iterations; it++) {
+        fuzz_disk(disks, ndisks);
         blob ux = mutate(xz, nxz);
         fuzz_unpack(&ux, MND_UNPACK_XZ, packed, dst);
         free(ux.data);
@@ -287,6 +398,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < ntar; i++) free(tar[i].data);
     for (int i = 0; i < nqcow2; i++) free(qcow2[i].data);
     free(gz.data);
-    fprintf(stderr, "fuzz_decoders: %ld rounds of xz, tar, qcow2 and unpack, no invariant broken\n", iterations);
+    for (int i = 0; i < ndisks; i++)
+        for (int k = 0; k < disks[i].count; k++) free(disks[i].data[k].data);
+    fprintf(stderr, "fuzz_decoders: %ld rounds of xz, tar, qcow2, unpack and diskcheck, no invariant broken\n", iterations);
     return 0;
 }

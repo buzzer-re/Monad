@@ -106,7 +106,7 @@ App and host state lives on the main actor (`VMInstance`, `VMManager`, `HostServ
 | `Monad/Lima` | Finding Lima VMs to boot in place | `LimaInstances.swift` |
 | `Monad/Support` | Paths, flavors, logging, process running, and the seams tests replace | `Seams.swift`, `Paths.swift`, `Flavor.swift` |
 | `Monad/Transfer` | Copying files into a VM over its ssh master (paste and drop) | `FileUploader.swift` |
-| `Monad/Backend` | C and Objective-C, portable where it can be: the VM wrapper, unix socket bridge, ISO writer, pty, disk helpers, decoders | `MNDVirtualMachine.h`, `Monad-Bridging-Header.h` |
+| `Monad/Backend` | C and Objective-C, portable where it can be: the VM wrapper, unix socket bridge, ISO writer, pty, disk helpers, decoders, the read-only disk check (`mnd_diskcheck`) | `MNDVirtualMachine.h`, `Monad-Bridging-Header.h` |
 | `Monad/Backend/vt` | The terminal emulator: parser, screen and scrollback, input encoding, selection, inline images | `mnd_vt.h` |
 | `Monad/Backend/net` | The network stack and netd: frames, switch, gateway (ARP, DHCP, ICMP), DNS forwarder, NAT and TCP, firewall, connection log, control channel, event loop | `mnd_net.h`, `mnd_netd.h` |
 | `Monad/Guest` | Scripts that run inside VMs: the Linux and macOS agents, the guest's setup report, SELinux loading, macOS first boot and setup | `monad-agent.sh` |
