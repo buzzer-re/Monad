@@ -1015,7 +1015,7 @@ final class VMInstance: ObservableObject, Identifiable {
                 if self.config.guestOS == .macos {
                     r = try await self.sshSteadily(MacSetup.agentInstallCommand, stdin: Data(try MacSetup.agentScript().utf8), timeout: 60)
                 } else {
-                    let script = try CloudInit.guestInstallScript(guest: guest)
+                    let script = try CloudInit.guestInstallScript(guest: guest, lima: self.config.attached != nil)
                     r = try await self.sshSteadily(CloudInit.guestInstallCommand, stdin: Data(script.utf8), timeout: 60)
                 }
                 guard self.state == .ready else { return }

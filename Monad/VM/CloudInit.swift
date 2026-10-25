@@ -42,6 +42,10 @@ enum CloudInit {
     static func selinuxScript() throws -> String { try bundled("monad-selinux", "sh") }
     static let selinuxModulePath = "/usr/local/lib/monad/monad.cil"
     static let selinuxScriptPath = "/usr/local/lib/monad/selinux"
+    /// Puts the kernel's console on hvc0 too (kept in serial.log) through the
+    /// guest's own boot loader tool, from the next boot (Guest/monad-console.sh).
+    static func consoleScript() throws -> String { try bundled("monad-console", "sh") }
+    static let consoleScriptPath = "/usr/local/lib/monad/console"
 
     private static func bundled(_ name: String, _ ext: String) throws -> String {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
@@ -159,12 +163,19 @@ enum CloudInit {
 
     /// Idempotent installer for the guest components, pushed on every boot so
     /// every VM runs the agent (and sshd unit) that matches this Monad version.
-    static func guestInstallScript(guest: DistroConfig.GuestProfile) throws -> String {
+    /// A Lima VM's boot is Lima's: its kernel console is left as it is.
+    static func guestInstallScript(guest: DistroConfig.GuestProfile, lima: Bool = false) throws -> String {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         let agent = try agentScript()
         let report = try reportScript()
         let cil = try selinuxModule()
         let selinux = try selinuxScript()
+        let consoleText = try consoleScript()
+        let console = lima ? "" : """
+            install_file \(consoleScriptPath) 0755 '\(b64(consoleText))'
+            sh \(consoleScriptPath) || true
+
+            """
         return """
             set -eu
             changed=0
@@ -194,7 +205,7 @@ enum CloudInit {
             [ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
-            echo agent-ok
+            \(console)echo agent-ok
 
             """
     }
@@ -323,6 +334,16 @@ enum CloudInit {
               - [systemctl, enable, --now, --no-block, monad-report.service]
 
             """
+        // The kernel's console on hvc0 from the next boot (not in Lima's VMs).
+        let consoleBase64 = Data(((try? consoleScript()) ?? "").utf8).base64EncodedString()
+        let consoleFile = lima ? "" : """
+              - path: \(consoleScriptPath)
+                permissions: "0755"
+                encoding: b64
+                content: \(consoleBase64)
+
+            """
+        let consoleRun = lima ? "" : "  - [sh, \(consoleScriptPath)]\n"
         return """
         #cloud-config
         hostname: \(hostname(config))
@@ -399,7 +420,7 @@ enum CloudInit {
             permissions: "0644"
             content: |
         \(yamlBlock(GuestDiscovery.profileScript, indent: 6))
-        runcmd:
+        \(consoleFile)runcmd:
           - [systemd-tmpfiles, --create, /etc/tmpfiles.d/monad-sshd.conf]
         \(lastingMask)  - [sh, -c, "[ -e /sys/fs/selinux/enforce ] || install -D -m 0644 \(sshdReapPath) \(sshdReapDropIn)"]
           - [systemctl, daemon-reload]
@@ -409,7 +430,7 @@ enum CloudInit {
         \(report)  - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/shots"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/uploads"))]
-
+        \(consoleRun)
         """
     }
 

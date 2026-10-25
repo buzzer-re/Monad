@@ -88,6 +88,7 @@ warnings, this file updated, and no private names or paths in what is committed.
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
-  per-distro first boot of every built-in distribution.
+  per-distro first boot of every built-in distribution; the kernel console on hvc0 (`serial.log` from a
+  VM's second boot) on each of them.
 - **Later:** Developer ID signing and notarization; growing disks; a Homebrew profile for macOS
   guests.

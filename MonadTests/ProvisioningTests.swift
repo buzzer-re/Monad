@@ -215,6 +215,28 @@ final class CloudInitTests: XCTestCase {
         XCTAssertLessThan(load.lowerBound, agent.lowerBound)
     }
 
+    /// The kernel's console goes to hvc0 too, which Monad keeps in
+    /// serial.log: set at first boot and checked by the installer at every
+    /// boot (VMs made before get it), so a boot that fails before sshd still
+    /// says why. Never in a Lima VM, whose boot is Lima's.
+    func testTheKernelConsoleReachesMonad() throws {
+        let script = try CloudInit.consoleScript()
+        XCTAssertTrue(script.contains("console=hvc0"))
+        let encoded = Data(script.utf8).base64EncodedString()
+        let ud = CloudInit.userData(config: config, guest: ubuntu, publicKey: "k")
+        XCTAssertTrue(ud.contains("path: /usr/local/lib/monad/console"))
+        XCTAssertTrue(ud.contains("content: \(encoded)"), "script shipped byte for byte")
+        XCTAssertTrue(ud.contains("  - [sh, /usr/local/lib/monad/console]\n"), ud)
+        let installer = try CloudInit.guestInstallScript(guest: ubuntu)
+        XCTAssertTrue(installer.contains("install_file /usr/local/lib/monad/console 0755 '\(encoded)'"))
+        XCTAssertTrue(installer.contains("sh /usr/local/lib/monad/console || true\n"), "never fails the install")
+
+        var lima = config
+        lima.attached = AttachedDisk(lima: "default", dir: "/Users/dev/.lima/default")
+        XCTAssertFalse(CloudInit.userData(config: lima, guest: ubuntu, publicKey: "k").contains("monad/console"))
+        XCTAssertFalse(try CloudInit.guestInstallScript(guest: ubuntu, lima: true).contains("monad/console"))
+    }
+
     /// Generic fixes any distro may need: host keys made if the distro
     /// left that to its own sshd service (masked here), and the vsock
     /// driver loaded if the kernel did not load it by itself.

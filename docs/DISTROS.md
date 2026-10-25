@@ -48,6 +48,7 @@ What the guest decides by itself, so the file does not say it:
 | Admin groups | The user joins whichever of `wheel`, `sudo`, `adm` exist; sudo comes from the sudoers rule cloud-init writes |
 | SELinux | Present (`/sys/fs/selinux/enforce`): Monad's module (`Guest/monad.cil`) is loaded, systemd starts sshd itself. Absent: sshd starts through `env --ignore-signal=CHLD` (no zombie per connection) |
 | Host keys | `ssh-keygen -A` before each sshd |
+| Kernel console | `console=hvc0` added last, through whichever of grubby, an `/etc/default/grub.d` drop-in or `/etc/default/grub` the guest has, from its second boot on (`Guest/monad-console.sh`): the kernel's and the boot's own messages reach `serial.log` and the boot tab, even when the boot fails before sshd. Not in Lima VMs |
 
 ## The file
 
@@ -162,4 +163,6 @@ Things that break a port, from experience:
 - **SELinux with an old policy.** Look for `selinux denied` lines in the boot tab; Monad's module
   covers what Fedora 44 and openSUSE Leap 16.0 needed. A new denial means a rule to add to
   `Guest/monad.cil` (each rule in an `optional` block).
+- **A boot loader Monad cannot set** (no grubby, update-grub or grub-mkconfig). The kernel's console stays off
+  hvc0, so a boot that fails early leaves `serial.log` empty; the VM's log has the line that says so.
 - **No systemd** (Alpine uses OpenRC). Not supported yet.
