@@ -1,0 +1,61 @@
+# A pushed tag v<version> becomes a GitHub release: once CI passes on the
+# tagged commit, scripts/release.sh packages the Release build and the job
+# publishes Monad.zip with its SHA-256, which scripts/install.sh downloads and
+# checks. docs/BUILDING.md › Publish a release.
+#
+# Only the publish job may write to the repository, and only to create the
+# release; a release that already exists is never replaced.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Package and publish
+    needs: ci
+    runs-on: xcode-27
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Xcode
+        run: xcodebuild -version
+      - name: Package (scripts/release.sh package)
+        run: scripts/release.sh package
+      - name: The tag names the app's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(plutil -extract CFBundleShortVersionString raw -o - \
+            "$HOME/Library/Developer/Monad-Release/Build/Products/Release/Monad.app/Contents/Info.plist")
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag is $TAG but the app is version $version (MARKETING_VERSION): tag v$version instead"
+            exit 1
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          dist="$HOME/Library/Developer/Monad-Release/dist"
+          gh release create "$TAG" "$dist/Monad.zip" "$dist/Monad.zip.sha256" \
+            --verify-tag --title "Monad $VERSION" --generate-notes

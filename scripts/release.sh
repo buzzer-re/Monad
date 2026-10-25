@@ -148,7 +148,7 @@ package() {
     ditto -c -k --keepParent "$BUILT" "$dist/Monad.zip"
     (cd "$dist" && shasum -a 256 Monad.zip >Monad.zip.sha256)
     say "packaged Monad $version: $dist/Monad.zip and Monad.zip.sha256"
-    say "publish them (after tagging this commit v$version and pushing the tag):"
+    say "pushing the tag v$version publishes them by itself (.github/workflows/release.yml); by hand:"
     say "  gh release create v$version \"$dist/Monad.zip\" \"$dist/Monad.zip.sha256\" --title \"Monad $version\" --notes-file NOTES.md"
 }
 

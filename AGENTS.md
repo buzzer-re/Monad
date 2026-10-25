@@ -252,6 +252,8 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yml`:
 
 `.github/workflows/fuzz.yml` runs the three fuzzers every night for about ten minutes each with a random seed, which it prints so a failure can be replayed with `FUZZ_SEED`.
 
+`.github/workflows/release.yml` publishes a release when the maintainer pushes a `v<version>` tag: CI again on that commit, then `scripts/release.sh package` and a GitHub release with `Monad.zip` and its SHA-256 ([docs/BUILDING.md](docs/BUILDING.md) › Publish a release).
+
 ## Docs
 
 | Doc | About |

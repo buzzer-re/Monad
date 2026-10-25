@@ -1,5 +1,6 @@
-# Every pull request and every push to main: hygiene, the C and shell tests on
-# Linux and macOS, and the Swift tests and a Release build on Xcode 27.
+# Every pull request and every push to main, and every release before it is
+# published (release.yml): hygiene, the C and shell tests on Linux and macOS,
+# and the Swift tests and a Release build on Xcode 27.
 # AGENTS.md › Continuous integration says what each job checks.
 #
 # Pull requests from forks run with read-only permissions and no secrets.
@@ -11,6 +12,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
   workflow_dispatch:
 
 permissions:

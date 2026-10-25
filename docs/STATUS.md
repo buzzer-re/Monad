@@ -1,6 +1,6 @@
 # Monad: where things stand
 
-Last updated: 2026-10-24, at the first public release. This is the state of the project, not its
+Last updated: 2026-10-25, before the first public release. This is the state of the project, not its
 history: what Monad does, how it is built, how it is tested, and what is open. Update it with every
 change that moves any of these.
 
@@ -18,7 +18,7 @@ built for isolation first: a hostile guest is the primary threat (`docs/SECURITY
 | Distros | One data file per distribution (`Monad/Distros/*.distro.json`, `docs/DISTROS.md`); no code keyed on a distro's name |
 | Networking | Monad's own stack (`monad-netd`, sandboxed C): switch, DHCP, DNS, NAT, firewall per VM |
 | Shared folders | Opt-in per VM (the device exists only when on); `~/.monad` never shared; the home folder reaches a VM as its visible folders only |
-| Signing | The first release is signed ad hoc and installed by `scripts/install.sh`; Developer ID only if the release is well received |
+| Signing | The first release is signed ad hoc and installed by `scripts/install.sh` (or by hand from the zip, with Open Anyway); Developer ID only if the release is well received |
 | Security choices | Recorded in `docs/SECURITY.md` › Decisions (clipboard writes, VMs kept apart per network, DNS under the firewall, forwards into the Mac confirmed one by one, imported settings untrusted, images off per VM) |
 
 ## Architecture
@@ -63,7 +63,9 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 CI (`.github/workflows/ci.yml`) runs all of these but the UI tests on every pull request and push
 to `main`: hygiene, `CTests` on Linux and macOS, then `MonadTests` and a Release build on Xcode 27
-with warnings as errors. `fuzz.yml` runs each fuzzer for about ten minutes every night.
+with warnings as errors. `fuzz.yml` runs each fuzzer for about ten minutes every night. `release.yml`
+publishes a release (`Monad.zip` and its SHA-256) when a `v<version>` tag is pushed, after CI passes
+on that commit.
 
 Known environmental failures on the development Mac: two ICMP tests (no echo reply), and
 `TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle`, which measures the whole test
@@ -75,7 +77,10 @@ warnings, this file updated, and no private names or paths in what is committed.
 ## Open
 
 - **Before the release tag:** one macOS VM made end to end on the Mac with the current build (the
-  root step now runs the script's text through the admin prompt; no unit test can run that).
+  root step now runs the script's text through the admin prompt; no unit test can run that). The
+  repository must be public for the install script's address and `releases/latest` to work.
+- **At the first release:** `release.yml` has not run yet, and the zip installed by hand (Open
+  Anyway) is untried on a clean Mac, MonadHost starting from it included.
 - **To check by hand on the Mac** (`docs/SECURITY.md` › Checked on the Mac): an ad hoc tool signed
   with Monad's identifier is refused by MonadHost; macOS's App Management stops other apps changing
   `/Applications/Monad.app`; recovery's reader window never takes focus.

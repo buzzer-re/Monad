@@ -54,14 +54,19 @@ step that lets it in.
 ## Publish a release
 
 ```sh
-scripts/release.sh package
+git tag v1.0 && git push origin v1.0      # the app's MARKETING_VERSION
 ```
 
-From a clean checkout only (a release is what its tag says): it builds the Release configuration
-as above, then writes `Monad.zip` (the app, zipped with `ditto --keepParent`) and
-`Monad.zip.sha256` (as `shasum -a 256` writes it) to `~/Library/Developer/Monad-Release/dist`,
-and prints the `gh release create` command. Tag the commit `v<version>` (the app's
-`MARKETING_VERSION`) and push the tag first.
+A pushed `v*` tag runs `.github/workflows/release.yml`. It runs CI (`ci.yml`) on the tagged
+commit, then on Xcode 27 runs `scripts/release.sh package`, checks that the tag is `v` followed
+by the built app's version, and creates the GitHub release with both files and notes made from the
+commits since the last release. A release that already exists is never replaced: delete it first
+to publish a tag again. Edit the notes on GitHub afterwards to add your own words.
+
+`scripts/release.sh package` is also the way by hand. From a clean checkout only (a release is
+what its tag says): it builds the Release configuration as above, then writes `Monad.zip` (the
+app, zipped with `ditto --keepParent`) and `Monad.zip.sha256` (as `shasum -a 256` writes it) to
+`~/Library/Developer/Monad-Release/dist`, and prints the `gh release create` command.
 
 `scripts/install.sh` is what users run (README › Install). It finds the latest release by where
 `github.com/<repository>/releases/latest` leads, downloads both files by that tag, and installs
