@@ -99,7 +99,7 @@ A failure there is logged and the VM is made anyway: only protected folders (Doc
 Remote Login stays off.
 
 `monad-guestd` (`mnd_guestd.c`) serves vsock port 22 by joining each connection to that sshd
-(`nc 127.0.0.1 22`) and 1024 with the macOS agent (`monad-agent-macos.sh`, the Linux protocol over
+(`nc 127.0.0.1 22`) and 1024 with the macOS agent (`monad-macos-agent.sh`, the Linux protocol over
 `netstat`), one process per connection, at most 16 at a time per service.
 
 Why sshd sits on the loopback: Apple's sshd opens a BSM audit session for each login with the

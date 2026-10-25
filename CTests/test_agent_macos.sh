@@ -1,9 +1,9 @@
 #!/bin/sh
-# Tests for the macOS guest agent (Monad/Guest/monad-agent-macos.sh, Phase 14)
+# Tests for the macOS guest agent (Monad/Guest/monad-macos-agent.sh, Phase 14)
 # against canned netstat output: the same protocol as the Linux agent.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-AGENT="$HERE/../Monad/Guest/monad-agent-macos.sh"
+AGENT="$HERE/../Monad/Guest/monad-macos-agent.sh"
 SH=${AGENT_SHELL:-sh}
 WORK=${1:-$(mktemp -d)}
 mkdir -p "$WORK"
@@ -22,7 +22,7 @@ run_agent() { # stdin → agent reading netstat output from file $1
     MONAD_NETSTAT="cat $1" MONAD_AGENT_INTERVAL="${2:-1}" $SH "$AGENT"
 }
 
-echo "monad-agent-macos tests ($SH)" >&2
+echo "monad-macos-agent tests ($SH)" >&2
 
 check hello "hello monad-agent 1" "$(echo hello | run_agent /dev/null)"
 

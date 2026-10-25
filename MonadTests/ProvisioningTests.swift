@@ -135,6 +135,29 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(script.contains("hello monad-agent 1"))
     }
 
+    /// Both agents speak the same protocol, so only what they read tells them
+    /// apart: a Linux VM once got the macOS agent, which saw no ports.
+    func testLinuxAndMacAgentsAreEachTheirOwn() throws {
+        let linux = try CloudInit.agentScript(), mac = try MacSetup.agentScript()
+        XCTAssertTrue(linux.contains("/net/tcp"), "the Linux agent reads /proc/net/tcp")
+        XCTAssertFalse(linux.contains("netstat"), "the Linux agent is not the macOS one")
+        XCTAssertTrue(mac.contains("netstat"))
+    }
+
+    /// Bundle hands out "name-macos.ext" (or "name~ipad.ext") when asked for
+    /// "name.ext", so no bundled file may be such a variant of another.
+    func testNoBundledResourceStandsInForAnother() throws {
+        let dir = try XCTUnwrap(Bundle.main.resourceURL)
+        let names = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
+        for name in names {
+            let ext = (name as NSString).pathExtension, base = (name as NSString).deletingPathExtension
+            for suffix in ["-macos", "-macosx", "-iphoneos", "~mac", "~iphone", "~ipad"] where base.hasSuffix(suffix) {
+                let plain = String(base.dropLast(suffix.count)) + (ext.isEmpty ? "" : "." + ext)
+                XCTAssertFalse(names.contains(plain), "\(name) would be handed out for \(plain)")
+            }
+        }
+    }
+
     func testUserDataInstallsAgentVerbatim() throws {
         let ud = CloudInit.userData(config: config, guest: ubuntu, publicKey: "k")
         let encoded = Data(try CloudInit.agentScript().utf8).base64EncodedString()

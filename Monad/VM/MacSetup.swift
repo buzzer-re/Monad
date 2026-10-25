@@ -45,9 +45,11 @@ enum MacSetup {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    /// The macOS guest agent. Never "monad-agent-macos.sh": on macOS, Bundle
+    /// hands a "-macos" file out in place of the plain one (monad-agent.sh).
     static func agentScript() throws -> String {
-        guard let url = Bundle.main.url(forResource: "monad-agent-macos", withExtension: "sh") else {
-            throw MonadError("monad-agent-macos.sh is missing from the app bundle")
+        guard let url = Bundle.main.url(forResource: "monad-macos-agent", withExtension: "sh") else {
+            throw MonadError("monad-macos-agent.sh is missing from the app bundle")
         }
         return try String(contentsOf: url, encoding: .utf8)
     }
