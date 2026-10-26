@@ -20,7 +20,7 @@ You need macOS 14 or later on Apple silicon. The VMs run arm64 Linux natively.
 curl -fsSL https://raw.githubusercontent.com/buzzer-re/Monad/main/scripts/install.sh | sh
 ```
 
-Monad is signed ad hoc (no Apple Developer ID), so macOS refuses to open a copy downloaded with a browser until you allow it. The install script downloads the latest release, checks it and puts it in `/Applications`. Before it removes macOS's quarantine flag it checks that the download matches the SHA-256 published with the release, that the app is Monad's release build and that its signature still holds. It never uses sudo, and it won't replace Monad while Monad or its VMs are running. What those checks don't prove is who built the release: the hash comes from the same release as the zip, and Monad is not notarized. If that matters to you, build it yourself with `--build`. (`MONAD_GITHUB=owner/repo` points the script at a fork.)
+The script downloads the latest release, checks its SHA-256 and signature, and installs it in `/Applications`.
 
 You can also download `Monad.zip` from the [latest release](https://github.com/buzzer-re/Monad/releases/latest), unzip it and move Monad.app to `/Applications`. The first time, macOS won't open it. On macOS 14, Control-click Monad.app and choose Open. On macOS 15 and later that no longer works: open Monad once, then go to System Settings › Privacy & Security, click Open Anyway and enter your password. After that Monad opens like any other app, until the next update. None of the script's checks happen this way.
 
@@ -32,7 +32,7 @@ scripts/install.sh --release v1.0                # a given release
 scripts/install.sh --from ~/Downloads/Monad.zip  # a zip or Monad.app you already have
 ```
 
-A few things come with ad hoc signing. Each update looks like a new app to macOS, so it asks again for access to your folders and the local network, and firewalls like [LuLu](https://objective-see.org/products/lulu.html) ask again too. Without a team ID, MonadHost recognizes Monad by the exact code of the Monad.app installed beside it, so keep Monad in `/Applications`. [docs/SECURITY.md](docs/SECURITY.md) has the details.
+Monad is signed ad hoc, so after each update macOS asks again for access to your folders and the local network. Keep Monad in `/Applications`.
 
 ## Every tab is a virtual machine
 
@@ -58,7 +58,7 @@ The VMs run in MonadHost, a launchd agent, so they keep running when you quit th
 
 ![The New VM sheet with the Agentic profile ticked, and the new VM's tab saying Agentic set up.](docs/images/profiles.png)
 
-Tick a profile in New VM and the VM is set up on its first boot. Agentic brings [Claude Code](https://claude.com/product/claude-code), [Codex](https://github.com/openai/codex) and friends, with [herdr](https://herdr.dev) to keep them running, and Server brings container tooling. Profiles are files, so you can write your own.
+Tick a profile in New VM and the VM is set up on its first boot. Agentic brings [Claude Code](https://claude.com/product/claude-code), [Codex](https://github.com/openai/codex), [pi](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) and [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent), with [herdr](https://herdr.dev) to keep them running, and Server brings container tooling. Profiles are files, so you can write your own.
 
 ## Splits and contexts
 
