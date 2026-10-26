@@ -32,6 +32,8 @@ enum Paths {
     static var logs: URL { root.appendingPathComponent("logs", isDirectory: true) }
     /// Whether debug logging is on, read by the app and MonadHost.
     static var logSettings: URL { root.appendingPathComponent("logging.json") }
+    /// Settings › Virtual Machines › Full boot messages (BootMessages).
+    static var bootMessagesSettings: URL { root.appendingPathComponent("boot-messages.json") }
 
     static func instance(_ name: String) -> URL {
         instances.appendingPathComponent(name, isDirectory: true)

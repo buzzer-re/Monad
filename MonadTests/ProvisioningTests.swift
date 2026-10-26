@@ -218,7 +218,8 @@ final class CloudInitTests: XCTestCase {
     /// The kernel's console goes to hvc0 too, which Monad keeps in
     /// serial.log: set at first boot and checked by the installer at every
     /// boot (VMs made before get it), so a boot that fails before sshd still
-    /// says why. Never in a Lima VM, whose boot is Lima's.
+    /// says why. Quiet (errors only) unless Settings asks for every message.
+    /// Never in a Lima VM, whose boot is Lima's.
     func testTheKernelConsoleReachesMonad() throws {
         let script = try CloudInit.consoleScript()
         XCTAssertTrue(script.contains("console=hvc0"))
@@ -226,10 +227,15 @@ final class CloudInitTests: XCTestCase {
         let ud = CloudInit.userData(config: config, guest: ubuntu, publicKey: "k")
         XCTAssertTrue(ud.contains("path: /usr/local/lib/monad/console"))
         XCTAssertTrue(ud.contains("content: \(encoded)"), "script shipped byte for byte")
-        XCTAssertTrue(ud.contains("  - [sh, /usr/local/lib/monad/console]\n"), ud)
+        XCTAssertTrue(ud.contains("  - [sh, /usr/local/lib/monad/console, quiet]\n"), ud)
+        XCTAssertTrue(CloudInit.userData(config: config, guest: ubuntu, publicKey: "k", bootMessages: .full)
+            .contains("  - [sh, /usr/local/lib/monad/console, full]\n"))
         let installer = try CloudInit.guestInstallScript(guest: ubuntu)
         XCTAssertTrue(installer.contains("install_file /usr/local/lib/monad/console 0755 '\(encoded)'"))
-        XCTAssertTrue(installer.contains("sh /usr/local/lib/monad/console || true\n"), "never fails the install")
+        XCTAssertTrue(installer.contains("sh /usr/local/lib/monad/console quiet || true\n"), "never fails the install")
+        XCTAssertTrue(try CloudInit.guestInstallScript(guest: ubuntu, bootMessages: .full)
+            .contains("sh /usr/local/lib/monad/console full || true\n"))
+        XCTAssertEqual(CloudInit.bootMessagesCommand(.full), "sudo -n sh /usr/local/lib/monad/console full")
 
         var lima = config
         lima.attached = AttachedDisk(lima: "default", dir: "/Users/dev/.lima/default")

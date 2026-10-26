@@ -1082,7 +1082,8 @@ final class VMInstance: ObservableObject, Identifiable {
                     r = try await self.sshSteadily(MacSetup.agentInstallCommand, stdin: Data(try MacSetup.guestInstallScript().utf8),
                                                    timeout: 60)
                 } else {
-                    let script = try CloudInit.guestInstallScript(guest: guest, lima: self.config.attached != nil)
+                    let script = try CloudInit.guestInstallScript(guest: guest, lima: self.config.attached != nil,
+                                                                  bootMessages: self.env.bootMessages())
                     r = try await self.sshSteadily(CloudInit.guestInstallCommand, stdin: Data(script.utf8), timeout: 60)
                 }
                 guard self.state == .ready else { return }
@@ -1097,6 +1098,23 @@ final class VMInstance: ObservableObject, Identifiable {
             } catch {
                 self.debug("guest components: install failed: \(error.localizedDescription)")
                 Log.vm.error("\(self.name, privacy: .public): agent install failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Settings › Virtual Machines › Full boot messages changed: set in the
+    /// guest now, so its next boot shows them (the installer sets them at
+    /// every boot too). Linux VMs Monad boots, while they run.
+    func applyBootMessages(_ messages: BootMessages) {
+        guard state == .ready, config.guestOS == .linux, config.attached == nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let said = messages == .full ? "every message" : "errors only"
+            do {
+                let r = try await self.ssh(CloudInit.bootMessagesCommand(messages), timeout: 120)
+                self.debug("boot messages: \(said) from the next boot (status \(r.status))" + DebugLog.output(r))
+            } catch {
+                self.debug("boot messages: could not set \(said): \(error.localizedDescription)")
             }
         }
     }

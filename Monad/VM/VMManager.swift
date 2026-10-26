@@ -417,7 +417,8 @@ final class VMManager: ObservableObject {
         guard let guest = guest(for: config) else {
             throw MonadError("This Monad does not know the distribution \(config.distro).")
         }
-        try await CloudInit.provision(config: config, guest: guest, paths: paths, runner: env.runner)
+        try await CloudInit.provision(config: config, guest: guest, paths: paths, runner: env.runner,
+                                      bootMessages: env.bootMessages())
         try config.save(to: paths.config)
         vm.setProvisionedConfig(config)
     }
@@ -678,6 +679,13 @@ final class VMManager: ObservableObject {
     }
 
     func sessions(for vm: VMInstance) -> Int { sessionCounts[vm.name, default: 0] }
+
+    /// Settings › Virtual Machines › Full boot messages changed: the VMs
+    /// running now get it at once (the others from the installer at boot).
+    func bootMessagesChanged() {
+        let messages = env.bootMessages()
+        for vm in instances { vm.applyBootMessages(messages) }
+    }
 
     // MARK: Shutdown
 

@@ -667,6 +667,24 @@ final class ProvisioningFlowTests: XCTestCase {
                        "a VM that was not running has nothing to say")
     }
 
+    /// Settings › Virtual Machines › Full boot messages: the VMs running
+    /// now get the change at once, so their next boot shows it; the others
+    /// get it from the installer when they boot.
+    func testChangedBootMessagesReachTheRunningVMs() async throws {
+        var messages = BootMessages.quiet
+        fixture = try ManagerFixture { $0.bootMessages = { messages } }
+        let vm = try await createdVM("unit")
+        _ = try await createdVM("idle")
+        manager.start(vm)
+        await assertEventually { vm.state == .ready }
+        messages = .full
+        manager.bootMessagesChanged()
+        await assertEventually { self.runner.calls.contains { $0.arguments.last == CloudInit.bootMessagesCommand(.full) } }
+        let sent = runner.calls.filter { $0.arguments.last == CloudInit.bootMessagesCommand(.full) }
+        XCTAssertEqual(sent.count, 1, "only the running VM")
+        XCTAssertTrue(sent.first?.arguments.contains(vm.sshHost) == true)
+    }
+
     func testAFailedEphemeralVMLeavesNothing() async throws {
         images.error = TestError("offline")
         let vm = manager.createEphemeral()

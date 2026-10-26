@@ -17,6 +17,8 @@ final class VMLifecycleTests: XCTestCase {
     private var watcher: ManualProcessWatcher!
     private var debugLog: DebugLog!
     private var bridges: FakeBridges!
+    /// Settings › Virtual Machines › Full boot messages, for the VM.
+    private var bootMessages = BootMessages.quiet
 
     override func setUp() async throws {
         tmp = TempDir()
@@ -55,6 +57,7 @@ final class VMLifecycleTests: XCTestCase {
                                 watcher: watcher, networks: networks)
         env.profiles = { profiles ?? ProfileCatalog(builtIn: [], custom: []) }
         env.debugLog = debugLog
+        env.bootMessages = { [unowned self] in self.bootMessages }
         env.bridgeServer = { [bridges] in bridges!.make($0, $1) }
         env.hostCommandServer = { [bridges] in bridges!.make($0, $1, $2) }
         if let endpoints { env.mcpEndpoint = { socket, token, _ in endpoints.make(socket, token) } }
@@ -316,6 +319,30 @@ final class VMLifecycleTests: XCTestCase {
         vm.start()
         await assertEventually { vm.state == .ready }
         await assertEventually { self.agentInstalls.count == 2 }
+    }
+
+    /// Settings › Virtual Machines › Full boot messages reaches the guest
+    /// with the installer, at every boot as it is then; and at once, while
+    /// the VM runs, when it changes.
+    func testTheChosenBootMessagesAreSetInTheGuest() async throws {
+        let vm = try makeInstance()
+        func payload(_ call: FakeCommandRunner.Call) -> String { String(decoding: call.stdin ?? Data(), as: UTF8.self) }
+        vm.applyBootMessages(.full)
+        vm.start()
+        await assertEventually { self.agentInstalls.count == 1 }
+        XCTAssertTrue(payload(agentInstalls[0]).contains("sh /usr/local/lib/monad/console quiet || true\n"))
+
+        vm.applyBootMessages(.full)
+        await assertEventually { self.runner.calls.contains { $0.arguments.last == CloudInit.bootMessagesCommand(.full) } }
+        await vm.stop()
+        vm.applyBootMessages(.quiet)
+        bootMessages = .full
+        vm.start()
+        await assertEventually { self.agentInstalls.count == 2 }
+        XCTAssertTrue(payload(agentInstalls[1]).contains("sh /usr/local/lib/monad/console full || true\n"))
+        XCTAssertEqual(runner.calls.filter { $0.arguments.last?.contains("monad/console") == true }.count, 1,
+                       "set in the guest only while it ran")
+        XCTAssertTrue(vmLog(vm).contains("boot messages: every message from the next boot"), vmLog(vm))
     }
 
     func testAgentInstallFailureKeepsVMUsable() async throws {

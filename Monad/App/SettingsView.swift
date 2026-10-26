@@ -298,6 +298,8 @@ private struct MachineSettingsPane: View {
     @AppStorage(SettingsKey.defaultCPUs) private var cpus = 2
     @AppStorage(SettingsKey.defaultMemoryGiB) private var memory = 4
     @AppStorage(SettingsKey.defaultDiskGiB) private var disk = 50
+    @State private var fullBootMessages = BootMessages.load() == .full
+    @State private var errorMessage: String?
 
     private let capacity = HostCapacity.current
 
@@ -316,12 +318,37 @@ private struct MachineSettingsPane: View {
             } footer: {
                 Text(capacity.summary).font(Design.caption).foregroundStyle(.secondary)
             }
+            Section {
+                SettingRow(symbol: "text.alignleft", color: .orange, title: "Full boot messages",
+                           detail: "Everything a Linux VM's kernel and services print while it starts, in its tab and serial.log. Off, only errors show. A running VM changes at its next start, a stopped one at the start after that.") {
+                    Toggle("", isOn: Binding(get: { fullBootMessages }, set: { setFullBootMessages($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+            } header: {
+                Text("Starting")
+            }
         }
         .formStyle(.grouped)
         .font(Design.body)
         .onAppear {
             cpus = capacity.clampCPUs(cpus)
             memory = capacity.clampMemory(memory)
+        }
+        .alert("Could not change the boot messages", isPresented: Binding(get: { errorMessage != nil },
+                                                                         set: { if !$0 { errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private func setFullBootMessages(_ on: Bool) {
+        do {
+            // MonadHost follows through the notification the save posts.
+            try BootMessages.save(on ? .full : .quiet)
+            fullBootMessages = on
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

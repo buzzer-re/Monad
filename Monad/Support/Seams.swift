@@ -322,6 +322,8 @@ struct VMEnvironment {
     }
     /// Settings › Logs.
     var debugLog: DebugLog = .shared
+    /// Settings › Virtual Machines › Full boot messages, as it is now.
+    var bootMessages: () -> BootMessages = { BootMessages.load() }
     /// macOS guests: Apple's installer, and whether macOS VMs may be made
     /// here (`GuestOS.ready`; tests set it).
     var macInstaller: MacInstalling = VZMacInstaller()

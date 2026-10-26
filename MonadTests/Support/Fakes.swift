@@ -531,6 +531,7 @@ final class ManagerFixture {
         // New VMs join the default Monad network: a fake netd hands out NICs.
         var env = VMEnvironment(runner: runner, machines: factory, clock: TestClock(), virtualizationSupported: true,
                                 networks: networks)
+        env.bootMessages = { .quiet }
         edit(&env)
         self.env = env
         manager = VMManager(root: root, environment: env, images: images, minimumFreeBytes: 0, macMinimumFreeBytes: 0)

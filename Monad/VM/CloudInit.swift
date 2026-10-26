@@ -43,7 +43,8 @@ enum CloudInit {
     static let selinuxModulePath = "/usr/local/lib/monad/monad.cil"
     static let selinuxScriptPath = "/usr/local/lib/monad/selinux"
     /// Puts the kernel's console on hvc0 too (kept in serial.log) through the
-    /// guest's own boot loader tool, from the next boot (Guest/monad-console.sh).
+    /// guest's own boot loader tool, quiet or not, from the next boot
+    /// (Guest/monad-console.sh).
     static func consoleScript() throws -> String { try bundled("monad-console", "sh") }
     static let consoleScriptPath = "/usr/local/lib/monad/console"
     /// img: pictures in a Monad tab (Guest/monad-img.sh), in every VM.
@@ -59,6 +60,11 @@ enum CloudInit {
         fi
 
         """
+    }
+
+    /// Sets the boot messages in a running guest, for its next boot.
+    static func bootMessagesCommand(_ messages: BootMessages) -> String {
+        "sudo -n sh \(consoleScriptPath) \(messages.rawValue)"
     }
 
     private static func bundled(_ name: String, _ ext: String) throws -> String {
@@ -178,7 +184,8 @@ enum CloudInit {
     /// Idempotent installer for the guest components, pushed on every boot so
     /// every VM runs the agent (and sshd unit) that matches this Monad version.
     /// A Lima VM's boot is Lima's: its kernel console is left as it is.
-    static func guestInstallScript(guest: DistroConfig.GuestProfile, lima: Bool = false) throws -> String {
+    static func guestInstallScript(guest: DistroConfig.GuestProfile, lima: Bool = false,
+                                   bootMessages: BootMessages = .quiet) throws -> String {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         let agent = try agentScript()
         let report = try reportScript()
@@ -188,7 +195,7 @@ enum CloudInit {
         let img = try imgInstall()
         let console = lima ? "" : """
             install_file \(consoleScriptPath) 0755 '\(b64(consoleText))'
-            sh \(consoleScriptPath) || true
+            sh \(consoleScriptPath) \(bootMessages.rawValue) || true
 
             """
         return """
@@ -296,7 +303,8 @@ enum CloudInit {
     /// have vsock port 22. A copy of a Lima VM ("Copy to Monad") is Monad's
     /// own: lasting masks, Lima's guest agent included, and Lima's per-boot
     /// script removed (it would look for Lima's seed at every boot).
-    static func userData(config: InstanceConfig, guest: DistroConfig.GuestProfile, publicKey: String) -> String {
+    static func userData(config: InstanceConfig, guest: DistroConfig.GuestProfile, publicKey: String,
+                         bootMessages: BootMessages = .quiet) -> String {
         let user = config.user
         let lima = config.attached != nil
         let key = publicKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -358,7 +366,7 @@ enum CloudInit {
                 content: \(consoleBase64)
 
             """
-        let consoleRun = lima ? "" : "  - [sh, \(consoleScriptPath)]\n"
+        let consoleRun = lima ? "" : "  - [sh, \(consoleScriptPath), \(bootMessages.rawValue)]\n"
         return """
         #cloud-config
         hostname: \(hostname(config))
@@ -515,11 +523,12 @@ enum CloudInit {
 
     /// Write key, seed ISO and ssh config for a new instance.
     static func provision(config: InstanceConfig, guest: DistroConfig.GuestProfile, paths: InstancePaths,
-                          runner: CommandRunning = LoggingCommandRunner(SystemCommandRunner())) async throws {
+                          runner: CommandRunning = LoggingCommandRunner(SystemCommandRunner()),
+                          bootMessages: BootMessages = .quiet) async throws {
         _ = try agentScript()
         try await prepareSSH(config: config, paths: paths, runner: runner)
         let pub = try String(contentsOf: paths.publicKey, encoding: .utf8)
-        let ud = Data(userData(config: config, guest: guest, publicKey: pub).utf8)
+        let ud = Data(userData(config: config, guest: guest, publicKey: pub, bootMessages: bootMessages).utf8)
         let md = Data(metaData(config: config, instanceID: "monad-\(config.name)-\(UUID().uuidString.lowercased())").utf8)
 
         let rc: Int32 = ud.withUnsafeBytes { udp in

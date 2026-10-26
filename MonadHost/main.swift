@@ -60,6 +60,7 @@ MainActor.assumeIsolated {
     DebugLog.shared.log("host", "MonadHost started (protocol \(HostProtocol.version), build \(HostBuild.current ?? "unknown"))")
     let manager = VMManager.shared
     manager.load()
+    BootMessages.watch { manager.bootMessagesChanged() }
     let service = HostService(manager: manager)
     service.openApp = HostService.openMonad
     // Clients are pinned to Monad's binaries as installed, read for each connection.
