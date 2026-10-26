@@ -118,6 +118,18 @@ final class MacSetupTests: XCTestCase {
         XCTAssertFalse(s.contains("com.openssh.sshd"), "Remote Login is never turned on")
     }
 
+    /// At every boot, as root: the agent where monad-guestd runs it (VMs
+    /// made before get the current one), with macOS's own tools.
+    func testEveryBootRefreshesTheAgent() throws {
+        XCTAssertEqual(MacSetup.agentInstallCommand, "sudo -n sh -s")
+        let s = try MacSetup.guestInstallScript()
+        let agent = Data(try MacSetup.agentScript().utf8).base64EncodedString()
+        XCTAssertTrue(s.contains("install_file /usr/local/libexec/monad/agent 0644 '\(agent)'\n"), s)
+        XCTAssertTrue(s.contains("base64 -D"), "macOS's base64")
+        XCTAssertTrue(s.contains("install -o root -g wheel -m \"$2\" \"$tmp\" \"$1\""))
+        XCTAssertTrue(s.hasSuffix("echo agent-ok\n"))
+    }
+
     /// The first boot leaves the VM running: Monad logs in once, then shuts
     /// it down itself (powering off 0.1 s after sshd started left sshd
     /// failing every login on the next boot).

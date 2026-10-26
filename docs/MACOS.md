@@ -110,7 +110,7 @@ sshd serves vsock directly.
 
 Each boot checks nothing listens for ssh except on the loopback (`MacSetup.isolationScript`: a
 :22 listener on any other address, as Remote Login makes, fails the VM closed like Linux) and
-refreshes the agent.
+refreshes the agent and `img` (`MacSetup.guestInstallScript`).
 
 ## Shared folders
 

@@ -146,6 +146,8 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then SELINUX_SHELL=bash sh test_selinux.sh $(BUILD)/selinux-bash; fi
 	@CONSOLE_SHELL=sh sh test_console.sh $(BUILD)/console-sh
 	@if command -v bash >/dev/null; then CONSOLE_SHELL=bash sh test_console.sh $(BUILD)/console-bash; fi
+	@IMG_SHELL=sh sh test_img.sh $(BUILD)/img-sh
+	@if command -v bash >/dev/null; then IMG_SHELL=bash sh test_img.sh $(BUILD)/img-bash; fi
 	@INSTALL_SHELL=sh sh test_install.sh $(BUILD)/install-sh
 	@if command -v bash >/dev/null; then INSTALL_SHELL=bash sh test_install.sh $(BUILD)/install-bash; fi
 	@HYGIENE_SHELL=sh sh test_hygiene.sh $(BUILD)/hygiene-sh

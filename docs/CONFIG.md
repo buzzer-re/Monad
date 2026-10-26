@@ -101,7 +101,7 @@ it is saved.
 | `profiles` | list of strings | none | Profile ids set up on first boot: built in `agentic` and `server`, or yours in `~/.monad/profiles`. |
 | `theme` | string | the app's | A terminal theme id for this VM's tabs (`monad-dark`, `automatic`, or one of yours). |
 | `startAtLaunch` | true or false | false | Start the VM when Monad opens, without a tab. Written only when true. |
-| `inlineImages` | true or false | false | Programs in the VM can show pictures in its tabs (iTerm2's inline images, as neofetch, fastfetch and imgcat use them: PNG, JPEG or GIF, at most 4 MB). Monad decodes image data the VM sends only when this is on. Written only when true. |
+| `inlineImages` | true or false | false | Programs in the VM can show pictures in its tabs (iTerm2's inline images, as `img` in every VM, neofetch, fastfetch and imgcat use them: PNG, JPEG or GIF, at most 4 MB). Monad decodes image data the VM sends only when this is on. Written only when true. |
 | `ephemeral` | true or false | false | Deleted when its last tab closes. Never imported. Fixed. |
 | `createdAt` | date | now | ISO 8601 (`2026-10-10T12:00:00Z`). Fixed. |
 | `guestOS` | `linux` or `macos` | `linux` | What runs in the VM, from its distribution's kind. Written only for macOS. Fixed. |

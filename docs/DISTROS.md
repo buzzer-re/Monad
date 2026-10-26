@@ -49,6 +49,7 @@ What the guest decides by itself, so the file does not say it:
 | SELinux | Present (`/sys/fs/selinux/enforce`): Monad's module (`Guest/monad.cil`) is loaded, systemd starts sshd itself. Absent: sshd starts through `env --ignore-signal=CHLD` (no zombie per connection) |
 | Host keys | `ssh-keygen -A` before each sshd |
 | Kernel console | `console=hvc0` added last, through whichever of grubby, an `/etc/default/grub.d` drop-in or `/etc/default/grub` the guest has, from its second boot on (`Guest/monad-console.sh`): the kernel's and the boot's own messages reach `serial.log` and the boot tab, even when the boot fails before sshd. Not in Lima VMs |
+| `img` | `/usr/local/bin/img` (`Guest/monad-img.sh`), put in place and kept current by the installer at every boot, unless another `img` is there: pictures in a tab when the VM allows images, through `base64`, `od` and `wc` from GNU, busybox or BSD |
 
 ## The file
 

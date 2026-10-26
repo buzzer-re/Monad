@@ -46,6 +46,20 @@ enum CloudInit {
     /// guest's own boot loader tool, from the next boot (Guest/monad-console.sh).
     static func consoleScript() throws -> String { try bundled("monad-console", "sh") }
     static let consoleScriptPath = "/usr/local/lib/monad/console"
+    /// img: pictures in a Monad tab (Guest/monad-img.sh), in every VM.
+    static func imgScript() throws -> String { try bundled("monad-img", "sh") }
+    static let imgPath = "/usr/local/bin/img"
+
+    /// The installers' lines for img, after their install_file: only where
+    /// no other img is, and never failing the install (the agent's).
+    static func imgInstall() throws -> String {
+        """
+        if [ ! -e \(imgPath) ] || grep -q monad-img \(imgPath); then
+            install_file \(imgPath) 0755 '\(Data(try imgScript().utf8).base64EncodedString())' || echo 'monad: img was not installed' >&2
+        fi
+
+        """
+    }
 
     private static func bundled(_ name: String, _ ext: String) throws -> String {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
@@ -171,6 +185,7 @@ enum CloudInit {
         let cil = try selinuxModule()
         let selinux = try selinuxScript()
         let consoleText = try consoleScript()
+        let img = try imgInstall()
         let console = lima ? "" : """
             install_file \(consoleScriptPath) 0755 '\(b64(consoleText))'
             sh \(consoleScriptPath) || true
@@ -202,7 +217,7 @@ enum CloudInit {
             install_file \(selinuxModulePath) 0644 '\(b64(cil))'
             install_file \(selinuxScriptPath) 0755 '\(b64(selinux))'
             install_file /etc/profile.d/monad.sh 0644 '\(b64(GuestDiscovery.profileScript))'
-            [ "$changed" -eq 0 ] || systemctl daemon-reload
+            \(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
             \(console)echo agent-ok

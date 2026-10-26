@@ -244,9 +244,27 @@ enum MacSetup {
     static let isolationFilter = "awk '$6 == \"LISTEN\" && $4 ~ /[.]22$/ && $4 != \"127.0.0.1.22\" && $4 != \"::1.22\" "
         + "{ f = 1 } END { exit !f }'"
 
-    /// The agent refreshed where monad-guestd runs it (the script on stdin).
-    static let agentInstallCommand = "sudo -n sh -c 'umask 022; t=$(mktemp) && cat > \"$t\" && "
-        + "install -o root -g wheel -m 644 \"$t\" /usr/local/libexec/monad/agent && rm -f \"$t\" && echo agent-ok'"
+    /// Run at every boot with guestInstallScript on stdin.
+    static let agentInstallCommand = "sudo -n sh -s"
+
+    /// What every boot refreshes, as root: the agent where monad-guestd runs
+    /// it, and img.
+    static func guestInstallScript() throws -> String {
+        """
+        set -eu
+        umask 022
+        install_file() { # DEST MODE BASE64
+            tmp=$(mktemp)
+            printf '%s' "$3" | base64 -D > "$tmp"
+            mkdir -p "${1%/*}"
+            install -o root -g wheel -m "$2" "$tmp" "$1"
+            rm -f "$tmp"
+        }
+        install_file /usr/local/libexec/monad/agent 0644 '\(Data(try agentScript().utf8).base64EncodedString())'
+        \(try CloudInit.imgInstall())echo agent-ok
+
+        """
+    }
 
     // MARK: The root step
 

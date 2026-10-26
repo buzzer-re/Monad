@@ -193,7 +193,7 @@ final class ProvisioningFlowTests: XCTestCase {
         XCTAssertFalse(check.contains("systemctl"), "no Linux in a macOS check")
         await assertEventually { runner.calls.contains { $0.arguments.last == MacSetup.agentInstallCommand } }
         let install = try XCTUnwrap(runner.calls.first { $0.arguments.last == MacSetup.agentInstallCommand })
-        XCTAssertEqual(install.stdin.map { String(decoding: $0, as: UTF8.self) }, try MacSetup.agentScript())
+        XCTAssertEqual(install.stdin.map { String(decoding: $0, as: UTF8.self) }, try MacSetup.guestInstallScript())
     }
 
     /// The answer of `hdiutil attach` for a macOS disk, its Data volume

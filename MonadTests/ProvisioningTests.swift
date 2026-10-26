@@ -237,6 +237,24 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(try CloudInit.guestInstallScript(guest: ubuntu, lima: true).contains("monad/console"))
     }
 
+    /// img (Guest/monad-img.sh) is in every VM, Linux (Lima's too) or macOS:
+    /// put in place by the installer at every boot, so VMs made before get
+    /// it, never over an img that is not Monad's, and never failing the
+    /// install (the agent depends on it).
+    func testEveryVMHasImg() throws {
+        let script = try CloudInit.imgScript()
+        XCTAssertTrue(script.contains("1337;File="))
+        let line = "if [ ! -e /usr/local/bin/img ] || grep -q monad-img /usr/local/bin/img; then\n"
+            + "    install_file /usr/local/bin/img 0755 '\(Data(script.utf8).base64EncodedString())' "
+            + "|| echo 'monad: img was not installed' >&2\nfi\n"
+        for installer in [try CloudInit.guestInstallScript(guest: ubuntu), try CloudInit.guestInstallScript(guest: ubuntu, lima: true),
+                          try MacSetup.guestInstallScript()] {
+            let img = try XCTUnwrap(installer.range(of: line), installer)
+            let ok = try XCTUnwrap(installer.range(of: "echo agent-ok\n"))
+            XCTAssertLessThan(img.lowerBound, ok.lowerBound)
+        }
+    }
+
     /// Generic fixes any distro may need: host keys made if the distro
     /// left that to its own sshd service (masked here), and the vsock
     /// driver loaded if the kernel did not load it by itself.

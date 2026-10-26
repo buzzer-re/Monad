@@ -206,7 +206,7 @@ struct VMSettingsDraft {
 
     /// Images in the terminal (inlineImages), in the New VM sheet and the
     /// VM's settings.
-    static let inlineImagesDetail = "Programs in the VM can show pictures in its tabs, as neofetch, fastfetch and imgcat do (iTerm2's inline images: PNG, JPEG or GIF). Off: Monad never decodes image data the VM sends."
+    static let inlineImagesDetail = "Programs in the VM can show pictures in its tabs, as img (in every VM), neofetch, fastfetch and imgcat do (iTerm2's inline images: PNG, JPEG or GIF). Off: Monad never decodes image data the VM sends."
 
     // MARK: Forwards
 

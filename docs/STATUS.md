@@ -49,7 +49,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Monad's own emulator, tabs per VM, split panes with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
-  built-ins, imports, transparency, blur, images), inline images (off per VM), OSC 52 within limits.
+  built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
+  macOS), OSC 52 within limits.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role
   (host commands, or orchestrator of child VMs), with approvals for anything that reaches the Mac
@@ -59,7 +60,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest agent's shell tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
 | `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,115 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
