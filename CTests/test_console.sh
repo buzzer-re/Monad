@@ -88,7 +88,7 @@ run() { # run [MODE]
     log=$(cat "$STATE/log")
 }
 
-QUIET="console=hvc0 quiet"
+QUIET="console=hvc0 quiet systemd.journald.max_level_console=err"
 FULL="console=hvc0 loglevel=7 systemd.show_status=yes"
 
 echo "monad-console tests ($SH)" >&2
@@ -104,7 +104,7 @@ run
 check "grub.d: status" 0 "$st"
 check "grub.d: update-grub ran" "update-grub " "$log"
 check "grub.d: drop-in" '# Monad: the kernel console on hvc0 too, kept in serial.log, errors only (monad-console.sh).
-GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet"' "$(cat "$DROPIN")"
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet systemd.journald.max_level_console=err"' "$(cat "$DROPIN")"
 check "grub.d: hvc0 last" "console=tty1 console=ttyAMA0 $QUIET" "$(
     for f in "$ROOT"/etc/default/grub.d/*.cfg; do . "$f"; done; echo "$GRUB_CMDLINE_LINUX_DEFAULT")"
 check "grub.d: says so" "monad-console: the kernel console reaches Monad from the next boot, errors only (/etc/default/grub.d/90-monad-console.cfg)" "$out"
@@ -197,7 +197,7 @@ check "grubby, hvc0 not last" "ro console=tty1 $QUIET" "$(cat "$STATE/kernels")"
 : >"$STATE/log"
 run full
 check "grubby full" "grubby --info=ALL
-grubby --update-kernel=ALL --args=console=tty1 $FULL --remove-args=quiet" "$log"
+grubby --update-kernel=ALL --args=console=tty1 $FULL --remove-args=quiet systemd.journald.max_level_console=err" "$log"
 check "grubby full: arguments" "ro console=tty1 $FULL" "$(cat "$STATE/kernels")"
 check "grubby full: says so" "monad-console: the kernel console reaches Monad from the next boot, every message (grubby)" "$out"
 : >"$STATE/log"
@@ -229,7 +229,7 @@ check "defaults: status" 0 "$st"
 check "defaults: mkconfig" "grub2-mkconfig -o $ROOT/boot/grub2/grub.cfg" "$log"
 check "defaults: line" 'GRUB_TIMEOUT=8
 GRUB_CMDLINE_LINUX_DEFAULT="splash=silent quiet"
-GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet" # Monad: monad-console.sh' "$(cat "$ROOT/etc/default/grub")"
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet systemd.journald.max_level_console=err" # Monad: monad-console.sh' "$(cat "$ROOT/etc/default/grub")"
 check "defaults: hvc0 last" "splash=silent quiet $QUIET" "$(. "$ROOT/etc/default/grub"; echo "$GRUB_CMDLINE_LINUX_DEFAULT")"
 check "defaults: says so" "monad-console: the kernel console reaches Monad from the next boot, errors only (/etc/default/grub)" "$out"
 
@@ -257,7 +257,7 @@ check "defaults fails: says so" "monad-console: grub-mkconfig failed, so the ker
 run
 fails=1; run full; fails=0
 check "defaults fails to change: as it was" 'GRUB_TIMEOUT=0
-GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet" # Monad: monad-console.sh' "$(cat "$ROOT/etc/default/grub")"
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 quiet systemd.journald.max_level_console=err" # Monad: monad-console.sh' "$(cat "$ROOT/etc/default/grub")"
 
 # No boot loader tool it knows: nothing changes, and it says so.
 reset

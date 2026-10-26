@@ -24,12 +24,14 @@ set -u
 ROOT=${MONAD_ROOT:-}
 MARK="# Monad: monad-console.sh"
 # The arguments Monad wants, and the other mode's (gone from the kernel's).
-# loglevel and systemd.show_status come after an image's own quiet.
+# loglevel and systemd.show_status come after an image's own quiet. Quiet
+# tells journald on the kernel's line too: the initramfs (dracut's
+# services) has its own journald, which never sees the drop-in below.
 MODE=quiet
 [ "${1:-}" = full ] && MODE=full
 case $MODE in
-    full) ARGS="console=hvc0 loglevel=7 systemd.show_status=yes"; DROP="quiet"; SAID="every message" ;;
-    *) ARGS="console=hvc0 quiet"; DROP="loglevel=7 systemd.show_status=yes"; SAID="errors only" ;;
+    full) ARGS="console=hvc0 loglevel=7 systemd.show_status=yes"; DROP="quiet systemd.journald.max_level_console=err"; SAID="every message" ;;
+    *) ARGS="console=hvc0 quiet systemd.journald.max_level_console=err"; DROP="loglevel=7 systemd.show_status=yes"; SAID="errors only" ;;
 esac
 
 say() { echo "monad-console: $*"; }
