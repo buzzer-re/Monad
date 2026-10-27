@@ -243,6 +243,23 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(try CloudInit.guestInstallScript(guest: ubuntu, lima: true).contains("monad/console"))
     }
 
+    /// A VM keeps the Mac's time zone: set by the installer at every boot,
+    /// Linux or macOS, so its clock reads as the Mac's. Not in a Lima VM
+    /// (Lima sets it), and only a zone name, never anything else.
+    func testAVMKeepsTheMacsTimeZone() throws {
+        let linux = try CloudInit.guestInstallScript(guest: ubuntu, timeZone: "Asia/Tokyo")
+        XCTAssertTrue(linux.contains("timedatectl set-timezone Asia/Tokyo >/dev/null 2>&1 || true\n"), linux)
+        XCTAssertFalse(try CloudInit.guestInstallScript(guest: ubuntu, lima: true, timeZone: "Asia/Tokyo")
+            .contains("set-timezone"))
+        let mac = try MacSetup.guestInstallScript(timeZone: "America/Indiana/Indianapolis")
+        XCTAssertTrue(mac.contains("systemsetup -settimezone America/Indiana/Indianapolis >/dev/null 2>&1 || true\n"), mac)
+        XCTAssertTrue(try MacSetup.guestInstallScript(timeZone: "Etc/GMT-9").contains("-settimezone Etc/GMT-9 "))
+        for bad in ["", "../../etc/passwd", "UTC; reboot", "a b"] {
+            XCTAssertFalse(try CloudInit.guestInstallScript(guest: ubuntu, timeZone: bad).contains("set-timezone"), bad)
+            XCTAssertFalse(try MacSetup.guestInstallScript(timeZone: bad).contains("settimezone"), bad)
+        }
+    }
+
     /// img (Guest/monad-img.sh) is in every VM, Linux (Lima's too) or macOS:
     /// put in place by the installer at every boot, so VMs made before get
     /// it, never over an img that is not Monad's, and never failing the

@@ -248,9 +248,10 @@ enum MacSetup {
     static let agentInstallCommand = "sudo -n sh -s"
 
     /// What every boot refreshes, as root: the agent where monad-guestd runs
-    /// it, and img.
-    static func guestInstallScript() throws -> String {
-        """
+    /// it, img, and the Mac's time zone.
+    static func guestInstallScript(timeZone: String = TimeZone.current.identifier) throws -> String {
+        let clock = CloudInit.timeZoneName(timeZone).map { "systemsetup -settimezone \($0) >/dev/null 2>&1 || true\n" } ?? ""
+        return """
         set -eu
         umask 022
         install_file() { # DEST MODE BASE64
@@ -261,7 +262,7 @@ enum MacSetup {
             rm -f "$tmp"
         }
         install_file /usr/local/libexec/monad/agent 0644 '\(Data(try agentScript().utf8).base64EncodedString())'
-        \(try CloudInit.imgInstall())echo agent-ok
+        \(try CloudInit.imgInstall())\(clock)echo agent-ok
 
         """
     }

@@ -51,6 +51,13 @@ enum CloudInit {
     static func imgScript() throws -> String { try bundled("monad-img", "sh") }
     static let imgPath = "/usr/local/bin/img"
 
+    /// A time zone name to give a guest (TimeZone's identifiers, such as
+    /// Asia/Tokyo or Etc/GMT-9): nil for anything else, so the
+    /// installers' lines never carry more than a name.
+    static func timeZoneName(_ name: String) -> String? {
+        name.range(of: "^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$", options: .regularExpression) != nil ? name : nil
+    }
+
     /// The installers' lines for img, after their install_file: only where
     /// no other img is, and never failing the install (the agent's).
     static func imgInstall() throws -> String {
@@ -182,10 +189,12 @@ enum CloudInit {
     static let guestInstallCommand = "sudo -n sh -s"
 
     /// Idempotent installer for the guest components, pushed on every boot so
-    /// every VM runs the agent (and sshd unit) that matches this Monad version.
-    /// A Lima VM's boot is Lima's: its kernel console is left as it is.
+    /// every VM runs the agent (and sshd unit) that matches this Monad version,
+    /// in the Mac's time zone. A Lima VM's boot is Lima's: its kernel console
+    /// and time zone are left as they are.
     static func guestInstallScript(guest: DistroConfig.GuestProfile, lima: Bool = false,
-                                   bootMessages: BootMessages = .quiet) throws -> String {
+                                   bootMessages: BootMessages = .quiet,
+                                   timeZone: String = TimeZone.current.identifier) throws -> String {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         let agent = try agentScript()
         let report = try reportScript()
@@ -193,6 +202,8 @@ enum CloudInit {
         let selinux = try selinuxScript()
         let consoleText = try consoleScript()
         let img = try imgInstall()
+        let zone = lima ? nil : timeZoneName(timeZone)
+        let clock = zone.map { "timedatectl set-timezone \($0) >/dev/null 2>&1 || true\n" } ?? ""
         let console = lima ? "" : """
             install_file \(consoleScriptPath) 0755 '\(b64(consoleText))'
             sh \(consoleScriptPath) \(bootMessages.rawValue) || true
@@ -227,7 +238,7 @@ enum CloudInit {
             \(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
-            \(console)echo agent-ok
+            \(console)\(clock)echo agent-ok
 
             """
     }

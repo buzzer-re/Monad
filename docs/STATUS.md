@@ -40,7 +40,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **VMs:** Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
   verified with pinned keys); macOS guests (install from Apple or an IPSW, no Setup Assistant, SIP
   switchable through recovery, copies); Lima VMs booted in place or copied in; ephemeral Linux VMs.
-- **At runtime:** CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
+- **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),
   start at login, groups with firewall tags, a log per VM that says why each stop happened (and, at
