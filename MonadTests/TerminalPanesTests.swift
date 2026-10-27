@@ -30,6 +30,24 @@ final class TerminalPanesTests: XCTestCase {
         XCTAssertEqual(panes.allSessions.count, 3)
     }
 
+    /// A split opens on the VM in front, in the directory its shell last
+    /// reported (OSC 7); a context on another VM opens in the home folder.
+    func testASplitStartsWhereTheShellInFrontIs() async throws {
+        let panes = TerminalPanes(target: .vm("web"), host: host)
+        let first = try XCTUnwrap(panes.focusedSession)
+        XCTAssertNil(first.startDirectory)
+        panes.split(.horizontal)
+        XCTAssertNil(panes.focusedSession?.startDirectory, "nothing reported yet")
+        first.model.feed("\u{1B}]7;file://monad-web/home/dev/horizon\u{07}")
+        await assertEventually { first.directory == "/home/dev/horizon" }
+        panes.moveFocus(.left)
+        panes.split(.vertical)
+        XCTAssertEqual(panes.focusedSession?.target, .vm("web"))
+        XCTAssertEqual(panes.focusedSession?.startDirectory, "/home/dev/horizon")
+        panes.addContext(.vm("db"))
+        XCTAssertNil(panes.focusedSession?.startDirectory, "another VM")
+    }
+
     /// The dock: asked for a VM it already has, it shows that one.
     func testAVMAlreadyThereIsShownNotOpenedAgain() {
         let panes = TerminalPanes(target: .vm("web"), host: host)

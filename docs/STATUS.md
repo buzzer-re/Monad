@@ -50,7 +50,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   errors only unless Settings › Virtual Machines › Full boot messages is on.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
-- **Terminal:** Monad's own emulator, tabs per VM, split panes with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
+- **Terminal:** Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.

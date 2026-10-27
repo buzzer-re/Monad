@@ -101,8 +101,8 @@ final class TerminalPanes: NSObject {
 
     // MARK: Sessions
 
-    private func makeSession(_ target: SessionTarget, _ id: ContextID) -> TerminalSessionViewController {
-        let session = TerminalSessionViewController(target: target, cols: 100, rows: 30, host: host)
+    private func makeSession(_ target: SessionTarget, _ id: ContextID, startIn directory: String? = nil) -> TerminalSessionViewController {
+        let session = TerminalSessionViewController(target: target, cols: 100, rows: 30, host: host, startIn: directory)
         session.onTitleChange = { [weak self] title in
             self?.titles[id] = title
             self?.refreshTitles()
@@ -147,14 +147,15 @@ final class TerminalPanes: NSObject {
 
     // MARK: Panes
 
-    /// A pane beside (horizontal) or below (vertical) the focused one, on its VM.
+    /// A pane beside (horizontal) or below (vertical) the focused one, on its
+    /// VM, in the directory its shell last reported.
     func split(_ axis: PaneTree.Axis) {
         guard let target = targetInFront else {
             NSSound.beep()
             return
         }
         let id = ContextID.make()
-        _ = makeSession(target, id)
+        _ = makeSession(target, id, startIn: target == .host ? nil : focusedSession?.directory)
         layout.split(axis, pane: .make(), context: id)
         rebuild()
         start()

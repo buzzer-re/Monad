@@ -49,6 +49,29 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertEqual(item.title, "Restart VM")
     }
 
+    /// The directory a shell reports (OSC 7, file://host/path) is where a
+    /// split of its pane starts: an absolute path, percent-decoded where it
+    /// can be, and nothing a guest could make odd.
+    func testTheDirectoryAShellReportsIsReadFromItsURL() {
+        typealias T = TerminalSessionViewController
+        XCTAssertEqual(T.directory(fromURL: "file://monad-web/home/dev/horizon"), "/home/dev/horizon")
+        XCTAssertEqual(T.directory(fromURL: "file:///home/dev/my%20project"), "/home/dev/my project")
+        XCTAssertEqual(T.directory(fromURL: "file://web/home/dev/100%"), "/home/dev/100%", "no escape: as written")
+        XCTAssertNil(T.directory(fromURL: "http://web/home/dev"))
+        XCTAssertNil(T.directory(fromURL: "file://web"))
+        XCTAssertNil(T.directory(fromURL: "file://web/home/dev/a%0Ab"), "no control characters")
+        XCTAssertNil(T.directory(fromURL: "file://web/" + String(repeating: "a", count: 5000)))
+    }
+
+    /// A split's ssh runs a command in a terminal: into that directory (in
+    /// the home folder if it is gone), then the user's login shell.
+    func testASplitsSSHStartsInItsDirectory() {
+        typealias T = TerminalSessionViewController
+        XCTAssertEqual(T.sshCommand(options: ["-F", "none"], host: "web", startIn: nil), ["ssh", "-F", "none", "web"])
+        XCTAssertEqual(T.sshCommand(options: ["-F", "none"], host: "web", startIn: "/home/dev/it's here"),
+                       ["ssh", "-F", "none", "-t", "web", "cd '/home/dev/it'\\''s here' 2>/dev/null; exec \"$SHELL\" -l"])
+    }
+
     /// A title set by a program in the VM (a shell, a code agent) always
     /// comes after the VM's name, so a tab never loses which VM it is on.
     func testTheTitleAlwaysStartsWithTheVM() {

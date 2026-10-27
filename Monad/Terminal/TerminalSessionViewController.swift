@@ -47,6 +47,11 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     /// A profile was being set up while this tab watched (so "set up" news is its own).
     private var sawProfileWork = false
     private var closed = false
+    /// The directory its shell last reported (OSC 7), where a split of its
+    /// pane starts.
+    private(set) var directory: String?
+    /// Where its first VM shell starts (a split's), instead of the home folder.
+    private(set) var startDirectory: String?
 
     /// Called when the window/tab title should change.
     var onTitleChange: ((String) -> Void)?
@@ -59,8 +64,9 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     /// visible one (set by its window). Clipboard writes need it.
     var isFocusedContext = true
 
-    init(target: SessionTarget, cols: Int = 100, rows: Int = 30, host: HostClient? = nil) {
+    init(target: SessionTarget, cols: Int = 100, rows: Int = 30, host: HostClient? = nil, startIn directory: String? = nil) {
         self.target = target
+        startDirectory = directory
         hostClient = host ?? HostAgent.client
         guard let model = TerminalModel(cols: cols, rows: rows, scrollback: Settings.scrollbackLines) else {
             fatalError("Cannot allocate terminal state")
@@ -75,6 +81,9 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
             self?.updateTitle()
         }
         model.onBell = { [weak self] in self?.terminalView.visualBell() }
+        model.onDirectory = { [weak self] url in
+            if let d = Self.directory(fromURL: url) { self?.directory = d }
+        }
         model.onImagesChanged = { [weak self] in self?.terminalView.needsDisplay = true }
         model.onClipboard = { [weak self] text in
             guard let self else { return }
@@ -414,10 +423,34 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         let cmd = PTYSession.Command(
             executable: "/usr/bin/ssh",
             // Options from the VM's settings, never its ssh.config on disk.
-            arguments: ["ssh"] + CloudInit.sshArguments(config: vm.config, paths: vm.paths) + [vm.sshHost],
+            arguments: Self.sshCommand(options: CloudInit.sshArguments(config: vm.config, paths: vm.paths),
+                                       host: vm.sshHost, startIn: startDirectory),
             environment: Self.environment(),
             directory: Paths.home.path)
+        // Only the first shell: one connected again starts at home.
+        startDirectory = nil
         spawn(cmd)
+    }
+
+    /// ssh's argv for a VM's shell. In `directory`: a command in a terminal,
+    /// into it (the home folder if it is gone) and then the login shell.
+    nonisolated static func sshCommand(options: [String], host: String, startIn directory: String?) -> [String] {
+        guard let directory else { return ["ssh"] + options + [host] }
+        return ["ssh"] + options + ["-t", host, "cd \(ShellQuote.quote(directory)) 2>/dev/null; exec \"$SHELL\" -l"]
+    }
+
+    /// The path of a shell's OSC 7 URL (file://host/path), percent-decoded
+    /// where it can be. Only an absolute path of printable characters, at
+    /// most 4096 bytes: it comes from the guest.
+    nonisolated static func directory(fromURL url: String) -> String? {
+        guard url.hasPrefix("file://") else { return nil }
+        let rest = url.dropFirst("file://".count)
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let raw = String(rest[slash...])
+        let path = raw.removingPercentEncoding ?? raw
+        guard path.utf8.count <= 4096, !path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
+        else { return nil }
+        return path
     }
 
     // MARK: Host sessions
