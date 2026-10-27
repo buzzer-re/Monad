@@ -252,6 +252,26 @@ final class ConfigV2Tests: XCTestCase {
         assertInvalid(c, .hostAddress("example.com"))
     }
 
+    /// A VM port or SOCKS proxy on any Mac address but the loopback can be
+    /// reached by other computers: that, like a forward into the Mac, is
+    /// asked for. Where a forward into the Mac connects, or a socket, is not.
+    func testAForwardOpensToTheNetworkBeyondTheLoopback() {
+        func local(_ a: String) -> ForwardRule { ForwardRule(kind: .local, hostAddress: a, hostPort: 8080, guestPort: 80) }
+        for a in ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1"] {
+            XCTAssertFalse(local(a).opensToNetwork, a)
+            XCTAssertFalse(local(a).needsConfirmation, a)
+        }
+        for a in ["0.0.0.0", "192.168.1.20", "::", "fe80::1"] {
+            XCTAssertTrue(local(a).opensToNetwork, a)
+            XCTAssertTrue(local(a).needsConfirmation, a)
+        }
+        XCTAssertTrue(ForwardRule(kind: .socks, hostAddress: "0.0.0.0", hostPort: 1080).opensToNetwork)
+        XCTAssertFalse(ForwardRule(kind: .remote, hostAddress: "0.0.0.0", hostPort: 80, guestPort: 80).opensToNetwork,
+                       "the Mac address a forward into the Mac connects to")
+        XCTAssertTrue(ForwardRule(kind: .remote, hostPort: 80, guestPort: 80).needsConfirmation)
+        XCTAssertFalse(ForwardRule(kind: .unixLocal, hostSocket: "/tmp/a.sock", guestSocket: "/run/a.sock").needsConfirmation)
+    }
+
     /// A forward into the Mac is the user's own rule, confirmed when it is
     /// added: no separate per-VM switch. Files saved while there was one
     /// still load, with their forwards.

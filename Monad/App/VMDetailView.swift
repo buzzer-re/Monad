@@ -1265,7 +1265,9 @@ private struct ForwardEditor: View {
     @State private var guestPort = ""
     @State private var hostSocket = ""
     @State private var guestSocket = ""
-    /// A forward into the Mac, waiting for the user's word.
+    /// Where a VM port or SOCKS proxy listens on the Mac (the loopback when empty).
+    @State private var address = ""
+    /// A forward into the Mac, or one open to other computers, waiting for the user's word.
     @State private var confirming: ForwardRule?
 
     var body: some View {
@@ -1284,18 +1286,31 @@ private struct ForwardEditor: View {
                 case .vmPort:
                     TextField("VM port", text: $guestPort, prompt: Text("80"))
                     TextField("On the Mac at port", text: $hostPort, prompt: Text("8080"))
+                    TextField("Listen on address", text: $address, prompt: Text("127.0.0.1"))
                 case .socks:
                     TextField("Mac port", text: $hostPort, prompt: Text("1080"))
+                    TextField("Listen on address", text: $address, prompt: Text("127.0.0.1"))
                 case .socket:
                     TextField("Mac socket", text: $hostSocket, prompt: Text("~/.monad/docker.sock"))
                     TextField("VM socket", text: $guestSocket, prompt: Text("/run/docker.sock"))
                 }
-                if kind == .macPort {
+                switch kind {
+                case .macPort:
                     Notice(symbol: "exclamationmark.shield", color: .orange,
                            text: "Programs in the VM will reach this port on your Mac, past the VM's firewall.")
                         .font(Design.caption)
-                } else {
-                    Notice(symbol: "lock.fill", color: .green, text: "Mac ports listen on 127.0.0.1 only.").font(Design.caption)
+                case .vmPort, .socks:
+                    if rule?.opensToNetwork == true {
+                        Notice(symbol: "exclamationmark.shield", color: .orange,
+                               text: "Other computers that reach this Mac at \(rule?.hostAddress ?? "") can connect.")
+                            .font(Design.caption)
+                    } else {
+                        Notice(symbol: "lock.fill", color: .green,
+                               text: "Only this Mac can connect. Another address (0.0.0.0: every network) lets other computers in.")
+                            .font(Design.caption)
+                    }
+                case .socket:
+                    Notice(symbol: "lock.fill", color: .green, text: "Only this Mac can connect.").font(Design.caption)
                 }
             }
             .formStyle(.grouped)
@@ -1314,8 +1329,8 @@ private struct ForwardEditor: View {
             .controlSize(.large)
             .padding(.horizontal, 24).padding(.vertical, 14)
         }
-        .frame(width: 500, height: 400)
-        .confirmationDialog("Let the VM reach this Mac?",
+        .frame(width: 500, height: 440)
+        .confirmationDialog(confirming.map(VMSettingsDraft.confirmationTitle(for:)) ?? "",
                             isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
             Button("Add Forward") {
                 if let rule = confirming { onAdd(rule) }
@@ -1331,10 +1346,9 @@ private struct ForwardEditor: View {
         case .macPort:
             return VMSettingsDraft.portForward(macPort: hostPort, vmPort: guestPort, intoVM: true)
         case .vmPort:
-            return VMSettingsDraft.portForward(macPort: hostPort, vmPort: guestPort, intoVM: false)
+            return VMSettingsDraft.portForward(macPort: hostPort, vmPort: guestPort, intoVM: false, address: address)
         case .socks:
-            guard let hp = Int(hostPort.trimmingCharacters(in: .whitespaces)) else { return nil }
-            return ForwardRule(kind: .socks, hostPort: hp)
+            return VMSettingsDraft.socksForward(macPort: hostPort, address: address)
         case .socket:
             let h = (hostSocket as NSString).expandingTildeInPath
             guard h.hasPrefix("/"), guestSocket.hasPrefix("/") else { return nil }

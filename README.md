@@ -70,7 +70,7 @@ Tick a profile in New VM and the VM is set up on its first boot. Agentic brings 
 
 ![npm run dev in the VM web; Monad forwards port 3000 to the Mac and the page opens at localhost:3000. The Forwards list also shows the Mac's Ollama port forwarded into the VM.](docs/images/forwards.png)
 
-A small agent in the guest (a POSIX shell script) watches which ports the VM opens and tells Monad, so ports from 1024 up show on your Mac's localhost by themselves. Forwards go the other way too, unix sockets included, and you can open a SOCKS proxy into the VM. Here the VM uses [Ollama](https://ollama.com) on the Mac through a forward you confirmed.
+A small agent in the guest (a POSIX shell script) watches which ports the VM opens and tells Monad, so ports from 1024 up show on your Mac's localhost by themselves. Forwards go the other way too, unix sockets included, and you can open a SOCKS proxy into the VM. A forward listens on 127.0.0.1 unless you give it another address, such as `0.0.0.0` to serve other computers. Here the VM uses [Ollama](https://ollama.com) on the Mac through a forward you confirmed.
 
 ## Shared folders
 

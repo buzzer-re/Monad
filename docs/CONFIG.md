@@ -173,7 +173,7 @@ Mac (`chmod u+rwx` in Terminal, or Get Info in Finder).
 |---|---|---|---|
 | `id` | string (UUID) | a new one | |
 | `kind` | string | (needed) | `local` (a VM port on the Mac), `remote` (a Mac port in the VM), `socks` (a SOCKS proxy on the Mac whose traffic leaves from the VM), `unixLocal` (a VM socket on the Mac), `unixRemote` (a Mac socket in the VM). `remote` and `unixRemote` reach into the Mac. |
-| `hostAddress` | string | `127.0.0.1` | The Mac address a `local` or `socks` forward listens on. |
+| `hostAddress` | string | `127.0.0.1` | The Mac address a `local` or `socks` forward listens on, an IP address. Any but the loopback (`0.0.0.0` is every network) lets other computers connect, so it is confirmed like a forward into the Mac. |
 | `hostPort` | number | (needed for ports) | 1024 to 65535 when it listens on the Mac. |
 | `guestHost` | string | `127.0.0.1` | The address in the VM (an IP address or a host name). |
 | `guestPort` | number | (needed for `local` and `remote`) | 1 to 65535. |

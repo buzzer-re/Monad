@@ -232,6 +232,22 @@ struct ForwardRule: Codable, Equatable, Hashable, Identifiable {
     var bindsOnHost: Bool { kind == .local || kind == .socks || kind == .unixLocal }
     /// Whether this rule lets the guest reach something on the Mac.
     var reachesIntoHost: Bool { kind == .remote || kind == .unixRemote }
+    /// Whether other computers can connect: a VM port or a SOCKS proxy on a
+    /// Mac address other than the loopback.
+    var opensToNetwork: Bool { (kind == .local || kind == .socks) && !Self.isLoopback(hostAddress) }
+    /// Whether the user's word is needed for it: it reaches into the Mac, or
+    /// other computers reach it.
+    var needsConfirmation: Bool { reachesIntoHost || opensToNetwork }
+
+    /// 127.0.0.0/8, ::1, and the loopback as an IPv4-mapped address.
+    static func isLoopback(_ address: String) -> Bool {
+        var v4 = in_addr(), v6 = in6_addr()
+        if inet_pton(AF_INET, address, &v4) == 1 { return UInt32(bigEndian: v4.s_addr) >> 24 == 127 }
+        guard inet_pton(AF_INET6, address, &v6) == 1 else { return false }
+        let b = withUnsafeBytes(of: v6) { Array($0) }
+        if b[0..<15].allSatisfy({ $0 == 0 }) && b[15] == 1 { return true }
+        return b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xff && b[11] == 0xff && b[12] == 127
+    }
 }
 
 /// Lima-style automatic forwarding of ports the guest listens on.
@@ -796,7 +812,7 @@ extension InstanceConfig {
         return reservedGuestPrefixes.contains { p == $0 || p.hasPrefix($0 + "/") }
     }
 
-    private static func isIPLiteral(_ s: String) -> Bool {
+    static func isIPLiteral(_ s: String) -> Bool {
         var v4 = in_addr(), v6 = in6_addr()
         return inet_pton(AF_INET, s, &v4) == 1 || inet_pton(AF_INET6, s, &v6) == 1
     }
@@ -1014,22 +1030,23 @@ enum ConfigChange {
 extension InstanceConfig {
     /// A copy's settings: the same, but for what was allowed for this VM
     /// alone (shared folders, bridges, host commands, forwards into the
-    /// Mac, an agent role), which is left out and named. Its network cards
+    /// Mac or open to other computers, an agent role), which is left out and
+    /// named. Its network cards
     /// get new addresses; it does not start with Monad.
     func copy(named name: String) -> (config: InstanceConfig, left: [String]) {
         var c = self
         c.name = name
-        let intoMac: (ForwardRule) -> Bool = { $0.kind == .remote || $0.kind == .unixRemote }
         var left: [String] = []
         if !c.sharing.shares.isEmpty { left.append("shared folders") }
         if !c.bridges.isEmpty { left.append("bridges") }
         if !c.hostCommands.isEmpty { left.append("host commands") }
-        if c.forwards.contains(where: intoMac) { left.append("forwards into the Mac") }
+        if c.forwards.contains(where: \.reachesIntoHost) { left.append("forwards into the Mac") }
+        if c.forwards.contains(where: \.opensToNetwork) { left.append("forwards open to other computers") }
         if c.agents != nil { left.append("its agent role") }
         c.sharing.shares = []
         c.bridges = []
         c.hostCommands = []
-        c.forwards.removeAll(where: intoMac)
+        c.forwards.removeAll(where: \.needsConfirmation)
         c.agents = nil
         c.parent = nil
         c.ephemeral = false

@@ -19,7 +19,7 @@ built for isolation first: a hostile guest is the primary threat (`docs/SECURITY
 | Networking | Monad's own stack (`monad-netd`, sandboxed C): switch, DHCP, DNS, NAT, firewall per VM |
 | Shared folders | Opt-in per VM (the device exists only when on); `~/.monad` never shared; the home folder reaches a VM as its visible folders only |
 | Signing | The first release is signed ad hoc and installed by `scripts/install.sh` (or by hand from the zip, with Open Anyway); Developer ID only if the release is well received |
-| Security choices | Recorded in `docs/SECURITY.md` › Decisions (clipboard writes, VMs kept apart per network, DNS under the firewall, forwards into the Mac confirmed one by one, imported settings untrusted, images off per VM) |
+| Security choices | Recorded in `docs/SECURITY.md` › Decisions (clipboard writes, VMs kept apart per network, DNS under the firewall, forwards into the Mac confirmed one by one, forwards open to other computers only when asked for, imported settings untrusted, images off per VM) |
 
 ## Architecture
 
@@ -40,7 +40,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **VMs:** Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
   verified with pinned keys); macOS guests (install from Apple or an IPSW, no Setup Assistant, SIP
   switchable through recovery, copies); Lima VMs booted in place or copied in; ephemeral Linux VMs.
-- **At runtime:** CPUs, memory (balloon), shared folders, port and socket forwards both ways,
+- **At runtime:** CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
+  VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),
   start at login, groups with firewall tags, a log per VM that says why each stop happened (and, at
   the next start, that MonadHost ended while the VM ran); a Linux boot that fails says what the VM's

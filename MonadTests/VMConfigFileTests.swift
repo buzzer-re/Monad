@@ -223,6 +223,29 @@ final class VMConfigFileTests: XCTestCase {
                              "a distribution is needed")
     }
 
+    /// A forward other computers could reach is set aside on import and
+    /// confirmed on edit, as one into the Mac is (docs/SECURITY.md).
+    func testAForwardOpenToOtherComputersIsAskedFor() throws {
+        let text = #"""
+        {"version": 2, "name": "web", "distro": "debian", "release": "13",
+         "forwards": [{"kind": "local", "hostPort": 8080, "guestPort": 80},
+                      {"kind": "local", "hostAddress": "0.0.0.0", "hostPort": 8443, "guestPort": 443}]}
+        """#
+        let imported = try VMConfigFile.read(Data(text.utf8), on: mac())
+        XCTAssertEqual(imported.config(named: "web", keepingMacAccess: false).forwards.map(\.hostPort), [8080])
+        XCTAssertEqual(imported.config(named: "web", keepingMacAccess: true).forwards.map(\.hostPort), [8080, 8443])
+        XCTAssertEqual(imported.macAccess.lines, ["VM port 443, on the Mac at 0.0.0.0:8443, open to other computers"])
+
+        let c = imported.config(named: "web", keepingMacAccess: false)
+        let check = VMConfigFile.check(try edited(c) { o in
+            var forwards = o["forwards"] as? [[String: Any]] ?? []
+            forwards.append(["kind": "local", "hostAddress": "0.0.0.0", "hostPort": 9000, "guestPort": 9000])
+            o["forwards"] = forwards
+        }, against: c, on: mac())
+        XCTAssertEqual(check.problems, [])
+        XCTAssertEqual(check.reachesIntoMac, ["VM port 9000, on the Mac at 0.0.0.0:9000, open to other computers"])
+    }
+
     /// Files that are not a VM this Monad can make are refused, saying why.
     func testBadFilesAreRefused() throws {
         func refusal(_ data: Data) -> String {

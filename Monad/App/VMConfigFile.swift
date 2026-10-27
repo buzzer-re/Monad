@@ -103,7 +103,8 @@ enum VMConfigFile {
     }
 
     struct Imported: Equatable {
-        /// The settings to make, without what reaches into the Mac.
+        /// The settings to make, without what reaches into the Mac (or lets
+        /// other computers reach the VM).
         var config: InstanceConfig
         var macAccess: MacAccess
         /// What changed to make the file a new VM on this Mac.
@@ -201,7 +202,7 @@ enum VMConfigFile {
 
         // What reaches into the Mac, set apart.
         var access = MacAccess(bridges: c.bridges, hostCommands: c.hostCommands, agents: c.agents,
-                               forwards: c.forwards.filter(\.reachesIntoHost),
+                               forwards: c.forwards.filter(\.needsConfirmation),
                                allowLAN: c.firewall.allowLAN, images: c.inlineImages,
                                firewallRules: c.firewall.rules.filter(\.opensByAddress))
         if c.desktopAutofill != nil {
@@ -228,7 +229,7 @@ enum VMConfigFile {
         c.agents = nil
         // A VM made from a file is nobody's child.
         c.parent = nil
-        c.forwards.removeAll(where: \.reachesIntoHost)
+        c.forwards.removeAll(where: \.needsConfirmation)
         c.firewall.allowLAN = false
         c.inlineImages = false
         return Imported(config: c, macAccess: access, notes: notes, forwards: forwards, rules: rules)
@@ -464,8 +465,8 @@ enum VMConfigFile {
         func forwardKey(_ f: ForwardRule) -> String {
             "\(f.kind.rawValue) \(f.hostAddress) \(f.hostPort ?? 0) \(f.guestHost) \(f.guestPort ?? 0) \(f.hostSocket ?? "") \(f.guestSocket ?? "")"
         }
-        let savedForwards = Set(saved.forwards.filter(\.reachesIntoHost).map(forwardKey))
-        access.forwards = new.forwards.filter { $0.reachesIntoHost && !savedForwards.contains(forwardKey($0)) }
+        let savedForwards = Set(saved.forwards.filter(\.needsConfirmation).map(forwardKey))
+        access.forwards = new.forwards.filter { $0.needsConfirmation && !savedForwards.contains(forwardKey($0)) }
         access.allowLAN = new.firewall.allowLAN && !saved.firewall.allowLAN
         access.images = new.inlineImages && !saved.inlineImages
         let savedRules = Set(saved.firewall.rules.filter(\.opensByAddress))

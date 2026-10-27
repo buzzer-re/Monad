@@ -315,6 +315,34 @@ final class VMSettingsDraftTests: XCTestCase {
         XCTAssertNotNil(VMSettingsDraft.confirmation(for: same), "the VM reaching into the Mac is asked first")
     }
 
+    /// A VM port listens on the Mac's loopback unless another address is
+    /// typed, which has to be an IP address; any but the loopback lets
+    /// other computers in, which is said and asked.
+    func testAVMPortCanListenOnAnyMacAddress() throws {
+        let mine = try XCTUnwrap(VMSettingsDraft.portForward(macPort: "8080", vmPort: "80", intoVM: false, address: " "))
+        XCTAssertEqual(mine.hostAddress, "127.0.0.1")
+        XCTAssertNil(VMSettingsDraft.confirmation(for: mine))
+        let open = try XCTUnwrap(VMSettingsDraft.portForward(macPort: "8080", vmPort: "80", intoVM: false, address: " 0.0.0.0 "))
+        XCTAssertEqual(open.hostAddress, "0.0.0.0")
+        XCTAssertEqual(VMSettingsDraft.describe(open), "VM port 80, on the Mac at 0.0.0.0:8080, open to other computers")
+        XCTAssertEqual(VMSettingsDraft.confirmationTitle(for: open), "Open this port to other computers?")
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: open),
+                       "Computers that reach this Mac at 0.0.0.0 will be able to connect to port 80 in the VM, through port 8080.")
+        XCTAssertNil(VMSettingsDraft.portForward(macPort: "8080", vmPort: "80", intoVM: false, address: "my-mac.local"),
+                     "an IP address")
+        XCTAssertEqual(VMSettingsDraft.portForward(macPort: "8000", vmPort: "", intoVM: true, address: "0.0.0.0")?.hostAddress,
+                       "127.0.0.1", "a forward into the Mac connects to its loopback")
+
+        let proxy = try XCTUnwrap(VMSettingsDraft.socksForward(macPort: "1080", address: "192.168.1.20"))
+        XCTAssertEqual([proxy.kind], [.socks])
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: proxy),
+                       "Computers that reach this Mac at 192.168.1.20 will be able to use port 1080 as a proxy that leaves from the VM.")
+        XCTAssertEqual(VMSettingsDraft.socksForward(macPort: "1080", address: "")?.hostAddress, "127.0.0.1")
+        XCTAssertNil(VMSettingsDraft.socksForward(macPort: "proxy", address: ""))
+        XCTAssertEqual(VMSettingsDraft.confirmationTitle(for: ForwardRule(kind: .remote, hostPort: 80, guestPort: 80)),
+                       "Let the VM reach this Mac?")
+    }
+
     /// A forward made the wrong way round (the Mac port already taken by
     /// the very program it was meant to reach) turns around in place.
     func testAForwardTurnsAround() {
@@ -325,6 +353,8 @@ final class VMSettingsDraftTests: XCTestCase {
         XCTAssertEqual(turned.hostPort, 8000)
         XCTAssertEqual(turned.guestPort, 8000)
         XCTAssertEqual([VMSettingsDraft.turnedAround(turned).kind], [.local])
+        let open = ForwardRule(kind: .local, hostAddress: "0.0.0.0", hostPort: 8000, guestPort: 8000)
+        XCTAssertEqual(VMSettingsDraft.turnedAround(open).hostAddress, "127.0.0.1", "into the Mac at its loopback")
         let socks = ForwardRule(kind: .socks, hostPort: 1080)
         XCTAssertEqual(VMSettingsDraft.turnedAround(socks), socks, "nothing to turn")
     }

@@ -51,7 +51,7 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 | Shared folders stay what the user chose | MonadHost resolves links and stores where a share really leads; `~/.monad` is never shared, a writable share may not hold it, and a folder above the home folder (`/`, `/Users`) is refused. The home folder itself (read-only, with the user's word) reaches the VM as its visible folders only: no dot folder (`~/.monad`, `~/.ssh`, `~/.aws`), no `~/Library`, no loose files, decided on the Mac so root in the guest cannot get around it. Outside the home folder, `~/.ssh` and `~/Library` need the user's word. A Lima VM's own folders (Lima's `~` mount too) go through the same rules, with one confirmation for those that need it | `SharePolicyTests`, `HostServiceTests`, `LimaListTests` |
 | Agents reach Monad only as allowed | MCP calls from the Mac come through `MonadHost --mcp` over the XPC peer check; a VM reaches only its own endpoint (a 0600 socket per VM, forwarded to its loopback) with a token only it has, no `Origin`; `MCPAccess.decide` allows, asks or refuses each call (risky tools ask from the Mac; a VM without a role gets nothing; host-commands VMs only their commands; an orchestrator freely only on its children); questions time out as refusals; every call is audited | `MCPAccessTests`, `MCPHTTPTests`, `MCPProtocolTests`, `HostServiceTests`, `VMLifecycleTests` |
 | A host command runs only what the user defined | The VM never names a program; values are parsed by Monad (no shell) and matched against anchored patterns before anything runs; the program runs in a folder the VM shares, in its own process group, with a time limit, one at a time | `HostCommandTests`, `HostCommandServerTests` |
-| A settings file cannot bring Mac access in unnoticed | Shares, bridges, host commands, forwards into the Mac, LAN access, images and an agent role are set aside on import and confirmed on edit | `VMConfigFileTests` |
+| A settings file cannot bring Mac access in unnoticed | Shares, bridges, host commands, forwards into the Mac or open to other computers, LAN access, images and an agent role are set aside on import and confirmed on edit | `VMConfigFileTests` |
 | Images are what the distro published | OpenPGP signatures with pinned keys where the distro signs, never an older signed checksum file than one seen before, unsigned checksums only from their own site over HTTPS, then the image's digest | `OpenPGPTests`, `ImagePipelineTests`, `ParserFuzzTests` |
 | A VM's disk cannot steer MonadHost when Monad reads it | `mnd_diskcheck` reads fixed places only (the GPT and its table, superblocks; 4 KiB at a time), bounds every count and offset it reads, reports printable text only, and reads a VM's disk only once the VM is off, read only | `test_diskcheck.c`, `fuzz_decoders.c`, `DiskCheckTests`, `VMLifecycleTests` |
 | Repair Disk opens a VM's disk only inside another VM | The disk goes to a temporary ephemeral VM of the same distribution (no shared folders, forwards or role), as a USB disk once that VM runs, never at boot (two disks of one cloud image share labels and UUIDs). Only commands Monad builds run there, on a device name it checked; the VM being repaired cannot start or be deleted meanwhile; a clone of the disk is kept first | `DiskRepairTests`, `DeviceModelTests` (only that VM has a USB controller) |
@@ -142,14 +142,21 @@ two running macOS VMs (Virtualization's, in any app) leaves room for another.
 - **Forwards into the Mac are confirmed one by one** (2026-10-06): no per-VM switch; adding an
   "Into Mac" forward says what the VM will reach and asks. Such a forward goes over ssh, past the
   VM's firewall, to exactly the port or socket the user named.
+- **A VM port reaches other computers only when the user says so** (2026-10-27): a VM port or
+  SOCKS proxy on the Mac listens on 127.0.0.1 unless the user types another address in Add
+  Forward, which says that other computers can connect and asks. A settings file's such forwards
+  are set aside on import and confirmed on edit, and a copy of the VM leaves them behind.
+  Auto-forward and the MCP tools use the loopback only. A SOCKS proxy open to the network lets
+  other computers send traffic out through the VM, within its firewall.
 - **Same-user processes: the cheap parts are fixed** (below).
 - **Images a guest sends stay undecoded unless the VM allows them** (2026-10-10): a per-VM switch,
   off when a VM is made (also from an imported settings file, unless the user keeps it). With it on,
   image data from the guest reaches ImageIO, Apple's decoders, within the caps above. A Phase 15
   review item.
 - **Imported VM settings files are untrusted** (2026-10-10): checked as on create, and what
-  reaches into the Mac (shared folders, bridges, forwards into the Mac, `allowLAN`, images) stays
-  out unless the user keeps it in the import sheet. A Phase 15 review item.
+  reaches into the Mac (shared folders, bridges, forwards into the Mac or open to other computers,
+  `allowLAN`, images) stays out unless the user keeps it in the import sheet. A Phase 15 review
+  item.
 
 ## Same-user processes
 

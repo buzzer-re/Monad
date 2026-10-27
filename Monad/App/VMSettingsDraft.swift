@@ -220,10 +220,11 @@ struct VMSettingsDraft {
         let host = at(rule.hostAddress, rule.hostPort), guest = at(rule.guestHost, rule.guestPort)
         let hostPort = rule.hostPort.map(String.init) ?? "?", guestPort = rule.guestPort.map(String.init) ?? "?"
         let hostSocket = rule.hostSocket ?? "?", guestSocket = rule.guestSocket ?? "?"
+        let open = rule.opensToNetwork ? ", open to other computers" : ""
         switch rule.kind {
         case .remote: return "Mac port \(hostPort), in the VM at \(guest)"
-        case .local: return "VM port \(guestPort), on the Mac at \(host)"
-        case .socks: return "SOCKS proxy on the Mac at \(host)"
+        case .local: return "VM port \(guestPort), on the Mac at \(host)\(open)"
+        case .socks: return "SOCKS proxy on the Mac at \(host)\(open)"
         case .unixLocal: return "VM socket \(guestSocket), on the Mac at \(hostSocket)"
         case .unixRemote: return "Mac socket \(hostSocket), in the VM at \(guestSocket)"
         }
@@ -231,21 +232,40 @@ struct VMSettingsDraft {
 
     /// A port forward as typed: `intoVM`, a port of this Mac reached from
     /// the VM (at the same port when `vmPort` is empty); else a port of the
-    /// VM reached on the Mac. nil until the ports are numbers.
-    static func portForward(macPort: String, vmPort: String, intoVM: Bool) -> ForwardRule? {
+    /// VM reached on the Mac, listening on `address` (the loopback when
+    /// empty). nil until the ports are numbers and the address an IP address.
+    static func portForward(macPort: String, vmPort: String, intoVM: Bool, address: String = "") -> ForwardRule? {
         let mac = Int(macPort.trimmingCharacters(in: .whitespaces))
         let typed = vmPort.trimmingCharacters(in: .whitespaces)
         let vm = typed.isEmpty && intoVM ? mac : Int(typed)
         guard let mac, let vm else { return nil }
-        return ForwardRule(kind: intoVM ? .remote : .local, hostPort: mac, guestPort: vm)
+        if intoVM { return ForwardRule(kind: .remote, hostPort: mac, guestPort: vm) }
+        guard let listen = listenAddress(address) else { return nil }
+        return ForwardRule(kind: .local, hostAddress: listen, hostPort: mac, guestPort: vm)
     }
 
-    /// The same forward the other way round (a Mac port into the VM, or a
-    /// VM port onto the Mac); SOCKS and sockets stay as they are.
+    /// A SOCKS proxy on the Mac's port, listening on `address` as above.
+    static func socksForward(macPort: String, address: String) -> ForwardRule? {
+        guard let port = Int(macPort.trimmingCharacters(in: .whitespaces)), let listen = listenAddress(address) else { return nil }
+        return ForwardRule(kind: .socks, hostAddress: listen, hostPort: port)
+    }
+
+    /// The Mac address typed for a listener: the loopback when empty.
+    private static func listenAddress(_ typed: String) -> String? {
+        let a = typed.trimmingCharacters(in: .whitespaces)
+        if a.isEmpty { return "127.0.0.1" }
+        return InstanceConfig.isIPLiteral(a) ? a : nil
+    }
+
+    /// The same forward the other way round (a Mac port into the VM, at the
+    /// Mac's loopback, or a VM port onto the Mac); SOCKS and sockets stay as
+    /// they are.
     static func turnedAround(_ rule: ForwardRule) -> ForwardRule {
         var r = rule
         switch rule.kind {
-        case .local: r.kind = .remote
+        case .local:
+            r.kind = .remote
+            r.hostAddress = "127.0.0.1"
         case .remote: r.kind = .local
         case .socks, .unixLocal, .unixRemote: break
         }
@@ -330,13 +350,24 @@ struct VMSettingsDraft {
     }
 
     /// What to confirm before adding a forward into the Mac (the VM reaches
-    /// something on it); nil for forwards that only reach the VM.
+    /// something on it) or one open to other computers; nil for the rest.
     static func confirmation(for rule: ForwardRule) -> String? {
+        let hostPort = rule.hostPort.map(String.init) ?? "?"
+        let reach = "Computers that reach this Mac at \(rule.hostAddress) will be able to"
         switch rule.kind {
-        case .remote: return "The VM will be able to connect to port \(rule.hostPort.map(String.init) ?? "?") on this Mac."
+        case .remote: return "The VM will be able to connect to port \(hostPort) on this Mac."
         case .unixRemote: return "The VM will be able to connect to \(rule.hostSocket ?? "?") on this Mac."
+        case .local where rule.opensToNetwork:
+            return "\(reach) connect to port \(rule.guestPort.map(String.init) ?? "?") in the VM, through port \(hostPort)."
+        case .socks where rule.opensToNetwork:
+            return "\(reach) use port \(hostPort) as a proxy that leaves from the VM."
         case .local, .socks, .unixLocal: return nil
         }
+    }
+
+    /// The question confirmation(for:) answers.
+    static func confirmationTitle(for rule: ForwardRule) -> String {
+        rule.reachesIntoHost ? "Let the VM reach this Mac?" : "Open this port to other computers?"
     }
 
     /// What MonadHost reports for a configured rule, if it is set up.
