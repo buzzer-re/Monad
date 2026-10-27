@@ -62,13 +62,17 @@ jobs:
       - name: Xcode
         run: xcodebuild -version
       - name: C and shell tests (Apple clang)
+        timeout-minutes: 15
         run: make -C CTests
       - name: MonadTests (Debug, warnings are errors)
         # Runs even when the C tests failed, so one push shows every problem.
         if: ${{ !cancelled() }}
+        timeout-minutes: 35
         # Skipped here, run on a developer's Mac: two tests that need an ICMP
         # echo reply from the network (hosted runners get none), and one that
-        # measures the test process's CPU and needs a quiet machine.
+        # measures the test process's CPU and needs a quiet machine. A test
+        # that hangs fails after two minutes, by name, instead of the job
+        # running out of time with nothing to show.
         run: |
           set -o pipefail
           xcodebuild test \
@@ -76,6 +80,9 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath build/DerivedData \
             -resultBundlePath build/MonadTests.xcresult \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             -skip-testing:MonadTests/NetdTests/testPingThroughMacICMPSockets \
             -skip-testing:MonadTests/NetdProcessTests/testTheSandboxAllowsTheNetworkAndNothingElse \
             -skip-testing:MonadTests/TerminalSessionTests/testFollowingAVMThroughItsLifeStaysIdle \
