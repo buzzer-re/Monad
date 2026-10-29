@@ -33,6 +33,7 @@ final class ApprovalPromptController {
 
     private func show(_ request: ApprovalRequest, waiting: Int) {
         let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+        panel.joinsFullScreenSpaces()
         panel.title = "Monad"
         panel.contentViewController = NSHostingController(rootView: ApprovalView(request: request, waiting: waiting) {
             [weak self] answer in self?.send(request, answer)

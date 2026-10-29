@@ -272,6 +272,7 @@ final class FirewallPromptController {
     private func show(_ prompt: FirewallPrompt) {
         let state = FirewallPromptState(prompt)
         let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+        panel.joinsFullScreenSpaces()
         panel.title = "Monad Firewall"
         panel.contentViewController = NSHostingController(rootView: FirewallPromptView(state: state) { [weak self, weak state] decision in
             guard let self, let state else { return }

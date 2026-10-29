@@ -38,6 +38,7 @@ final class MacSetupPromptController {
 
     private func show(_ name: String, _ request: MacSetupRequest) {
         let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+        panel.joinsFullScreenSpaces()
         panel.title = "Monad"
         let madeBy = host.instances.first { $0.name == name }?.config.parent
         panel.contentViewController = NSHostingController(rootView: MacSetupView(vm: name, madeBy: madeBy) { [weak self] go in

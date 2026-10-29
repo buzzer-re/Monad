@@ -265,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.tabbingMode = .disallowed
+            w.joinsFullScreenSpaces()
             w.center()
             managerWindow = w
         }
@@ -296,6 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
         w.isReleasedWhenClosed = false
         w.tabbingMode = .disallowed
+        w.joinsFullScreenSpaces()
         w.center()
         detailWindows[vm.name] = w
         w.makeKeyAndOrderFront(nil)
@@ -316,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.tabbingMode = .disallowed
+            w.joinsFullScreenSpaces()
             w.center()
             themeEditorWindow = w
         }
@@ -348,6 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         w.setContentSize(SettingsView.size)
         w.isReleasedWhenClosed = false
         w.tabbingMode = .disallowed
+        w.joinsFullScreenSpaces()
         return w
     }
 
