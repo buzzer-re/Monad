@@ -65,7 +65,7 @@ enum HostAgent {
         do {
             if usesLaunchctl {
                 guard let agent = launchctl else { throw MonadError("MonadHost is missing from the app bundle.") }
-                try await agent.reload()
+                try await agent.reload(vmsRunning: LaunchctlAgent.vmsRunning())
             } else {
                 let service = SMAppService.agent(plistName: plistName)
                 try? await service.unregister()
