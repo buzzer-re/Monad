@@ -43,7 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             return
         }
         // VMs live in MonadHost (a launchd agent) and keep running when
-        // Monad quits; tabs reconnect to them on the next launch.
+        // Monad quits; tabs reconnect to them on the next launch. One copy
+        // of the app at a time looks after it.
+        OtherCopies.quitOlder()
         HostAgent.start()
         // "Start VM at boot": the marked VMs start, without opening tabs.
         Task { @MainActor in

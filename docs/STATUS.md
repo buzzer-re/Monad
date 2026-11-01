@@ -63,6 +63,9 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   (host commands, or orchestrator of child VMs), with approvals for anything that reaches the Mac
   and an audit log; a VM's console and health logs are read through it without ssh, and when the
   VM service cannot be reached every call says why (with launchd's view of it).
+- **The VM service:** one copy of Monad per flavor (a newer copy asks older ones to quit); a copy
+  that cannot reach MonadHost replaces launchd's job only while no VM runs, never ending a host
+  that runs VMs (two Debug copies used to take turns, each turn powering every VM off).
 
 ## Tests
 
