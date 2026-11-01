@@ -19,6 +19,15 @@ final class VMLifecycleTests: XCTestCase {
     private var bridges: FakeBridges!
     /// Settings › Virtual Machines › Full boot messages, for the VM.
     private var bootMessages = BootMessages.quiet
+    /// Every VM a test made: stopped after it, or its agent would keep
+    /// trying to connect on the test clock (whose sleeps end at once) for
+    /// the rest of the suite, and other tests would measure its CPU.
+    private var made: [VMInstance] = []
+
+    override func tearDown() async throws {
+        for vm in made where vm.isRunning { await vm.stop(timeout: 0) }
+        made = []
+    }
 
     override func setUp() async throws {
         tmp = TempDir()
@@ -62,7 +71,9 @@ final class VMLifecycleTests: XCTestCase {
         env.hostCommandServer = { [bridges] in bridges!.make($0, $1, $2) }
         if let endpoints { env.mcpEndpoint = { socket, token, _ in endpoints.make(socket, token) } }
         let profile = guest ?? DistroConfig.GuestProfile(packageManager: "apt")
-        return VMInstance(config: config, paths: paths, environment: env, guest: profile)
+        let vm = VMInstance(config: config, paths: paths, environment: env, guest: profile)
+        made.append(vm)
+        return vm
     }
 
     /// Each VM keeps its own log, with debug logging off too: what Monad

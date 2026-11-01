@@ -89,9 +89,11 @@ with warnings as errors. `fuzz.yml` runs each fuzzer for about ten minutes every
 publishes a release (`Monad.zip` and its SHA-256) when a `v<version>` tag is pushed, after CI passes
 on that commit.
 
-Known environmental failures on the development Mac: two ICMP tests (no echo reply), and
-`TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle`, which measures the whole test
-process's CPU and fails in the full suite but passes alone.
+Known environmental failures on the development Mac: two ICMP tests (no echo reply).
+`TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle` measures the whole test process's
+CPU: it passes in the full suite now that tests stop the VMs they leave running (their agents
+retried in a tight loop on the test clock), and says what is busy when it fails; CI still skips it
+(hosted runners are not quiet).
 
 Before each commit: the whole `MonadTests` target and `make -C CTests` (its exit status), zero
 warnings, this file updated, and no private names or paths in what is committed.

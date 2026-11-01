@@ -538,11 +538,37 @@ final class ManagerFixture {
         edit(&env)
         self.env = env
         manager = VMManager(root: root, environment: env, images: images, minimumFreeBytes: 0, macMinimumFreeBytes: 0)
+        LeftRunning.shared.watch(manager)
     }
 
     /// Another manager on the same root, as a restarted host would create.
     func makeManager() -> VMManager {
         VMManager(root: root, environment: env, images: images, minimumFreeBytes: 0, macMinimumFreeBytes: 0)
+    }
+}
+
+/// VMs a test leaves running are stopped when it ends. On the test clock
+/// (whose sleeps end at once) a running VM's agent keeps trying to connect
+/// in a tight loop, logging each try: left running, they cost the rest of
+/// the suite several cores, and tests that measure CPU failed.
+@MainActor
+final class LeftRunning: NSObject, XCTestObservation {
+    static let shared: LeftRunning = {
+        let o = LeftRunning()
+        XCTestObservationCenter.shared.addTestObserver(o)
+        return o
+    }()
+    private var managers: [VMManager] = []
+
+    func watch(_ manager: VMManager) { managers.append(manager) }
+
+    nonisolated func testCaseDidFinish(_ testCase: XCTestCase) {
+        MainActor.assumeIsolated {
+            for vm in managers.flatMap(\.instances) where vm.isRunning {
+                Task { @MainActor in await vm.stop(timeout: 0) }
+            }
+            managers.removeAll()
+        }
     }
 }
 
