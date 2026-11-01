@@ -24,6 +24,14 @@ protocol TerminalViewDelegate: AnyObject {
     func terminalView(_ view: MonadTerminalView, receivedImages images: [ImagePayload]) -> Bool
     /// Non-image files were dropped. Return false to insert their host paths.
     func terminalView(_ view: MonadTerminalView, receivedFiles urls: [URL]) -> Bool
+    /// Images were pasted (⌘V). Return false to fall back to the text.
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool
+}
+
+extension TerminalViewDelegate {
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool {
+        terminalView(view, receivedImages: images)
+    }
 }
 
 private enum Mod {
@@ -1079,7 +1087,7 @@ final class MonadTerminalView: NSView, @preconcurrency NSTextInputClient, NSMenu
     @objc func paste(_ sender: Any?) {
         let pb = NSPasteboard.general
         let images = Self.images(from: pb)
-        if !images.isEmpty, delegate?.terminalView(self, receivedImages: images) == true { return }
+        if !images.isEmpty, delegate?.terminalView(self, pastedImages: images) == true { return }
         guard let text = pb.string(forType: .string), !text.isEmpty else { return }
         pasteText(text)
     }

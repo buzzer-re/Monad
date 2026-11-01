@@ -670,6 +670,47 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         onGridChange?(cols, rows)
     }
 
+    /// A host shell: the pictures are saved on the Mac and their paths typed
+    /// (a VM tab uploads them into the VM and types those paths).
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool {
+        guard target == .host else { return terminalView(view, receivedImages: images) }
+        do {
+            let paths = try Self.savePastedImages(images, in: Self.hostPastes)
+            view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
+        } catch {
+            view.showToast("The picture could not be saved: \(error.localizedDescription)", duration: 5)
+        }
+        return true
+    }
+
+    /// Where pictures pasted into host shells are kept: the user's own
+    /// temporary folder, which macOS clears in time.
+    static let hostPastes = FileManager.default.temporaryDirectory.appendingPathComponent("Monad pastes", isDirectory: true)
+
+    /// Writes each picture into `dir` (made private to the user) under its
+    /// suggested name, a number added when taken; returns their paths.
+    nonisolated static func savePastedImages(_ images: [ImagePayload], in dir: URL) throws -> [String] {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        return try images.map { img in
+            let plain = String(img.suggestedName.unicodeScalars.filter {
+                CharacterSet.alphanumerics.contains($0) || "-_.".unicodeScalars.contains($0)
+            }.map(Character.init)).replacingOccurrences(of: "..", with: ".")
+            let base = (plain as NSString).deletingPathExtension.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let name = base.isEmpty ? "picture" : base
+            var url = dir.appendingPathComponent("\(name).png")
+            var n = 1
+            while fm.fileExists(atPath: url.path) {
+                url = dir.appendingPathComponent("\(name)-\(n).png")
+                n += 1
+            }
+            try img.png.write(to: url, options: .withoutOverwriting)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return url.path
+        }
+    }
+
     func terminalView(_ view: MonadTerminalView, receivedImages images: [ImagePayload]) -> Bool {
         guard target != .host else { return false }
         guard let vm, phase == .connected else {

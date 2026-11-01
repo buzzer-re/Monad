@@ -217,6 +217,30 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertNil(T.healthNotice(nil, shown: crash, sessionEnded: true))
     }
 
+    /// ⌘V of a picture (a screenshot copied, an image in Finder) in a host
+    /// shell typed nothing: only VM tabs did something with images. It is
+    /// saved to a private folder on the Mac and its path typed, as a VM tab
+    /// types the path it uploaded to; two of one name do not overwrite.
+    func testAPictureIsPastedIntoAHostShellAsAFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = ImagePayload(png: Data([0x89, 0x50, 0x4E, 0x47, 1]), suggestedName: "shot-20261101-120000.png")
+        let b = ImagePayload(png: Data([0x89, 0x50, 0x4E, 0x47, 2]), suggestedName: "shot-20261101-120000.png")
+        let paths = try TerminalSessionViewController.savePastedImages([a, b], in: dir)
+        XCTAssertEqual(paths.count, 2)
+        XCTAssertNotEqual(paths[0], paths[1])
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths[0])), a.png)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths[1])), b.png)
+        XCTAssertTrue(paths.allSatisfy { $0.hasPrefix(dir.path + "/") && $0.hasSuffix(".png") })
+        let mode = try FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o700, "the user's own")
+        // A name cannot leave the folder.
+        let odd = try TerminalSessionViewController.savePastedImages(
+            [ImagePayload(png: Data([1]), suggestedName: "../../evil.png")], in: dir)
+        XCTAssertTrue(odd[0].hasPrefix(dir.path + "/"), odd[0])
+        XCTAssertFalse(odd[0].contains(".."), odd[0])
+    }
+
     // MARK: The progress line
 
     private func screenText(_ m: TerminalModel) -> String {
