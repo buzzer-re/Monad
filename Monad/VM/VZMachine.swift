@@ -34,6 +34,14 @@ final class VZMachineFactory: VirtualMachineFactory {
 final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, DiskAttaching, MNDVirtualMachineDelegate {
     private let vm: MNDVirtualMachine
     var onEvent: ((VMRuntimeEvent) -> Void)?
+    var onHealthOutput: ((Data) -> Void)? {
+        didSet {
+            guard let handler = onHealthOutput else { vm.healthHandler = nil; return }
+            vm.healthHandler = { data in
+                DispatchQueue.main.async { MainActor.assumeIsolated { handler(data) } }
+            }
+        }
+    }
 
     init(config: InstanceConfig, paths: InstancePaths, nic: FileHandle?, recovery: Bool = false, takesDisks: Bool = false) throws {
         vm = try MNDVirtualMachine(config: Self.vmConfig(for: config, paths: paths, nic: nic, recovery: recovery,

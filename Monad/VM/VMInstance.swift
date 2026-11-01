@@ -86,6 +86,12 @@ final class VMInstance: ObservableObject, Identifiable {
 
     /// Why shared folders are not all mounted in the guest; nil when they are.
     @Published private(set) var sharesError: String?
+    /// What the guest's health lines say is wrong this boot (its kernel
+    /// crashed, it ran out of memory, its disk is full), with what to do;
+    /// nil when nothing is. Kept after it stops, until the next start.
+    @Published private(set) var healthProblem: String?
+    private var guestHealth = GuestHealth()
+    private var healthLines = GuestReport(marker: "MONAD-H| ")
     /// Why the VM's firewall is not in force as saved (netd refused it, a
     /// tag is missing); nil when it is.
     @Published private(set) var firewallProblem: String?
@@ -883,6 +889,7 @@ final class VMInstance: ObservableObject, Identifiable {
 
     private func boot(_ m: VirtualMachineControlling) async {
         guestReport = .starting(at: paths.serialLog)
+        watchHealth(m)
         debug("boot: starting the machine (\(config.cpus) CPUs, \(config.memoryGiB) GiB, folder sharing \(config.sharing.runtimeEnabled ? "on" : "off"))")
         do {
             try await m.start()
@@ -982,10 +989,30 @@ final class VMInstance: ObservableObject, Identifiable {
         for line in guestReport.newLines(in: paths.serialLog) { debug("guest: \(line)") }
     }
 
-    /// What the guest said last, for a failure message ("" if nothing).
+    /// The guest's health lines from this boot on, as its machine hands
+    /// them over (its health port: not ssh, which is what stops answering
+    /// when the guest is in trouble). Nothing polls: no lines, no work.
+    private func watchHealth(_ m: VirtualMachineControlling) {
+        guestHealth = GuestHealth()
+        healthProblem = nil
+        healthLines = GuestReport(marker: "MONAD-H| ")
+        m.onHealthOutput = { [weak self] data in self?.healthOutput(data) }
+    }
+
+    private func healthOutput(_ data: Data) {
+        let lines = healthLines.read(data)
+        guard !lines.isEmpty else { return }
+        for problem in guestHealth.read(lines) { debug("health: \(problem)") }
+        if healthProblem != guestHealth.summary { healthProblem = guestHealth.summary }
+    }
+
+    /// What the guest said last, for a failure message ("" if nothing):
+    /// what its health lines say is wrong first (a kernel that crashed is
+    /// why ssh never answered), then its setup report.
     private var guestSays: String {
         let last = guestReport.lines.suffix(4)
-        return last.isEmpty ? "" : " The guest says: " + last.joined(separator: "; ") + "."
+        return (healthProblem.map { " \($0)" } ?? "")
+            + (last.isEmpty ? "" : " The guest says: " + last.joined(separator: "; ") + ".")
     }
 
     private enum Isolation {

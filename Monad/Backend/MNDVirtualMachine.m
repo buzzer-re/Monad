@@ -165,11 +165,13 @@ static NSError *MNDNoInput(NSString *what) {
                                                          cap:kConsoleLogCap
                                                          log:&_consoleLog
                                                       source:&_console
+                                                     forward:NO
                                                        error:error])) return nil;
     if (config.healthLogPath && !config.macOS && !(healthOut = [self openLog:config.healthLogPath
                                                                          cap:kHealthLogCap
                                                                          log:NULL
                                                                       source:&_health
+                                                                     forward:YES
                                                                        error:error])) return nil;
     VZVirtualMachineConfiguration *vzc = [MNDVirtualMachine configurationForConfig:config
                                                                      consoleOutput:consoleOut
@@ -200,11 +202,13 @@ static NSError *MNDNoInput(NSString *what) {
 #pragma mark - Console log
 
 /* Returns the write end for a guest's console port; the read end is drained
- * on the console queue into a log at path that rotates at cap. */
+ * on the console queue into a log at path that rotates at cap, and handed to
+ * healthHandler too when forward is set. */
 - (nullable NSFileHandle *)openLog:(NSString *)path
                                cap:(size_t)cap
                                log:(mnd_rotlog **)outLog
                             source:(dispatch_source_t __strong *)outSource
+                           forward:(BOOL)forward
                              error:(NSError **)error {
     int e = 0;
     mnd_rotlog *log = mnd_rotlog_open(path.fileSystemRepresentation, cap, &e);
@@ -225,11 +229,14 @@ static NSError *MNDNoInput(NSString *what) {
     if (outLog) *outLog = log;
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)rfd, 0, _consoleQueue);
     char *buf = malloc(64 * 1024);
+    __weak MNDVirtualMachine *weakSelf = self;
     dispatch_source_set_event_handler(src, ^{
         for (int i = 0; i < 16; i++) { /* bounded work per event */
             ssize_t n = read(rfd, buf, 64 * 1024);
             if (n > 0) {
                 mnd_rotlog_write(log, buf, (size_t)n);
+                void (^handler)(NSData *) = forward ? weakSelf.healthHandler : nil;
+                if (handler) handler([NSData dataWithBytes:buf length:(NSUInteger)n]);
                 continue;
             }
             if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;

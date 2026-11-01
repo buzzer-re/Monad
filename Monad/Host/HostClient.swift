@@ -62,6 +62,8 @@ final class RemoteVM: ObservableObject, Identifiable {
     var portsOverLimit: Int { snapshot.portsOverLimit ?? 0 }
     var pendingRestart: [String] { snapshot.pendingRestart ?? [] }
     var sharesError: String? { snapshot.sharesError }
+    /// What the guest's health says is wrong (VMSnapshot.health).
+    var healthProblem: String? { snapshot.health }
     var firewallProblem: String? { snapshot.firewallProblem }
     /// macOS: System Integrity Protection as found at the last boot.
     var macSecurity: MacSecurityReport? { snapshot.macSecurity }

@@ -125,6 +125,9 @@ protocol VirtualMachineControlling: AnyObject {
     /// MAC address of the NIC (generated on first build when not configured).
     var macAddress: String? { get }
     var onEvent: ((VMRuntimeEvent) -> Void)? { get set }
+    /// What the guest writes on its health port, as it comes, on the main
+    /// actor (a Linux guest's; none for others).
+    var onHealthOutput: ((Data) -> Void)? { get set }
 
     func start() async throws
     /// ACPI power button.
@@ -152,6 +155,11 @@ protocol VirtualMachineControlling: AnyObject {
 }
 
 extension VirtualMachineControlling {
+    var onHealthOutput: ((Data) -> Void)? {
+        get { nil }
+        set {}
+    }
+
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         throw MonadError("This VM has no display to show.")
     }

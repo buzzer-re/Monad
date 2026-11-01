@@ -99,6 +99,9 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
 
     var macAddress: String? = "52:54:00:12:34:56"
     var onEvent: ((VMRuntimeEvent) -> Void)?
+    var onHealthOutput: ((Data) -> Void)?
+    /// The guest writing on its health port.
+    func writeHealth(_ text: String) { onHealthOutput?(Data(text.utf8)) }
 
     var startError: Error?
     var bridgeError: Error?

@@ -133,6 +133,14 @@ final class HostProtocolTests: XCTestCase {
         try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"name":"dev","ports":[],"sessions":0,"sharesError":"Could not mount in the guest: /mnt/x.","state":{"phase":"ready"}}"#)
     }
 
+    /// What the guest's health says is wrong; absent when nothing is, so
+    /// older apps read new snapshots as before.
+    func testSnapshotWithAHealthProblem() throws {
+        var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)
+        snap.health = "The VM ran out of memory: Linux stopped node to free some."
+        try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"health":"The VM ran out of memory: Linux stopped node to free some.","name":"dev","ports":[],"sessions":0,"state":{"phase":"ready"}}"#)
+    }
+
     func testSnapshotWithFirewallQuestions() throws {
         var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)
         snap.firewallAsks = [FirewallAsk(id: 4, proto: .tcp, address: "1.2.3.4", port: 443, names: ["example.com"])]

@@ -29,7 +29,7 @@ answers are kept in `~/.monad/agents/grants.json` and taken back in Settings ›
 
 | Tool | What it does |
 |---|---|
-| `list_vms`, `get_vm` | The VMs, or one in full |
+| `list_vms`, `get_vm` | The VMs, or one in full; `health` says what a Linux guest's health lines show is wrong this boot (its kernel crashed, it ran out of memory, its disk is full) |
 | `read_vm_log` | A VM's logs, their last lines: `monad` (what Monad did with it: boots, recovery steps, errors), `console` (the guest's console, the boot before first) or `health` (a Linux guest's memory, disks and processes every 15 s, its kernel's OOM kills, crashes, hangs and I/O errors); `console` and `health` are read on the Mac, so they work when the guest no longer answers ssh |
 | `read_recovery_screens` | A macOS VM's screen as each of recovery's waits ended (its last SIP change), as pictures (Debug builds only) |
 | `create_vm` | A VM from an installed distribution, started once made unless `start` is false |

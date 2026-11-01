@@ -74,6 +74,9 @@ final class MonadTools {
         let listening: [String]?
         let forwards: [String]?
         let pendingRestart: [String]?
+        /// What the guest's health says is wrong (its kernel crashed, it
+        /// ran out of memory, its disk is full).
+        let health: String?
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
@@ -82,7 +85,7 @@ final class MonadTools {
                   network: s.config.networks.first?.network, group: s.config.group, ephemeral: s.config.ephemeral,
                   listening: s.ports.isEmpty ? nil : s.ports.map { "\($0.address):\($0.port)" },
                   forwards: s.forwards.map { $0.map { "\($0.flag) \($0.spec)" } },
-                  pendingRestart: s.pendingRestart)
+                  pendingRestart: s.pendingRestart, health: s.health)
     }
 
     // MARK: Schemas

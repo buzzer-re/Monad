@@ -280,7 +280,7 @@ final class HostService {
                    firewallProblem: vm.firewallProblem,
                    firewallAsks: vm.firewallAsks.isEmpty ? nil : vm.firewallAsks,
                    profileRuns: vm.profileRuns.isEmpty ? nil : vm.profileRuns,
-                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity)
+                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem)
     }
 
     private func instancesChanged(_ list: [VMInstance]) {
@@ -348,6 +348,7 @@ final class HostService {
             }
             if let p = s.pendingRestart { parts.append("after a restart: " + p.joined(separator: ", ")) }
             if let e = s.sharesError { parts.append("shares: " + e) }
+            if let h = s.health { parts.append("health: " + h) }
             if let a = s.firewallAsks { parts.append(DebugLog.count(a.count, "firewall question")) }
             if let r = s.profileRuns { parts.append("profiles: " + r.map { "\($0.profile) \($0.state.rawValue)" }.joined(separator: ", ")) }
             let summary = parts.joined(separator: ", ")

@@ -229,6 +229,48 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertEqual(TimeInterval(CloudInit.reportWatchSeconds), VMInstance.bootTimeout, "the guest watches as long as Monad waits")
     }
 
+    /// What the guest's health port says is wrong reaches the VM's state
+    /// and its log as it comes, lines split across pieces included, and a
+    /// new start begins clean.
+    func testTheGuestsHealthProblemsAreSaidAsTheyCome() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertNil(vm.healthProblem)
+        factory.machine.writeHealth("MONAD-H| boot id=1 kernel=7.0.0 cpus=2 mem=1997472\nMONAD-H| kern 3 Out of memory: Kill")
+        XCTAssertNil(vm.healthProblem, "half a line says nothing")
+        factory.machine.writeHealth("ed process 42 (node) total-vm:9000000kB\nnot a health line: Out of memory: Killed process 1 (x)\n")
+        let said = try XCTUnwrap(vm.healthProblem)
+        XCTAssertTrue(said.contains("Linux stopped node"), said)
+        XCTAssertFalse(said.contains("(x)") || said.contains("stopped node, x"), "only marked lines count")
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("health: The VM ran out of memory: Linux stopped node"))
+
+        await vm.stop()
+        XCTAssertNotNil(vm.healthProblem, "kept after it stops, to see why")
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertNil(vm.healthProblem, "a new start begins clean")
+    }
+
+    /// A guest whose kernel crashed (seen: on every exec, so ssh never got a
+    /// shell) fails its boot saying so, not only "not reachable over SSH".
+    func testABootThatFailsSaysTheGuestsKernelCrashed() async throws {
+        let vm = try makeInstance()
+        factory.machine.probeAnswers = [false]
+        var written = false
+        factory.machine.onProbe = { [weak self] in
+            guard !written else { return }
+            written = true
+            self?.factory.machine.writeHealth("MONAD-H| kern 0 Internal error: Oops: 0000000096000004 [#1]  SMP\n"
+                + "MONAD-H| kern 4 CPU: 1 UID: 0 PID: 17297 Comm: sshd Not tainted 7.0.0\nMONAD-H| kern 4 pc : find_attach+0x13c/0x4f8\n")
+        }
+        vm.start()
+        await assertEventually("state: \(vm.state)") { vm.isFailed }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.contains("The guest did not become reachable over SSH. The VM's kernel crashed (in find_attach, running sshd)"), message)
+    }
+
     /// On a first boot cloud-init may still be changing sshd when the check
     /// runs, and drop it. No answer proves nothing either way: the check is
     /// asked again (an exposed guest still fails at once, see below).

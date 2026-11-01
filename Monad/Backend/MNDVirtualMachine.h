@@ -122,6 +122,9 @@ NS_SWIFT_SENDABLE
 /// Whether Virtualization would start this machine (not after an error).
 @property (nonatomic, readonly) BOOL canStart;
 @property (nonatomic, readonly) MNDVMConfig *config;
+/// Each piece of the guest's health port output as it comes (after it is
+/// logged), on a private queue. Guest bytes: untrusted.
+@property (atomic, copy, nullable) void (^healthHandler)(NSData *data);
 /// Virtualization's machine, for a view of its display (a
 /// VZVirtualMachineViewAdaptor; everything else goes through this class).
 @property (nonatomic, readonly) VZVirtualMachine *machine;
