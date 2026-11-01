@@ -209,6 +209,7 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(unit.contains("NoNewPrivileges=yes\n"))
         XCTAssertTrue(unit.contains("ProtectSystem=strict\n"))
         XCTAssertTrue(unit.contains("Restart=on-failure\n"))
+        XCTAssertTrue(unit.contains("RuntimeDirectory=monad-health\n"), "its one writable place (CPU counters)")
         XCTAssertTrue(unit.contains("WantedBy=multi-user.target"))
         // VMs made before get it at their next boot, and a new script is
         // started at once.

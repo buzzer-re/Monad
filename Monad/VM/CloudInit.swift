@@ -62,6 +62,7 @@ enum CloudInit {
         ProtectSystem=strict
         ProtectHome=read-only
         PrivateTmp=yes
+        RuntimeDirectory=monad-health
         [Install]
         WantedBy=multi-user.target
 

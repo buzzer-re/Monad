@@ -48,9 +48,9 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   disk shows (partition table, superblocks and their backups), and Repair Disk runs the distribution's own
   filesystem tools on it in a temporary VM (macOS 15 and later); its kernel console reaches `serial.log`,
   errors only unless Settings › Virtual Machines › Full boot messages is on, and the boot before is
-  kept as `serial.log.1`; a Linux VM writes its health (memory, swap and its pressure, disks, the
-  biggest processes, the kernel's OOM kills, crashes, hangs and I/O errors) to its own port every
-  15 s, not over ssh, kept in `health.log` across boots.
+  kept as `serial.log.1`; a Linux VM writes its health (memory, swap and its pressure, CPU and the
+  processes using it, disks, the biggest processes, the kernel's OOM kills, crashes, hangs and I/O
+  errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app

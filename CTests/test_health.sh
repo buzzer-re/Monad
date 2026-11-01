@@ -37,10 +37,13 @@ cat "$f"
 EOF
 chmod +x "$BIN/df"
 
-proc_entry() { # PID NAME STATE RSS_KB
+proc_entry() { # PID NAME STATE RSS_KB [UTIME STIME] (clock ticks)
     mkdir -p "$PROC/$1"
     printf 'Name:\t%s\nState:\t%s\nVmRSS:\t   %s kB\n' "$2" "$3" "$4" >"$PROC/$1/status"
-    printf '%s (%s) %s 1 1 1\n' "$1" "$2" "$3" >"$PROC/$1/stat"
+    printf '%s (%s) %s 1 1 1 0 -1 0 0 0 0 0 %s %s 0 0 20 0\n' "$1" "$2" "$3" "${5:-0}" "${6:-0}" >"$PROC/$1/stat"
+}
+cpu_total() { # USER SYSTEM IDLE IOWAIT (clock ticks, all CPUs)
+    printf 'cpu  %s 0 %s %s %s 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\n' "$1" "$2" "$3" "$4" >"$PROC/stat"
 }
 
 reset() {
@@ -52,6 +55,8 @@ reset() {
     echo '7.81 5.02 2.10 3/412 9999' >"$PROC/loadavg"
     printf '/dev/vda1 / ext4 rw 0 0\nshare0 /mnt/work virtiofs rw 0 0\nshare0 /home/dev/work virtiofs rw 0 0\nshare1 /mnt/my\\040files virtiofs rw 0 0\nproc /proc proc rw 0 0\n' >"$PROC/mounts"
     printf 'processor\t: 0\nprocessor\t: 1\n' >"$PROC/cpuinfo"
+    cpu_total 1000 500 8000 100
+    rm -rf "$WORK/state"
     echo 6f1c2a10-0000-4000-8000-000000000001 >"$PROC/sys/kernel/random/boot_id"
     proc_entry 1 systemd S 12000
     proc_entry 812 node R 1480000
@@ -68,6 +73,7 @@ PORT_NAME_IN_TEST=dev.monad.health
 run() { # run MODE (stdin as given): $out (stdout), $port (what the port got), $st
     : >"$WORK/port"
     PATH="$BIN:$PATH" FAKE_DF="$WORK" MONAD_PROC="$PROC" MONAD_SYS="$SYS" MONAD_HEALTH_OUT="$WORK/port" \
+        MONAD_HEALTH_STATE="$WORK/state" MONAD_CLK_TCK=100 \
         $SH "$HEALTH" "$@" >"$WORK/stdout" 2>"$WORK/stderr"
     st=$?
     out=$(cat "$WORK/stdout")
@@ -79,8 +85,25 @@ echo "monad-health tests ($SH)" >&2
 reset
 run snapshot
 check "snapshot: status" 0 "$st"
-check "snapshot: the whole line (a share bound twice counted once)" "MONAD-H| snap up=3725 mem=40960/2014312 swap=0/0 psi=42.50,31.25 load=7.81 procs=412 dstate=2 top=node:1480000,Web_Content:220000,bun:96000 disk=/:20100000/20511312,/mnt/work:500000000/976490576" "$out"
+check "snapshot: the whole line (a share bound twice counted once; no CPU yet: nothing to compare with)" "MONAD-H| snap up=3725 mem=40960/2014312 swap=0/0 psi=42.50,31.25 load=7.81 procs=412 dstate=2 cpu=- io=- busy= top=node:1480000,Web_Content:220000,bun:96000 disk=/:20100000/20511312,/mnt/work:500000000/976490576" "$out"
 check "snapshot: to the port too" "$out" "$port"
+
+# CPU since the snapshot before: 100 is one core (as Activity Monitor
+# counts), and the processes that used the most. 10 s later, node used
+# 12 s of CPU (1200 ticks), Web Content 3 s; the guest 18 s busy, 2 s
+# waiting for its disk.
+reset
+proc_entry 812 node R 1480000 4000 1000
+proc_entry 813 'Web Content' D 220000 100 100
+run snapshot
+echo '3735.43 7000.00' >"$PROC/uptime"
+proc_entry 812 node R 1480000 4900 1300
+proc_entry 813 'Web Content' D 220000 300 200
+proc_entry 950 'new one' R 1000 50 0
+cpu_total 2500 800 8200 300
+run snapshot
+check "cpu: busy and waiting, per core" "cpu=180 io=20 busy=node:120,Web_Content:30,new_one:5" \
+    "$(printf '%s\n' "$out" | sed 's/.* \(cpu=[^ ]* io=[^ ]* busy=[^ ]*\) .*/\1/')"
 
 # A share that hangs is cut off; the rest is still said.
 reset
@@ -178,6 +201,26 @@ port=$(cat "$WORK/port")
 check "run: boot first" "MONAD-H| boot id=6f1c2a10-0000-4000-8000-000000000001 kernel=$(uname -r) cpus=2 mem=2014312" "$(printf '%s\n' "$port" | head -1)"
 check "run: snapshots" yes "$([ "$(printf '%s\n' "$port" | grep -c '^MONAD-H| snap ')" -ge 1 ] && echo yes || echo no)"
 check "run: kernel lines" 9 "$(printf '%s\n' "$port" | grep -c '^MONAD-H| kern ')"
+
+# A kernel line reaches the port as it comes, not when a buffer fills: the
+# OOM kill is what must be there before the guest freezes.
+reset
+rm -f "$WORK/kmsg.fifo"
+mkfifo "$WORK/kmsg.fifo"
+PATH="$BIN:$PATH" FAKE_DF="$WORK" MONAD_PROC="$PROC" MONAD_SYS="$SYS" MONAD_HEALTH_OUT="$WORK/port" \
+    MONAD_KMSG="$WORK/kmsg.fifo" MONAD_HEALTH_INTERVAL=60 $SH "$HEALTH" run >/dev/null 2>&1 &
+pid=$!
+exec 7>"$WORK/kmsg.fifo"
+printf '3,500,9000000,-;Out of memory: Killed process 17955 (python3) total-vm:1707252kB\n' >&7
+seen=no
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if grep -q 'Killed process 17955' "$WORK/port" 2>/dev/null; then seen=yes; break; fi
+    sleep 0.2
+done
+check "streamed: the OOM kill is there at once" yes "$seen"
+exec 7>&-
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
 
 # No health port (Lima boots the same disk): run ends at once, quietly.
 reset
