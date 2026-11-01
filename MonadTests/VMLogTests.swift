@@ -135,13 +135,15 @@ final class VMLogPageModelTests: XCTestCase {
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         host.display()
-        // What a second costs with the page open and nothing new.
+        // What a second costs the main thread (the window's) with the page
+        // open and nothing new. The main thread only: what other tests left
+        // running costs other threads and says nothing about the window.
         func quietSecond() -> TimeInterval {
-            let cpu = processCPUSeconds()
+            let cpu = mainThreadCPUSeconds()
             RunLoop.main.run(until: Date().addingTimeInterval(1.1))
             host.layoutSubtreeIfNeeded()
             host.display()
-            return processCPUSeconds() - cpu
+            return mainThreadCPUSeconds() - cpu
         }
         let quiet = quietSecond()
         var worst: TimeInterval = 0
@@ -151,12 +153,26 @@ final class VMLogPageModelTests: XCTestCase {
             try h.write(contentsOf: Data("2026-11-01 19:38:0\(i) agent: disconnected after 15.8 s\n".utf8))
             try h.close()
             // The page looks once a second; what it does then is CPU spent.
-            let cpu = processCPUSeconds()
+            let cpu = mainThreadCPUSeconds()
             RunLoop.main.run(until: Date().addingTimeInterval(1.1))
             host.layoutSubtreeIfNeeded()
             host.display()
-            worst = max(worst, processCPUSeconds() - cpu)
+            worst = max(worst, mainThreadCPUSeconds() - cpu)
         }
-        XCTAssertLessThan(worst - quiet, 0.05, "\(worst) s of CPU for one new line (\(quiet) s for a second with none)")
+        XCTAssertLessThan(worst - quiet, 0.05, "\(worst) s of the main thread for one new line (\(quiet) s for a second with none)")
     }
+}
+
+/// CPU time the calling thread used so far (the main thread, in a test).
+func mainThreadCPUSeconds() -> TimeInterval {
+    var info = thread_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let port = mach_thread_self()
+    defer { mach_port_deallocate(mach_task_self_, port) }
+    let r = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { thread_info(port, thread_flavor_t(THREAD_BASIC_INFO), $0, &count) }
+    }
+    guard r == KERN_SUCCESS else { return 0 }
+    return TimeInterval(info.user_time.seconds) + TimeInterval(info.user_time.microseconds) / 1e6
+        + TimeInterval(info.system_time.seconds) + TimeInterval(info.system_time.microseconds) / 1e6
 }
