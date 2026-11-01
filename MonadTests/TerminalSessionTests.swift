@@ -15,7 +15,48 @@ final class TerminalSessionTests: XCTestCase {
         let before = processCPUSeconds()
         try await Task.sleep(nanoseconds: 500_000_000)
         let used = processCPUSeconds() - before
-        XCTAssertLessThan(used, 0.2, "\(what): \(used) s of CPU in 0.5 s", file: file, line: line)
+        guard used >= 0.2 else { return }
+        // Busy: say what is (the test process's busiest stacks), not only
+        // that it is. A leak from another test shows up here too.
+        let busy = await sampleOwnProcess()
+        XCTFail("\(what): \(used) s of CPU in 0.5 s. Busiest:\n\(busy)", file: file, line: line)
+    }
+
+    /// One second of /usr/bin/sample on this process, waited for without
+    /// holding the main thread (what spins there must go on spinning).
+    private func sampleOwnProcess() async -> String {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("idle-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: out) }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+        p.arguments = [String(ProcessInfo.processInfo.processIdentifier), "1", "-mayDie", "-file", out.path]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+                p.terminationHandler = { _ in done.resume() }
+                do { try p.run() } catch { done.resume(throwing: error) }
+            }
+        } catch { return "(sample did not run: \(error))" }
+        guard let text = try? String(contentsOf: out, encoding: .utf8) else { return "(no sample)" }
+        // Kept beside the sources too (build/ is ignored), to read in full.
+        let kept = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("build/idle-sample.txt")
+        try? FileManager.default.createDirectory(at: kept.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: kept, atomically: true, encoding: .utf8)
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "sample"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        // Thread headers and the deepest frames with many samples.
+        let lines = text.split(separator: "\n").map(String.init)
+        let threads = lines.filter { $0.contains("Thread_") && !$0.contains("  0 ") }
+        let heavy = lines.filter { l in
+            let t = l.trimmingCharacters(in: .whitespaces)
+            guard let n = Int(t.split(separator: " ").first.map { String($0.filter(\.isNumber)) } ?? "") else { return false }
+            return n >= 300 && !t.contains("start_wqthread") && !t.contains("thread_start")
+        }
+        return (threads.prefix(20) + ["--"] + heavy.suffix(60)).joined(separator: "\n")
     }
 
     /// VM › Restart VM restarts the focused tab's VM, and the tab connects
