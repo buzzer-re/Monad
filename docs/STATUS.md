@@ -37,7 +37,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 ## What Monad does
 
-- **VMs:** Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
+- **VMs:** a new Debian 13 VM boots the first time (its sshd.service is an alias of ssh.service,
+  which one systemctl call masking every unit could not mask, so sshd kept TCP 22); Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
   verified with pinned keys); macOS guests (install from Apple or an IPSW, no Setup Assistant, SIP
   switchable through recovery, copies); Lima VMs booted in place or copied in; ephemeral Linux VMs.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
@@ -109,7 +110,8 @@ warnings, this file updated, and no private names or paths in what is committed.
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
-  per-distro first boot of every built-in distribution; the health port (`health.log`) from a VM's second boot; the kernel console on hvc0 (`serial.log` from a
+  first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
+  through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a
   VM's second boot), quiet and full, on each of them; Repair Disk end to end (a disk attached to a running VM over USB is
   tested against fakes only).
 - **Later:** Developer ID signing and notarization; growing disks; a Homebrew profile for macOS

@@ -94,7 +94,8 @@ final class VMLifecycleTests: XCTestCase {
         vm.start()
         await assertEventually { vm.state == .ready }
         let check = try XCTUnwrap(runner.calls.first { CloudInit.isIsolationCheck($0.arguments.last) })
-        XCTAssertTrue(check.arguments.last?.contains("mask --now ssh.service ssh.socket sshd.service sshd.socket") ?? false)
+        XCTAssertTrue(check.arguments.last?.contains("for u in ssh.service ssh.socket sshd.service sshd.socket; do") ?? false)
+        XCTAssertTrue(check.arguments.last?.contains("systemctl stop ssh.service ssh.socket sshd.service sshd.socket") ?? false)
     }
 
     private var sshTrueCalls: [FakeCommandRunner.Call] { runner.sshCalls(runningRemote: "true") }
@@ -273,7 +274,7 @@ final class VMLifecycleTests: XCTestCase {
 
     /// On a first boot cloud-init may still be changing sshd when the check
     /// runs, and drop it. No answer proves nothing either way: the check is
-    /// asked again (an exposed guest still fails at once, see below).
+    /// asked again (an exposed guest still fails, see below).
     func testAnUnansweredIsolationCheckIsAskedAgain() async throws {
         var checks = 0
         runner.setHandler { call in
@@ -322,8 +323,11 @@ final class VMLifecycleTests: XCTestCase {
     }
 
     func testIsolationFailureFailsClosed() async throws {
+        var checks = 0
         runner.setHandler { call in
-            CloudInit.isIsolationCheck(call.arguments.last) ? .ok("tcp22-open\n") : .ok()
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            checks += 1
+            return .ok("tcp22-open\n")
         }
         let vm = try makeInstance()
         vm.start()
@@ -331,6 +335,46 @@ final class VMLifecycleTests: XCTestCase {
         guard case .failed(let message) = vm.state else { return XCTFail() }
         XCTAssertTrue(message.lowercased().contains("isolation"), message)
         XCTAssertEqual(factory.machine.forceStops, 1, "an exposed guest must not stay up")
+        XCTAssertGreaterThan(checks, 1, "asked again for a while first")
+        XCTAssertLessThan(clock.totalSlept, VMInstance.exposedGrace + 5, "but not for the whole boot")
+    }
+
+    /// What the guest answers the check with goes into the failure message
+    /// only as one plain, short line: it is the guest's text.
+    func testAnExposedGuestsAnswerIsPlainAndShortInTheMessage() async throws {
+        runner.setHandler { call in
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            return .ok("tcp22-open (\u{1B}]0;owned\u{07}\u{202E}" + String(repeating: "x", count: 10_000) + ")\nsecond line\n")
+        }
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.isFailed }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.hasPrefix("Guest isolation check failed (tcp22-open ("), message)
+        XCTAssertFalse(message.contains("\u{1B}") || message.contains("\u{07}") || message.contains("\u{202E}"), message)
+        XCTAssertFalse(message.contains("second line"), message)
+        XCTAssertLessThan(message.count, 400, message)
+    }
+
+    /// Seen with Debian 13 on the Mac: on a first boot the distro's own sshd
+    /// still listens on TCP 22 for a moment while cloud-init sets the guest
+    /// up, and the first check found it open: the new VM failed, and booted
+    /// fine when started again. An open port is asked about again for a
+    /// short while; no shell is handed out until it is closed.
+    func testAPortClosedSoonAfterTheFirstCheckIsReady() async throws {
+        var checks = 0
+        runner.setHandler { call in
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            checks += 1
+            return .ok(checks <= 2 ? "tcp22-open\n" : "ok\n")
+        }
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually("\(vm.state)") { vm.state == .ready }
+        XCTAssertEqual(checks, 3)
+        XCTAssertEqual(factory.machine.forceStops, 0)
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("TCP 22 still open, asking again"))
     }
 
     // MARK: Guest components
@@ -497,7 +541,7 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertFalse(known.contains("AAAAOLD"), "host keys from before are forgotten")
         let isolation = runner.calls.compactMap(\.arguments.last).filter { CloudInit.isIsolationCheck($0) }
         XCTAssertFalse(isolation.isEmpty)
-        XCTAssertTrue(isolation.allSatisfy { $0.contains("mask --runtime --now") }, "Lima's sshd comes back at its next boot")
+        XCTAssertTrue(isolation.allSatisfy { $0.contains("systemctl mask --runtime \"$u\"") }, "Lima's sshd comes back at its next boot")
     }
 
     /// The release and the debug Monad never boot one Lima disk at once:

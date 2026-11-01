@@ -306,6 +306,18 @@ enum CloudInit {
     /// yet (a first boot: systemd's sshd-vsock.socket answered first).
     static let monadSSHDNotYet = "monad-sshd-not-yet"
 
+    /// Masks each unit on its own, then stops them all. One systemctl call
+    /// for every unit failed as a whole where a name is an alias (Debian
+    /// 13's sshd.service, of ssh.service: systemctl will not mask an alias),
+    /// and its --now stopped nothing: sshd kept TCP 22, and every new Debian
+    /// VM failed its first boot. For a YAML double-quoted scalar or sh -c.
+    static func maskEachAndStop(_ units: [String], runtime: Bool, sudo: Bool = false) -> String {
+        let run = sudo ? "sudo -n systemctl" : "systemctl"
+        let list = units.joined(separator: " ")
+        return "for u in \(list); do \(run) mask \(runtime ? "--runtime " : "")\\\"$u\\\" >/dev/null 2>&1 || true; done; "
+            + "\(run) stop \(list) >/dev/null 2>&1 || true"
+    }
+
     static func enforceIsolationScript(guest: DistroConfig.GuestProfile, lima: Bool = false) -> String {
         let units = (networkSSHUnits + (lima ? ["lima-guestagent.service"] : [])).joined(separator: " ")
         let mask = lima ? "mask --runtime" : "mask"
@@ -315,11 +327,20 @@ enum CloudInit {
         // systemd's sshd-vsock.socket first would close the only way in.
         return isolationMarker
             + "if ! systemctl is-active --quiet monad-sshd.socket; then echo \(monadSSHDNotYet); exit 0; fi; "
-            + "sudo -n systemctl \(mask) --now \(units) >/dev/null 2>&1; "
+            // Each on its own (an alias must not stop the others), then all
+            // stopped; the last refusal is kept to say why a port stayed open.
+            + "masked=; for u in \(units); do out=$(sudo -n systemctl \(mask) \"$u\" 2>&1) || masked=$(printf '%s' \"$out\" | tail -1); done; "
+            + "sudo -n systemctl stop \(units) >/dev/null 2>&1; "
             + "sudo -n systemctl \(mask) sshd-vsock.socket >/dev/null 2>&1; "
             + "sudo -n systemctl reset-failed sshd-vsock.socket >/dev/null 2>&1; "
             + "if ! listening=$(ss -Htln 2>/dev/null); then echo listening-ports-unreadable; "
-            + "elif printf '%s\\n' \"$listening\" | grep -q ':22 '; then echo tcp22-open; else echo ok; fi"
+            + "elif printf '%s\\n' \"$listening\" | grep -q ':22 '; then "
+            // Why it stayed open, plain and short: the masks' last word,
+            // whether sudo works, and what listens there.
+            + "if sudo -n true 2>/dev/null; then who=$(sudo -n ss -Htlnp 'sport = :22' 2>/dev/null | head -2); "
+            + "else who='sudo needs a password'; fi; "
+            + "why=$(printf '%s; %s' \"$masked\" \"$who\" | tr -cd '[:print:]' | cut -c1-200); "
+            + "echo \"tcp22-open ($why)\"; else echo ok; fi"
     }
 
     static func isIsolationCheck(_ remoteCommand: String?) -> Bool {
@@ -383,7 +404,7 @@ enum CloudInit {
             ssh_deletekeys: false
             mounts: []
             bootcmd:
-              - [systemctl, mask, --runtime, --now, \((networkSSHUnits + ["sshd-vsock.socket", "lima-guestagent.service"]).joined(separator: ", "))]
+              - [sh, -c, "\(maskEachAndStop(networkSSHUnits + ["sshd-vsock.socket", "lima-guestagent.service"], runtime: true))"]
               - [sh, -c, "! [ -e /etc/systemd/system/monad-sshd.socket ] || systemctl enable --runtime --now --no-block monad-sshd.socket"]
 
             """
@@ -395,7 +416,7 @@ enum CloudInit {
         // The user joins whichever admin groups this guest has (sudo itself
         // comes from the sudoers rule above). User names are plain.
         let lastingMask = lima ? "" : """
-              - [systemctl, mask, --now, \(masked.joined(separator: ", "))]
+              - [sh, -c, "\(maskEachAndStop(masked, runtime: false))"]
               - [sh, -c, "for g in wheel sudo adm; do getent group $g >/dev/null && usermod -aG $g \(user); done; true"]
 
             """ + (!copy ? "" : """

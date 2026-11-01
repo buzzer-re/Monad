@@ -25,6 +25,10 @@ final class VMInstance: ObservableObject, Identifiable {
 
     /// How long a first boot may take before we give up.
     static let bootTimeout: TimeInterval = 15 * 60
+    /// How long TCP 22 may be found open during a boot before the VM is
+    /// failed: a first boot's distro sshd is stopped by cloud-init within
+    /// seconds.
+    static let exposedGrace: TimeInterval = 20
 
     nonisolated let name: String
     let paths: InstancePaths
@@ -938,6 +942,7 @@ final class VMInstance: ObservableObject, Identifiable {
         let deadline = env.clock.now().addingTimeInterval(Self.bootTimeout)
         var unanswered: String?
         var answering: Bool?
+        var exposedSince: Date?
         while env.clock.now() < deadline {
             guard state == .booting, !Task.isCancelled else { return }
             readGuestReport()
@@ -962,6 +967,15 @@ final class VMInstance: ObservableObject, Identifiable {
                         return
                     case .exposed(let verdict):
                         guard state == .booting else { return }
+                        // On a first boot the distro's sshd can still listen
+                        // while cloud-init masks it (seen with Debian 13): asked
+                        // again for a short while; no shell before it is closed.
+                        let since = exposedSince ?? env.clock.now()
+                        exposedSince = since
+                        if env.clock.now().timeIntervalSince(since) < Self.exposedGrace {
+                            debug("boot: TCP 22 still open, asking again (\(verdict))")
+                            break
+                        }
                         // Fail closed: a guest whose sshd is exposed on the network is not used.
                         Log.vm.error("\(self.sshHost, privacy: .public): isolation check failed: \(verdict, privacy: .public)")
                         await fail(m, "Guest isolation check failed (\(verdict)). The VM was powered off.")
@@ -1037,8 +1051,20 @@ final class VMInstance: ObservableObject, Identifiable {
         case CloudInit.monadSSHDNotYet: return .unanswered("Monad's ssh service is not set up in the guest yet")
         case "": return .unanswered(r.stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n").last.map(String.init) ?? "")
-        case let verdict: return .exposed(verdict)
+        case let verdict: return .exposed(Self.plainLine(verdict, max: 240))
         }
+    }
+
+    /// The first line of what a guest said, controls and bidirectional marks
+    /// dropped, cut: guest text for a message the user reads.
+    nonisolated static func plainLine(_ s: String, max: Int) -> String {
+        let line = s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let kept = line.unicodeScalars.filter { c in
+            guard c.properties.generalCategory != .control, c.properties.generalCategory != .format else { return false }
+            return true
+        }
+        let text = String(String.UnicodeScalarView(kept))
+        return text.count > max ? String(text.prefix(max)) + "…" : text
     }
 
     private func becomeReady() {
