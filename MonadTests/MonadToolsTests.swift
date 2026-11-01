@@ -84,6 +84,27 @@ final class MonadToolsTests: XCTestCase {
         } catch {}
     }
 
+    /// The guest's own logs, read without ssh (a guest out of memory no
+    /// longer answers it): its console, the boot before first, and its
+    /// health lines. Guest text: no control characters reach the agent.
+    func testTheGuestsConsoleAndHealthAreRead() async throws {
+        let vm = try await made("web")
+        try Data("old boot\n".utf8).write(to: vm.paths.serialLog.appendingPathExtension("1"))
+        try Data("[ 1.0] Linux\n\u{1B}]0;evil\u{07}\u{1B}[31mred\n".utf8).write(to: vm.paths.serialLog)
+        let console = try await call("read_vm_log", ["name": .string("web"), "log": .string("console")])
+        XCTAssertEqual(console.text, "old boot\n[ 1.0] Linux\n]0;evil[31mred", console.text)
+        try Data("MONAD-H| snap up=5 mem=1/2\nMONAD-H| kern 3 Out of memory: Killed process 1 (x)\n".utf8)
+            .write(to: vm.paths.healthLog)
+        let health = try await call("read_vm_log", ["name": .string("web"), "log": .string("health"), "lines": .number(1)])
+        XCTAssertEqual(health.text, "MONAD-H| kern 3 Out of memory: Killed process 1 (x)")
+        let none = try await call("read_vm_log", ["name": .string("web"), "log": .string("health"), "lines": .number(0)])
+        XCTAssertEqual(none.text.split(separator: "\n").count, 1, "at least one line")
+        do {
+            _ = try await call("read_vm_log", ["name": .string("web"), "log": .string("../../etc")])
+            XCTFail("only monad, console or health")
+        } catch {}
+    }
+
     /// Recovery's screens from its last run: listed, and one of them (the
     /// last by default) given as a picture.
     func testRecoveryScreensAreShown() async throws {

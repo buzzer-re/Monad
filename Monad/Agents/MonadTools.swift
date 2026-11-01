@@ -200,14 +200,26 @@ final class MonadTools {
                 return result
             },
             MCPTool(name: "read_vm_log",
-                    description: "A VM's log: what Monad did with it (boots, recovery steps, settings applied, errors), its "
-                        + "last lines, oldest first.",
-                    schema: Self.schema(["name": Self.vmName, "lines": Self.integer("How many (default 100, at most 2000).")],
+                    description: "A VM's logs, their last lines, oldest first. monad (default): what Monad did with it (boots, "
+                        + "recovery steps, settings applied, errors). console: the guest's console, the boot before first "
+                        + "(kernel errors, crashes). health: a Linux guest's health every 15 s and its kernel's OOM kills, "
+                        + "segfaults, hangs and I/O errors, across boots. console and health are read on the Mac, so they "
+                        + "work when the guest no longer answers ssh.",
+                    schema: Self.schema(["name": Self.vmName, "lines": Self.integer("How many (default 100, at most 2000)."),
+                                         "log": Self.string("monad, console or health (default monad).")],
                                         required: ["name"]), risk: .read) { [unowned self] call in
                 let vm = try self.vm(try call.string("name"))
                 let count = min(max(try call.optionalInt("lines") ?? 100, 1), 2000)
-                vm.log.flush()
-                let lines = VMLog.read(vm.paths.vmLog).split(separator: "\n", omittingEmptySubsequences: true)
+                let text: String
+                switch try call.optionalString("log") ?? "monad" {
+                case "monad":
+                    vm.log.flush()
+                    text = VMLog.read(vm.paths.vmLog)
+                case "console": text = Self.guestText(VMLog.read(vm.paths.serialLog))
+                case "health": text = Self.guestText(VMLog.read(vm.paths.healthLog))
+                case let other: throw MonadError("No log “\(other.prefix(32))”: monad, console or health.")
+                }
+                let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
                 return MCPResult(text: lines.suffix(count).joined(separator: "\n"))
             },
             MCPTool(name: "exec",
@@ -942,6 +954,18 @@ final class MonadTools {
     private static func guestPath(_ p: String) throws -> String {
         guard !p.isEmpty, p.utf8.count <= 4096, !HostCommand.hasControl(p) else { throw MonadError("That is not a path.") }
         return p
+    }
+
+    /// What a guest wrote (its console, its health lines), as an agent may
+    /// read it: lines and tabs kept, every other control, C1 and
+    /// bidirectional character dropped.
+    static func guestText(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.filter { c in
+            if c == "\n" || c == "\t" { return true }
+            if c.value < 0x20 || (0x7F...0x9F).contains(c.value) { return false }
+            return !(0x202A...0x202E).contains(c.value) && !(0x2066...0x2069).contains(c.value)
+                && c.value != 0x200E && c.value != 0x200F && c.value != 0x061C
+        }))
     }
 
     static func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

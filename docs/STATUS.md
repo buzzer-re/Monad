@@ -61,7 +61,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role
   (host commands, or orchestrator of child VMs), with approvals for anything that reaches the Mac
-  and an audit log.
+  and an audit log; a VM's console and health logs are read through it without ssh, and when the
+  VM service cannot be reached every call says why (with launchd's view of it).
 
 ## Tests
 
