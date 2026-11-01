@@ -70,6 +70,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **The VM service:** one copy of Monad per flavor (a newer copy asks older ones to quit); a copy
   that cannot reach MonadHost replaces launchd's job only while no VM runs, never ending a host
   that runs VMs (two Debug copies used to take turns, each turn powering every VM off).
+  An outdated MonadHost kept for its running VMs is replaced once the last of them stops.
 
 ## Tests
 

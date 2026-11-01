@@ -471,6 +471,7 @@ final class HostClient: ObservableObject {
             // a VM changing group changes the list, not only the VM.
             if vm.config.group != snap.config.group { objectWillChange.send() }
             vm.update(snap)
+            replaceOutdatedHostOnceIdle()
         } else {
             failedCreations[snap.name] = nil
             instances.append(RemoteVM(snapshot: snap, root: root))
@@ -720,7 +721,38 @@ final class HostClient: ObservableObject {
     func updateHost() async throws {
         guard hostIsOutdated else { return }
         debug("restarting the VM service on request: every VM stops")
+        // Its VMs stopping would replace the host too: once is enough.
+        replacingHost = true
+        defer { replacingHost = false }
         try await request(.stopAll)
+        try await replaceHost()
+    }
+
+    /// An outdated host kept for its VMs is replaced once none runs: this
+    /// app's own connection keeps it from ever being idle, so it would stay
+    /// until restarted by hand (seen: a rebuilt Monad served by the old
+    /// MonadHost, its fixes absent).
+    private var replacingHost = false
+
+    private func replaceOutdatedHostOnceIdle() {
+        guard hostIsOutdated, !replacingHost, status == .connected,
+              !instances.contains(where: { $0.isRunning || $0.state.isPreparing }) else { return }
+        replacingHost = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.replacingHost = false }
+            do {
+                self.debug("the VM service is outdated and no VM runs: replacing it")
+                try await self.replaceHost()
+            } catch {
+                self.debug("the outdated VM service stays: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Asks the outdated host to make way, then connects to the new one.
+    /// The host refuses while a VM of its runs.
+    private func replaceHost() async throws {
         guard let t = transport else { throw HostClientError.unavailable }
         let r = try await roundTrip(HostRequest(id: takeID(), op: .shutdown), on: t)
         guard r.ok else { throw MonadError(r.error ?? "The VM service could not restart.") }
