@@ -45,6 +45,9 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 @property (nonatomic, copy, nullable) NSString *auxiliaryStoragePath;
 @property (nonatomic, copy, nullable) NSString *hardwareModelPath;
 @property (nonatomic, copy, nullable) NSString *serialLogPath;
+/// A Linux guest's health port (a virtio console port named
+/// dev.monad.health) is logged here, kept across boots; nil: no port.
+@property (nonatomic, copy, nullable) NSString *healthLogPath;
 @property (nonatomic) NSUInteger cpuCount;
 @property (nonatomic) uint64_t memoryBytes;
 @property (nonatomic) BOOL networkEnabled;

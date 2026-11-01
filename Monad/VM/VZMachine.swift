@@ -69,6 +69,7 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             c.machineIdentifierPath = paths.machineID.path
         }
         c.serialLogPath = paths.serialLog.path
+        if config.guestOS != .macos { c.healthLogPath = paths.healthLog.path }
         c.cpuCount = UInt(max(1, config.cpus))
         c.memoryBytes = UInt64(max(1, config.memoryGiB)) << 30
         c.networkEnabled = !config.networks.isEmpty

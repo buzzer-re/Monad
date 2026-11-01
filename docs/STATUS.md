@@ -47,7 +47,10 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   the next start, that MonadHost ended while the VM ran); a Linux boot that fails says what the VM's
   disk shows (partition table, superblocks and their backups), and Repair Disk runs the distribution's own
   filesystem tools on it in a temporary VM (macOS 15 and later); its kernel console reaches `serial.log`,
-  errors only unless Settings › Virtual Machines › Full boot messages is on.
+  errors only unless Settings › Virtual Machines › Full boot messages is on, and the boot before is
+  kept as `serial.log.1`; a Linux VM writes its health (memory, swap and its pressure, disks, the
+  biggest processes, the kernel's OOM kills, crashes, hangs and I/O errors) to its own port every
+  15 s, not over ssh, kept in `health.log` across boots.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
@@ -96,7 +99,7 @@ warnings, this file updated, and no private names or paths in what is committed.
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
-  per-distro first boot of every built-in distribution; the kernel console on hvc0 (`serial.log` from a
+  per-distro first boot of every built-in distribution; the health port (`health.log`) from a VM's second boot; the kernel console on hvc0 (`serial.log` from a
   VM's second boot), quiet and full, on each of them; Repair Disk end to end (a disk attached to a running VM over USB is
   tested against fakes only).
 - **Later:** Developer ID signing and notarization; growing disks; a Homebrew profile for macOS

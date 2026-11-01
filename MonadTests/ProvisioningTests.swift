@@ -189,6 +189,37 @@ final class CloudInitTests: XCTestCase {
             "install_file /etc/systemd/system/monad-report.service 0644 '\(Data(CloudInit.reportServiceUnit.utf8).base64EncodedString())'"))
     }
 
+    /// The guest's health (memory, disks, the kernel's OOM kills and
+    /// crashes) goes to the health port from its first boot on, started by
+    /// systemd and not by Monad's ssh, which is what stops answering when a
+    /// guest runs out of memory. The OOM killer leaves it alone, and it gets
+    /// nothing but reading the kernel log.
+    func testTheGuestReportsItsHealthWithoutSSH() throws {
+        let ud = CloudInit.userData(config: config, guest: ubuntu, publicKey: "k")
+        let encoded = Data(try CloudInit.healthScript().utf8).base64EncodedString()
+        XCTAssertTrue(ud.contains("path: /usr/local/lib/monad/health"))
+        XCTAssertTrue(ud.contains("content: \(encoded)"), "script shipped byte for byte")
+        XCTAssertTrue(ud.contains("path: /etc/systemd/system/monad-health.service"))
+        XCTAssertTrue(ud.contains("  - [systemctl, enable, --now, --no-block, monad-health.service]\n"))
+        let unit = CloudInit.healthServiceUnit
+        XCTAssertTrue(unit.contains("ExecStart=/bin/sh /usr/local/lib/monad/health run\n"))
+        XCTAssertFalse(unit.contains("sshd"), "nothing waits for ssh")
+        XCTAssertTrue(unit.contains("OOMScoreAdjust=-1000\n"))
+        XCTAssertTrue(unit.contains("CapabilityBoundingSet=CAP_SYSLOG\n"))
+        XCTAssertTrue(unit.contains("NoNewPrivileges=yes\n"))
+        XCTAssertTrue(unit.contains("ProtectSystem=strict\n"))
+        XCTAssertTrue(unit.contains("Restart=on-failure\n"))
+        XCTAssertTrue(unit.contains("WantedBy=multi-user.target"))
+        // VMs made before get it at their next boot, and a new script is
+        // started at once.
+        let installer = try CloudInit.guestInstallScript(guest: ubuntu)
+        XCTAssertTrue(installer.contains("install_file /usr/local/lib/monad/health 0755 '\(encoded)'"))
+        XCTAssertTrue(installer.contains(
+            "install_file /etc/systemd/system/monad-health.service 0644 '\(Data(unit.utf8).base64EncodedString())'"))
+        XCTAssertTrue(installer.contains("systemctl enable monad-health.service >/dev/null 2>&1 || true\n"))
+        XCTAssertTrue(installer.contains("if [ \"$health_changed\" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi\n"))
+    }
+
     /// Where SELinux is on, Monad loads its own small policy module (rules
     /// its pieces were seen to need on openSUSE: systemd listening on the
     /// agent's vsock socket, sshd's helpers on theirs), at first boot before

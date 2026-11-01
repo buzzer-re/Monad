@@ -81,6 +81,9 @@ struct InstancePaths {
     /// The screen as each of recovery's waits ended, from its last run (PNGs).
     var recoveryScreens: URL { dir.appendingPathComponent("recovery-screens", isDirectory: true) }
     var serialLog: URL { dir.appendingPathComponent("serial.log") }
+    /// What a Linux guest says of its health (Guest/monad-health.sh), from
+    /// its health port; kept across boots.
+    var healthLog: URL { dir.appendingPathComponent("health.log") }
     /// What Monad did with the VM, for its Log page (VMLog).
     var vmLog: URL { dir.appendingPathComponent("vm.log") }
     /// There while the VM's machine runs (when it started); one left behind

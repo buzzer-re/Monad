@@ -36,6 +36,37 @@ enum CloudInit {
 
     static let reportPath = "/usr/local/lib/monad/report"
 
+    /// What the guest says about its own health (memory, disks, the
+    /// kernel's OOM kills and crashes) on its health port, which Monad logs
+    /// in health.log: not over ssh, which is what stops answering then
+    /// (Guest/monad-health.sh).
+    static func healthScript() throws -> String { try bundled("monad-health", "sh") }
+    static let healthPath = "/usr/local/lib/monad/health"
+
+    /// Started by systemd at every boot, ssh or not. The OOM killer passes
+    /// it over (it is what says the OOM killer ran), and it may do no more
+    /// than read: CAP_SYSLOG for the kernel log, everything else read-only.
+    static let healthServiceUnit = """
+        [Unit]
+        Description=Monad: the VM's health, for the Mac (on its own port, not over ssh)
+        [Service]
+        Type=simple
+        ExecStart=/bin/sh \(healthPath) run
+        Restart=on-failure
+        RestartSec=10
+        OOMScoreAdjust=-1000
+        Nice=-5
+        CapabilityBoundingSet=CAP_SYSLOG
+        AmbientCapabilities=
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=read-only
+        PrivateTmp=yes
+        [Install]
+        WantedBy=multi-user.target
+
+        """
+
     /// Monad's SELinux module (Guest/monad.cil) and its loader, which loads
     /// it only where SELinux is on (Guest/monad-selinux.sh).
     static func selinuxModule() throws -> String { try bundled("monad", "cil") }
@@ -198,6 +229,7 @@ enum CloudInit {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         let agent = try agentScript()
         let report = try reportScript()
+        let health = try healthScript()
         let cil = try selinuxModule()
         let selinux = try selinuxScript()
         let consoleText = try consoleScript()
@@ -232,12 +264,20 @@ enum CloudInit {
             fi
             install_file \(reportPath) 0755 '\(b64(report))'
             install_file /etc/systemd/system/monad-report.service 0644 '\(b64(reportServiceUnit))'
+            before=$changed
+            changed=0
+            install_file \(healthPath) 0755 '\(b64(health))'
+            install_file /etc/systemd/system/monad-health.service 0644 '\(b64(healthServiceUnit))'
+            health_changed=$changed
+            [ "$before" -eq 0 ] || changed=1
             install_file \(selinuxModulePath) 0644 '\(b64(cil))'
             install_file \(selinuxScriptPath) 0755 '\(b64(selinux))'
             install_file /etc/profile.d/monad.sh 0644 '\(b64(GuestDiscovery.profileScript))'
             \(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
+            systemctl enable monad-health.service >/dev/null 2>&1 || true
+            if [ "$health_changed" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi
             \(console)\(clock)echo agent-ok
 
             """
@@ -322,6 +362,7 @@ enum CloudInit {
         // provision() checks that the script exists before rendering.
         let agentBase64 = Data(((try? agentScript()) ?? "").utf8).base64EncodedString()
         let reportBase64 = Data(((try? reportScript()) ?? "").utf8).base64EncodedString()
+        let healthBase64 = Data(((try? healthScript()) ?? "").utf8).base64EncodedString()
         let cilBase64 = Data(((try? selinuxModule()) ?? "").utf8).base64EncodedString()
         let selinuxBase64 = Data(((try? selinuxScript()) ?? "").utf8).base64EncodedString()
         let account = lima ? "" : """
@@ -426,6 +467,10 @@ enum CloudInit {
             permissions: "0755"
             encoding: b64
             content: \(reportBase64)
+          - path: \(healthPath)
+            permissions: "0755"
+            encoding: b64
+            content: \(healthBase64)
           - path: \(sshdReapPath)
             permissions: "0644"
             encoding: b64
@@ -442,6 +487,10 @@ enum CloudInit {
             permissions: "0644"
             content: |
         \(yamlBlock(reportServiceUnit, indent: 6))
+          - path: /etc/systemd/system/monad-health.service
+            permissions: "0644"
+            content: |
+        \(yamlBlock(healthServiceUnit, indent: 6))
           - path: /etc/systemd/system/monad-agent.socket
             permissions: "0644"
             content: |
@@ -461,6 +510,7 @@ enum CloudInit {
           - [sh, \(selinuxScriptPath)]
           - [systemctl, enable, \(lima ? "--runtime, " : "")--now, monad-sshd.socket]
           - [systemctl, enable, --now, monad-agent.socket]
+          - [systemctl, enable, --now, --no-block, monad-health.service]
         \(report)  - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/shots"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/uploads"))]

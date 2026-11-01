@@ -142,6 +142,8 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then bash test_macsetup.sh $(BUILD)/macsetup-bash; fi
 	@REPORT_SHELL=sh sh test_report.sh $(BUILD)/report-sh
 	@if command -v bash >/dev/null; then REPORT_SHELL=bash sh test_report.sh $(BUILD)/report-bash; fi
+	@HEALTH_SHELL=sh sh test_health.sh $(BUILD)/health-sh
+	@if command -v bash >/dev/null; then HEALTH_SHELL=bash sh test_health.sh $(BUILD)/health-bash; fi
 	@SELINUX_SHELL=sh sh test_selinux.sh $(BUILD)/selinux-sh
 	@if command -v bash >/dev/null; then SELINUX_SHELL=bash sh test_selinux.sh $(BUILD)/selinux-bash; fi
 	@CONSOLE_SHELL=sh sh test_console.sh $(BUILD)/console-sh
