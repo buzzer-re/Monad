@@ -52,7 +52,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   processes using it, disks, the biggest processes, the kernel's OOM kills, crashes, hangs and I/O
   errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots;
   MonadHost tells from it that the guest's kernel crashed, it ran out of memory or its disk is full,
-  in the VM's log, `get_vm` and a failed boot's message.
+  in the VM's log, `get_vm`, a failed boot's message, the VM's window and list, and its tabs once
+  their session ended.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** a session that ends turns off the modes its program left on (mouse reports,

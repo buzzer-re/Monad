@@ -291,8 +291,17 @@ struct VMDetailView: View {
                 }
                 .controlSize(.large)
             }
-            if !vm.pendingRestart.isEmpty || vm.sharesError != nil || vm.state.isFailed {
+            if !vm.pendingRestart.isEmpty || vm.sharesError != nil || vm.healthProblem != nil || vm.state.isFailed {
                 Section("Attention") {
+                    if let problem = vm.healthProblem {
+                        HStack {
+                            Notice(symbol: "stethoscope", color: .red, text: problem)
+                            Spacer()
+                            if problem.contains("kernel crashed") {
+                                Button("Restart Now") { restart() }.disabled(vm.state != .ready)
+                            }
+                        }
+                    }
                     if !vm.pendingRestart.isEmpty {
                         HStack {
                             Notice(symbol: "arrow.clockwise.circle.fill", color: .orange,

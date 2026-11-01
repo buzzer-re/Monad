@@ -694,6 +694,10 @@ private struct VMRow: View {
                     if vm.config.startAtLaunch { TagLabel(text: "starts at boot", color: .green) }
                     if !vm.pendingRestart.isEmpty { TagLabel(text: "restart to apply", color: .orange) }
                     if vm.sharesError != nil { TagLabel(text: "folder problem", color: .red) }
+                    if let h = vm.healthProblem {
+                        TagLabel(text: h.contains("kernel crashed") ? "kernel crashed"
+                                 : h.contains("out of memory") ? "out of memory" : "disk full", color: .red)
+                    }
                 }
                 Text(summary).font(Design.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 if case .failed(let why) = vm.state {

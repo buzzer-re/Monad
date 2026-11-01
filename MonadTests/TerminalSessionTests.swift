@@ -204,6 +204,19 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertEqual(n, 0, "a click sends nothing")
     }
 
+    /// What the guest's health says is wrong is said in the tab when its
+    /// session has ended (the moment the user sees it fail), once each, and
+    /// never written over a session still running.
+    func testTheTabSaysWhatIsWrongWithTheGuestOnceItsSessionEnded() {
+        typealias T = TerminalSessionViewController
+        let crash = "The VM's kernel crashed: … Restart the VM."
+        XCTAssertNil(T.healthNotice(crash, shown: nil, sessionEnded: false), "not over a running session")
+        XCTAssertEqual(T.healthNotice(crash, shown: nil, sessionEnded: true), crash)
+        XCTAssertNil(T.healthNotice(crash, shown: crash, sessionEnded: true), "once")
+        XCTAssertEqual(T.healthNotice(crash + " Out of memory.", shown: crash, sessionEnded: true), crash + " Out of memory.", "something new")
+        XCTAssertNil(T.healthNotice(nil, shown: crash, sessionEnded: true))
+    }
+
     // MARK: The progress line
 
     private func screenText(_ m: TerminalModel) -> String {

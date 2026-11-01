@@ -189,6 +189,10 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                 vm.$snapshot.map(\.config.theme).removeDuplicates()
                     .sink { [weak self] _ in DispatchQueue.main.async { self?.refreshTheme() } }
                     .store(in: &self.cancellables)
+                // What the guest's health says is wrong, once the session ended.
+                vm.$snapshot.map(\.health).removeDuplicates()
+                    .sink { [weak self] _ in DispatchQueue.main.async { self?.sayHealth() } }
+                    .store(in: &self.cancellables)
                 // Images in the terminal: the VM's setting, live.
                 vm.$snapshot.map(\.config.inlineImages).removeDuplicates()
                     .sink { [weak self] on in DispatchQueue.main.async { self?.model.imagesAllowed = on } }
@@ -551,11 +555,28 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     nonisolated static let sessionEndReset = "\u{1B}[?9l\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1005l\u{1B}[?1006l\u{1B}[?1015l"
         + "\u{1B}[?1004l\u{1B}[?2004l\u{1B}[?1l\u{1B}>\u{1B}[?1007l\u{1B}[?1049l\u{1B}[?25h\u{1B}[0m"
 
+    /// What the guest's health says is wrong, to say in the tab: once its
+    /// session has ended (never over a running one), and once each.
+    nonisolated static func healthNotice(_ health: String?, shown: String?, sessionEnded: Bool) -> String? {
+        guard sessionEnded, let health, health != shown else { return nil }
+        return health
+    }
+
+    /// The health problem this tab said last.
+    private var healthShown: String?
+
+    private func sayHealth() {
+        guard let notice = Self.healthNotice(vm?.healthProblem, shown: healthShown, sessionEnded: phase == .exited) else { return }
+        healthShown = notice
+        error(notice)
+    }
+
     private func sessionExited(_ status: Int32) {
         guard !closed else { return }
         session = nil
         phase = .exited
         model.feed(Self.sessionEndReset)
+        sayHealth()
         let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
         debug(code >= 0 ? "the session ended with status \(code)\(code == 255 ? " (ssh could not connect or lost the connection)" : "")"
               : "the session was ended by signal \(status & 0x7f)")
