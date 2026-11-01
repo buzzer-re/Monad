@@ -167,6 +167,44 @@ MONAD-H| kern 3 badtab and ESC[31m color" "$(printf '%s\n' "$out" | sed '$d')"
 check "kernel: a long line is cut" 300 "$(printf '%s\n' "$out" | tail -1 | tr -d '\n' | wc -c | tr -d ' ')"
 check "kernel: to the port too" "$out" "$port"
 
+# A kernel oops (seen: AppArmor's find_attach on every exec, so every
+# command "segfaulted"): who crashed, where, and the call trace, which have
+# no word of their own to be kept by; the register dump is left out. And
+# AppArmor loading or replacing profiles, which such crashes follow.
+reset
+cat >"$WORK/oops" <<'EOF2'
+1,200,1447831751,-;Unable to handle kernel NULL pointer dereference at virtual address 0000000000000008
+1,201,1447831800,-;Mem abort info:
+0,202,1447916028,-;Internal error: Oops: 0000000096000004 [#1]  SMP
+4,203,1447937398,-;Modules linked in: tcp_diag inet_diag
+4,204,1447946645,-;CPU: 1 UID: 0 PID: 17297 Comm: agent Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)
+4,205,1447946949,-;Hardware name: Apple Inc. Apple Virtualization Generic Platform
+4,206,1447947006,-;pc : find_attach+0x13c/0x4f8
+4,207,1447947097,-;lr : find_attach+0x9c/0x4f8
+4,208,1447947147,-;x29: ffff800083f13790 x28: ffff00003023d220 x27: 0000000000000000
+4,209,1447947389,-;Call trace:
+4,210,1447947400,-; find_attach+0x13c/0x4f8 (P)
+4,211,1447947410,-; profile_transition+0x154/0x5c0
+4,212,1447947420,-; apparmor_bprm_creds_for_exec+0x638/0xad0
+0,213,1447947880,-;Code: eb15001f 54fffee0 f9403ea1 9101c2ba (f9400420)
+4,214,1447947935,-;---[ end trace 0000000000000000 ]---
+4,215,1447947950,-;pc : not kept outside a trace
+5,216,1448000000,-;audit: type=1400 audit(1.0:42): apparmor="STATUS" operation="profile_replace" name="fwupd" pid=900 comm="apparmor_parser"
+EOF2
+run kernel <"$WORK/oops"
+check "oops: who, where and how" "MONAD-H| kern 1 Unable to handle kernel NULL pointer dereference at virtual address 0000000000000008
+MONAD-H| kern 0 Internal error: Oops: 0000000096000004 [#1]  SMP
+MONAD-H| kern 4 CPU: 1 UID: 0 PID: 17297 Comm: agent Not tainted 7.0.0-38-generic #38-Ubuntu PREEMPT(lazy)
+MONAD-H| kern 4 pc : find_attach+0x13c/0x4f8
+MONAD-H| kern 4 lr : find_attach+0x9c/0x4f8
+MONAD-H| kern 4 Call trace:
+MONAD-H| kern 4  find_attach+0x13c/0x4f8 (P)
+MONAD-H| kern 4  profile_transition+0x154/0x5c0
+MONAD-H| kern 4  apparmor_bprm_creds_for_exec+0x638/0xad0
+MONAD-H| kern 0 Code: eb15001f 54fffee0 f9403ea1 9101c2ba (f9400420)
+MONAD-H| kern 4 ---[ end trace 0000000000000000 ]---
+MONAD-H| kern 5 audit: type=1400 audit(1.0:42): apparmor=\"STATUS\" operation=\"profile_replace\" name=\"fwupd\" pid=900 comm=\"apparmor_parser\"" "$out"
+
 # A storm: KERN_BURST lines per 10 s of kernel time, the rest counted.
 reset
 i=0

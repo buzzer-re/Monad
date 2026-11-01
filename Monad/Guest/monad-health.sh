@@ -169,9 +169,21 @@ kernel() {
             split(substr($0, 1, semi - 1), h, ",")
             prio = h[1] % 8; usec = h[3] + 0
             text = substr($0, semi + 1)
-            keep = prio <= 3
-            if (prio <= 4 && text ~ /EXT4-fs|XFS|BTRFS|virtiofs|fuse:/) keep = 1
-            if (text ~ /segfault|traps:|Unable to handle|Internal error|Out of memory|oom-kill|oom_reaper|Killed process|invoked oom-killer|soft lockup|hard LOCKUP|blocked for more than|hung_task|I\/O error|Bus error|BUG:|Oops|panic/) keep = 1
+            # A crash report: the faulting address, then (abort details
+            # left out) who crashed, where, and its call trace, at most 30
+            # lines; the register dump is left out.
+            if (text ~ /Unable to handle kernel/) { abort = 1; trace = 0 }
+            else if (abort && text !~ /Internal error/) next
+            if (text ~ /Internal error|BUG:|WARNING:|general protection|Kernel panic/) { abort = 0; trace = 1; traced = 0 }
+            if (trace && text ~ /^CPU: |^pc : |^lr : |^Call trace:|^ +[A-Za-z0-9_.]+\+0x|^Code: |^---\[ end trace/) {
+                if (text ~ /^---\[ end trace/) trace = 0
+                if (++traced > 30) next
+                keep = 1
+            } else {
+                keep = prio <= 3
+                if (prio <= 4 && text ~ /EXT4-fs|XFS|BTRFS|virtiofs|fuse:/) keep = 1
+                if (text ~ /segfault|traps:|Unable to handle|Internal error|Out of memory|oom-kill|oom_reaper|Killed process|invoked oom-killer|soft lockup|hard LOCKUP|blocked for more than|hung_task|I\/O error|Bus error|BUG:|Oops|panic|apparmor="STATUS"/) keep = 1
+            }
             if (!keep) next
             window = int(usec / 10000000)
             if (window != last) {
