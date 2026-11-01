@@ -60,7 +60,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   bracketed paste, keypad, alternate screen); Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
-- **Windows:** a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
+- **Windows:** a VM's Log page follows a log written every second at little cost (only what was
+  added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
   a full-screen terminal's too.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role

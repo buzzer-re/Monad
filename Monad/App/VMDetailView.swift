@@ -1669,13 +1669,18 @@ enum PreviewFixtures {
 // MARK: - Log
 
 /// The VM's Log page: the latest part of its log (VMLog), read again only
-/// when the file changed.
+/// when the file changed, and then only what was added when it just grew.
 @MainActor
 final class VMLogPageModel: ObservableObject {
     let url: URL
     @Published private(set) var text = ""
     private var seen: [Int64] = []
+    /// Bytes of the current file already in `text` (nil: read it whole).
+    private var readTo: Int64?
     private var timer: Timer?
+    /// The text is cut back to VMLog's 512 KB only past this, so most
+    /// changes add to the end and the view only appends.
+    static let trimAt = 640 << 10
 
     init(url: URL) { self.url = url }
 
@@ -1684,15 +1689,41 @@ final class VMLogPageModel: ObservableObject {
     func refresh() -> Bool {
         let stamp = [url, VMLog.previous(of: url)].flatMap { u -> [Int64] in
             var st = stat()
-            guard stat(u.path, &st) == 0 else { return [-1, -1] }
-            return [Int64(st.st_size), Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)]
+            guard stat(u.path, &st) == 0 else { return [-1, -1, -1] }
+            return [Int64(st.st_size), Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec),
+                    Int64(st.st_ino)]
         }
         guard stamp != seen else { return false }
+        let old = seen
         seen = stamp
+        // Only the current file grew (same file, the one before unchanged):
+        // what was added is read, not the whole log again.
+        if let from = readTo, old.count == 6, old[2] == stamp[2], Array(old[3...]) == Array(stamp[3...]),
+           stamp[0] > from, let added = Self.bytes(of: url, from: from) {
+            readTo = stamp[0]
+            text += String(decoding: added, as: UTF8.self)
+            if text.utf8.count > Self.trimAt { text = Self.tail(text) }
+            return true
+        }
+        readTo = stamp[0] >= 0 ? stamp[0] : nil
         let new = VMLog.read(url)
         guard new != text else { return false }
         text = new
         return true
+    }
+
+    private static func bytes(of url: URL, from offset: Int64) -> Data? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: UInt64(offset))) != nil else { return nil }
+        return try? h.readToEnd()
+    }
+
+    /// The last 512 KB, from a line start.
+    private static func tail(_ s: String) -> String {
+        let bytes = Array(s.utf8.suffix(512 << 10))
+        let start = bytes.firstIndex(of: UInt8(ascii: "\n")).map { $0 + 1 } ?? 0
+        return String(decoding: bytes[start...], as: UTF8.self)
     }
 
     /// Looked at once a second while the page shows.
@@ -1734,23 +1765,67 @@ struct VMLogPage: View {
                 .disabled(model.text.isEmpty)
             }
             .controlSize(.large)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.text.isEmpty ? "Nothing yet." : model.text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(model.text.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
-                .onChange(of: model.text) { proxy.scrollTo("end", anchor: .bottom) }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-            }
+            LogTextView(text: model.text.isEmpty ? "Nothing yet." : model.text, dimmed: model.text.isEmpty)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(24)
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+    }
+}
+
+/// A log shown as it grows: an NSTextView that lays out only what is on
+/// screen and gets only the new lines when the log grew. A SwiftUI Text of
+/// the same 512 KB was laid out whole at each change, 2 s of the main
+/// thread for one new line, and the window of a VM logging once a second
+/// stopped answering.
+struct LogTextView: NSViewRepresentable {
+    let text: String
+    var dimmed = false
+
+    final class Coordinator {
+        var shown = ""
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        guard let view = scroll.documentView as? NSTextView else { return scroll }
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.drawsBackground = true
+        view.backgroundColor = .textBackgroundColor
+        view.textContainerInset = NSSize(width: 10, height: 10)
+        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        view.layoutManager?.allowsNonContiguousLayout = true
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let c = context.coordinator
+        let color: NSColor = dimmed ? .secondaryLabelColor : .labelColor
+        guard text != c.shown || view.textColor != color else { return }
+        // Following the end only if it was there: someone reading further up stays put.
+        let atEnd = scroll.documentVisibleRect.maxY >= view.bounds.maxY - 20 || c.shown.isEmpty
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                                                         .foregroundColor: color]
+        storage.beginEditing()
+        let shownBytes = c.shown.utf8.count
+        if !c.shown.isEmpty, view.textColor == color, text.utf8.count > shownBytes,
+           text.utf8.prefix(shownBytes).elementsEqual(c.shown.utf8) {
+            let added = text.utf8.dropFirst(shownBytes)
+            storage.append(NSAttributedString(string: String(decoding: added, as: UTF8.self), attributes: attributes))
+        } else {
+            storage.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+        }
+        storage.endEditing()
+        view.textColor = color
+        c.shown = text
+        if atEnd { view.scrollToEndOfDocument(nil) }
     }
 }
