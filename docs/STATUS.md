@@ -53,7 +53,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
-- **Terminal:** Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
+- **Terminal:** a session that ends turns off the modes its program left on (mouse reports,
+  bracketed paste, keypad, alternate screen); Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
 - **Windows:** a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,

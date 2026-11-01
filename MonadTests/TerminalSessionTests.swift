@@ -139,6 +139,30 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertFalse(TerminalSessionViewController.closesOnExit(status: SIGHUP | 0x80), "killed, core dumped")
     }
 
+    /// A program that dies with its modes on (an OOM kill, a lost VM) left
+    /// the tab sending mouse reports, bracketed pastes and keypad codes to
+    /// whatever came next: the next shell printed them as garbage. When a
+    /// session ends, the tab turns every input mode off and leaves the
+    /// program's screen.
+    func testASessionThatEndsLeavesNoModeOn() throws {
+        let m = try XCTUnwrap(TerminalModel(cols: 40, rows: 6, scrollback: 10))
+        m.feed("\u{1B}[?1049h\u{1B}[?1003h\u{1B}[?1006h\u{1B}[?2004h\u{1B}[?1004h\u{1B}[?1h\u{1B}=\u{1B}[?25l\u{1B}[?1007h\u{1B}[31m")
+        func modes() -> [Bool] {
+            mnd_vt_lock(m.vt)
+            defer { mnd_vt_unlock(m.vt) }
+            return [mnd_vt_mode(m.vt, MND_MODE_ALT_SCREEN), mnd_vt_mode(m.vt, MND_MODE_BRACKETED_PASTE),
+                    mnd_vt_mode(m.vt, MND_MODE_FOCUS_EVENTS), mnd_vt_mode(m.vt, MND_MODE_APP_CURSOR),
+                    mnd_vt_mode(m.vt, MND_MODE_APP_KEYPAD), mnd_vt_mode(m.vt, MND_MODE_ALT_SCROLL),
+                    mnd_vt_mouse_tracking(m.vt) != MND_MOUSE_OFF, !mnd_vt_mode(m.vt, MND_MODE_CURSOR_VISIBLE)]
+        }
+        XCTAssertEqual(modes(), Array(repeating: true, count: 8), "all on, as the program left them")
+        m.feed(TerminalSessionViewController.sessionEndReset)
+        XCTAssertEqual(modes(), Array(repeating: false, count: 8))
+        var buf = [CChar](repeating: 0, count: 32)
+        let n = buf.withUnsafeMutableBufferPointer { mnd_vt_encode_mouse(m.vt, 0, MND_MOUSE_PRESS, 0, 1, 1, $0.baseAddress, $0.count) }
+        XCTAssertEqual(n, 0, "a click sends nothing")
+    }
+
     // MARK: The progress line
 
     private func screenText(_ m: TerminalModel) -> String {

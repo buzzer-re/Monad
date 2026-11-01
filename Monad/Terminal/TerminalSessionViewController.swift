@@ -544,10 +544,18 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         return delays[attempt]
     }
 
+    /// What a program that died may have left on: mouse reports (every
+    /// encoding), focus events, bracketed paste, application cursor keys and
+    /// keypad, the alternate screen and scroll, a hidden cursor, colors.
+    /// Left on, the next shell gets mouse reports and pastes as garbage.
+    nonisolated static let sessionEndReset = "\u{1B}[?9l\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1005l\u{1B}[?1006l\u{1B}[?1015l"
+        + "\u{1B}[?1004l\u{1B}[?2004l\u{1B}[?1l\u{1B}>\u{1B}[?1007l\u{1B}[?1049l\u{1B}[?25h\u{1B}[0m"
+
     private func sessionExited(_ status: Int32) {
         guard !closed else { return }
         session = nil
         phase = .exited
+        model.feed(Self.sessionEndReset)
         let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
         debug(code >= 0 ? "the session ended with status \(code)\(code == 255 ? " (ssh could not connect or lost the connection)" : "")"
               : "the session was ended by signal \(status & 0x7f)")
