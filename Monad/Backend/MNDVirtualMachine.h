@@ -30,10 +30,20 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 - (instancetype)init NS_UNAVAILABLE;
 @end
 
+/// A disk added to a VM: a raw image, named for the guest (virtio serial).
+@interface MNDExtraDisk : NSObject
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *path;
+- (instancetype)initWithIdentifier:(NSString *)identifier path:(NSString *)path NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@end
+
 /// Static description of a guest. All paths are absolute.
 @interface MNDVMConfig : NSObject
 @property (nonatomic, copy) NSString *diskPath;
 @property (nonatomic, copy, nullable) NSString *seedISOPath;
+/// After the root disk and the seed, writable, in order.
+@property (nonatomic, copy) NSArray<MNDExtraDisk *> *extraDisks;
 @property (nonatomic, copy) NSString *efiVariableStorePath;
 /// Linux: a VZGenericMachineIdentifier; macOS: a VZMacMachineIdentifier.
 /// Made when missing.

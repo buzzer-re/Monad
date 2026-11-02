@@ -66,6 +66,7 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             c.displayPixelsPerInch = UInt(MacRecovery.displayPixelsPerInch)
         }
         c.diskPath = config.disk(in: paths).path
+        c.extraDisks = config.disks.map { MNDExtraDisk(identifier: $0.name, path: paths.extraDisk($0.name).path) }
         c.efiVariableStorePath = paths.efiVars.path
         if config.guestOS == .macos {
             c.macOS = true

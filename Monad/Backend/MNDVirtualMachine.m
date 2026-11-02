@@ -45,6 +45,16 @@ static NSError *MNDError(NSInteger code, NSString *message) {
 }
 @end
 
+@implementation MNDExtraDisk
+- (instancetype)initWithIdentifier:(NSString *)identifier path:(NSString *)path {
+    if ((self = [super init])) {
+        _identifier = [identifier copy];
+        _path = [path copy];
+    }
+    return self;
+}
+@end
+
 @implementation MNDVMConfig
 - (instancetype)init {
     if ((self = [super init])) {
@@ -53,6 +63,7 @@ static NSError *MNDError(NSInteger code, NSString *message) {
         _networkEnabled = YES;
         _sharingTag = @"monad";
         _sharedDirectories = @[];
+        _extraDisks = @[];
     }
     return self;
 }
@@ -416,6 +427,19 @@ static NSError *MNDNoInput(NSString *what) {
                                                               error:error];
         if (!seed) return nil;
         [storage addObject:[[VZVirtioBlockDeviceConfiguration alloc] initWithAttachment:seed]];
+    }
+    for (MNDExtraDisk *d in c.extraDisks) {
+        if (![VZVirtioBlockDeviceConfiguration validateBlockDeviceIdentifier:d.identifier error:error]) return nil;
+        VZDiskImageStorageDeviceAttachment *a =
+            [[VZDiskImageStorageDeviceAttachment alloc] initWithURL:[NSURL fileURLWithPath:d.path]
+                                                           readOnly:NO
+                                                        cachingMode:VZDiskImageCachingModeAutomatic
+                                                synchronizationMode:VZDiskImageSynchronizationModeFull
+                                                              error:error];
+        if (!a) return nil;
+        VZVirtioBlockDeviceConfiguration *block = [[VZVirtioBlockDeviceConfiguration alloc] initWithAttachment:a];
+        block.blockDeviceIdentifier = d.identifier;
+        [storage addObject:block];
     }
     vzc.storageDevices = storage;
 

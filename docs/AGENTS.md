@@ -34,6 +34,7 @@ answers are kept in `~/.monad/agents/grants.json` and taken back in Settings ›
 | `read_recovery_screens` | A macOS VM's screen as each of recovery's waits ended (its last SIP change), as pictures (Debug builds only) |
 | `create_vm` | A VM from an installed distribution, started once made unless `start` is false |
 | `start_vm`, `stop_vm`, `restart_vm`, `delete_vm` | |
+| `add_disk`, `remove_disk` | A disk for a VM, attached at its next start; with `mount` (the default on Linux) Monad formats it if blank and mounts it at `/mnt/<disk>`, otherwise it is left at `/dev/disk/by-id/virtio-<disk>`. Removing one (shut-down VMs only) deletes its data and asks first |
 | `pause_vm`, `resume_vm` | The guest's CPUs stop where they are, its memory kept, until it resumes; `get_vm` says `Paused` |
 | `clone_vm` | A copy of a stopped macOS VM (`new_name`, `start`): same system and account, its own machine identity, the disk cloned. Shared folders, bridges, host commands, forwards into the Mac and an agent role are not copied |
 | `set_macos_security` | A macOS VM's Security page: `sip`, `full_disk_access`, `auto_login`, `boot_to_recovery` (once); only what is given changes, at the next start (asks) |

@@ -54,6 +54,26 @@ final class MonadToolsTests: XCTestCase {
         XCTAssertTrue(MCPAccess.childTools.isSuperset(of: ["pause_vm", "resume_vm"]), "an orchestrator pauses its children")
     }
 
+    /// Agents add a disk (formatted and mounted by Monad, or blank for them
+    /// to set up) and remove one; removing deletes its data, so it asks.
+    func testDisksAreAddedAndRemoved() async throws {
+        let vm = try await made("web")
+        let added = try object(try await call("add_disk", ["name": .string("web"), "disk": .string("data"),
+                                                          "size_gib": .number(50)]))
+        XCTAssertEqual(added["disks"] as? [String], ["data: 50 GB at /mnt/data"])
+        XCTAssertEqual(vm.config.disks, [ExtraDisk(name: "data", sizeGiB: 50, mount: true)])
+        try await call("add_disk", ["name": .string("web"), "disk": .string("raw"), "size_gib": .number(5), "mount": .bool(false)])
+        XCTAssertEqual(vm.config.disks.last, ExtraDisk(name: "raw", sizeGiB: 5, mount: false))
+        do {
+            try await call("add_disk", ["name": .string("web"), "disk": .string("Bad Name"), "size_gib": .number(5)])
+            XCTFail("validated")
+        } catch {}
+        try await call("remove_disk", ["name": .string("web"), "disk": .string("raw")])
+        XCTAssertEqual(vm.config.disks.map(\.name), ["data"])
+        XCTAssertEqual(try tool("remove_disk").risk, .risky)
+        XCTAssertEqual(try tool("add_disk").risk, .normal)
+    }
+
     /// Agents see what a VM is low on, in words.
     func testAVMsWarningsAreInItsSummary() {
         let config = InstanceConfig(
@@ -85,7 +105,7 @@ final class MonadToolsTests: XCTestCase {
             XCTAssertNotNil(t.name.range(of: "^[a-z][a-z_]*$", options: .regularExpression), t.name)
         }
         let risky = Set(all.filter { $0.risk == .risky }.map(\.name))
-        XCTAssertEqual(risky, ["delete_vm", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
+        XCTAssertEqual(risky, ["delete_vm", "remove_disk", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
                                "add_share", "add_bridge", "add_host_command", "set_agent_role", "set_firewall", "set_group",
                                "set_macos_security"])
         XCTAssertEqual(Set(all.filter { $0.risk == .read }.map(\.name)),

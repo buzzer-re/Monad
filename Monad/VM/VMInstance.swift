@@ -300,6 +300,11 @@ final class VMInstance: ObservableObject, Identifiable {
             throw MonadError("These settings are fixed when the VM is created: \(fixed.joined(separator: ", ")).")
         }
         let old = config
+        let removedDisks = old.disks.filter { d in !newConfig.disks.contains { $0.name == d.name } }
+        if !removedDisks.isEmpty, isRunning {
+            debug("update refused: disks removed while the VM runs")
+            throw MonadError("Shut the VM down to remove a disk: its data is deleted with it.")
+        }
         if newConfig.sharing.shares != old.sharing.shares {
             for share in newConfig.sharing.shares {
                 var isDirectory: ObjCBool = false
@@ -318,6 +323,10 @@ final class VMInstance: ObservableObject, Identifiable {
         }
         config = newConfig
         configProblem = nil // saved through Monad: validated by MonadHost
+        for d in removedDisks {
+            try? FileManager.default.removeItem(at: paths.extraDisk(d.name))
+            debug("disks: removed \(d.name) and its file")
+        }
         if !pendingRestart.isEmpty { debug("applies after a restart: \(pendingRestart.joined(separator: ", "))") }
         if newConfig.effectiveFirewall != old.effectiveFirewall {
             if let nic {
@@ -842,8 +851,46 @@ final class VMInstance: ObservableObject, Identifiable {
     var takesDisks = false
 
     private func makeMachine(nic: FileHandle?) throws -> VirtualMachineControlling {
-        takesDisks ? try env.machines.makeDiskMachine(config: config, paths: paths, nic: nic)
+        try makeExtraDisks()
+        return takesDisks ? try env.machines.makeDiskMachine(config: config, paths: paths, nic: nic)
                    : try env.machines.makeMachine(config: config, paths: paths, nic: nic)
+    }
+
+    /// The disks added in its settings that have no file yet: sparse, so
+    /// they take no room the guest has not written. One that exists keeps
+    /// its data (and its size).
+    private func makeExtraDisks() throws {
+        guard !config.disks.isEmpty else { return }
+        try FileManager.default.createDirectory(at: paths.extraDisks, withIntermediateDirectories: true)
+        for d in config.disks where !FileManager.default.fileExists(atPath: paths.extraDisk(d.name).path) {
+            let file = paths.extraDisk(d.name)
+            guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw MonadError("Cannot make the disk \(d.name) in \(paths.extraDisks.path).")
+            }
+            let h = try FileHandle(forWritingTo: file)
+            defer { try? h.close() }
+            try h.truncate(atOffset: UInt64(d.sizeGiB) << 30)
+            debug("disks: made \(d.name) (\(d.sizeGiB) GB, sparse)")
+        }
+    }
+
+    /// Formats (if blank) and mounts the disks that ask for it, after each
+    /// boot (Guest/monad-disks.sh; it never formats a disk that has a
+    /// filesystem). Linux VMs only.
+    private func mountExtraDisks() {
+        let names = config.disks.filter(\.mount).map(\.name)
+        guard !names.isEmpty, config.guestOS == .linux else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let script = try CloudInit.disksScript()
+                let r = try await self.sshSteadily("sudo -n sh -s -- \(self.config.user) " + names.joined(separator: " "),
+                                                   stdin: Data(script.utf8), timeout: 300)
+                for line in (r.stdoutString + r.stderrString).split(separator: "\n") { self.debug("disks: " + String(line).plain(limit: 200)) }
+            } catch {
+                self.debug("disks: could not be set up: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Another VM's disk, attached while this (Repair Disk's) VM runs.
@@ -1091,6 +1138,7 @@ final class VMInstance: ObservableObject, Identifiable {
         let deviceShares = config.deviceShares(paths: paths)
         if !deviceShares.isEmpty || hostShares != deviceShares { applyShares() }
         installGuestComponents()
+        mountExtraDisks()
         runPendingProfiles()
         if config.guestOS == .macos {
             checkSIP()

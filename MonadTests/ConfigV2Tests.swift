@@ -114,6 +114,50 @@ final class ConfigV2Tests: XCTestCase {
         XCTAssertTrue(try InstanceConfig.decode(c.encoded()).startAtLaunch)
     }
 
+    /// Extra disks (Add Disk): absent until a VM has one, so existing files
+    /// stay as they were; each a name, a size and whether Monad formats it
+    /// and mounts it at /mnt/<name>.
+    func testExtraDisksAreKeptAndAbsentByDefault() throws {
+        var c = valid()
+        XCTAssertEqual(c.disks, [])
+        XCTAssertFalse(String(decoding: try c.encoded(), as: UTF8.self).contains("disks"))
+        c.disks = [ExtraDisk(name: "data", sizeGiB: 100, mount: true), ExtraDisk(name: "scratch", sizeGiB: 20, mount: false)]
+        XCTAssertNoThrow(try c.validate(maxCPUs: 8, maxMemoryGiB: 16))
+        XCTAssertEqual(try InstanceConfig.decode(c.encoded()).disks, c.disks)
+        XCTAssertEqual(ExtraDisk(name: "data", sizeGiB: 1, mount: true).mountPoint, "/mnt/data")
+    }
+
+    /// A disk's name becomes a file name, a device name in the guest and a
+    /// mount point: lowercase letters, digits and dashes, 16 at most.
+    func testExtraDisksAreValidated() {
+        for name in ["", "Data", "1data", "-x", "../x", "a b", "a/b", "dätä", String(repeating: "a", count: 17)] {
+            var c = valid()
+            c.disks = [ExtraDisk(name: name, sizeGiB: 10, mount: false)]
+            assertInvalid(c, .extraDisk(name))
+        }
+        for size in [0, -1, 65_537] {
+            var c = valid()
+            c.disks = [ExtraDisk(name: "data", sizeGiB: size, mount: false)]
+            assertInvalid(c, .extraDiskSize(size))
+        }
+        var twice = valid()
+        twice.disks = [ExtraDisk(name: "data", sizeGiB: 10, mount: false), ExtraDisk(name: "data", sizeGiB: 20, mount: false)]
+        assertInvalid(twice, .extraDisk("data"))
+        var many = valid()
+        many.disks = (0...InstanceConfig.maxExtraDisks).map { ExtraDisk(name: "d\($0)", sizeGiB: 1, mount: false) }
+        assertInvalid(many, .tooManyExtraDisks)
+        var shared = valid()
+        shared.sharing = SharingSettings(runtimeEnabled: true, shares: [SharedFolder(hostPath: "/Users/dev/x", guestPath: "/mnt/data", readOnly: true)])
+        shared.disks = [ExtraDisk(name: "data", sizeGiB: 10, mount: true)]
+        assertInvalid(shared, .duplicateGuestPath("/mnt/data"))
+        var mac = valid()
+        mac.guestOS = .macos
+        mac.memoryGiB = 8
+        mac.diskGiB = 80
+        mac.disks = [ExtraDisk(name: "data", sizeGiB: 10, mount: true)]
+        assertInvalid(mac, .linuxOnly("Formatting and mounting a disk"))
+    }
+
     /// Images in the terminal: off by default (Monad then never decodes what
     /// the VM sends), written only when on.
     func testInlineImagesAreOffUnlessChosen() throws {

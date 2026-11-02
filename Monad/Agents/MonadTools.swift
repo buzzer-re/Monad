@@ -79,6 +79,8 @@ final class MonadTools {
         let health: String?
         /// What the running VM is low on ("low memory: 93% in use").
         let warnings: [String]?
+        /// Disks added to it ("data: 50 GB at /mnt/data").
+        let disks: [String]?
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
@@ -90,7 +92,10 @@ final class MonadTools {
                   pendingRestart: s.pendingRestart, health: s.health,
                   warnings: s.warnings.map { $0.map { w in
                       w.kind == .lowMemory ? "low memory: \(w.percent)% in use"
-                          : "low disk space on \(w.mount ?? "/"): \(w.percent)% in use" } })
+                          : "low disk space on \(w.mount ?? "/"): \(w.percent)% in use" } },
+                  disks: s.config.disks.isEmpty ? nil : s.config.disks.map {
+                      "\($0.name): \($0.sizeGiB) GB " + ($0.mount ? "at \($0.mountPoint)" : "blank")
+                  })
     }
 
     // MARK: Schemas
@@ -372,6 +377,31 @@ final class MonadTools {
                 return .json(self.summary(try await self.update(try call.string("name")) {
                     guard $0.firewall.rules.indices.contains(i) else { throw MonadError("There is no rule \(i).") }
                     $0.firewall.rules.remove(at: i)
+                }))
+            },
+            MCPTool(name: "add_disk",
+                    description: "Add a disk to a VM, attached at its next start. With mount (default true, Linux), Monad "
+                        + "formats it if blank (ext4) and mounts it at /mnt/<disk>; false leaves it blank at "
+                        + "/dev/disk/by-id/virtio-<disk> for you to set up.",
+                    schema: Self.schema(["name": Self.vmName,
+                                         "disk": Self.string("Its name: lowercase letters, digits and dashes, 16 at most."),
+                                         "size_gib": Self.integer("The most it holds, in GB; its file grows as it fills."),
+                                         "mount": Self.boolean("Format if blank and mount at /mnt/<disk> (Linux). Default true.")],
+                                        required: ["name", "disk", "size_gib"]),
+                    risk: .normal) { [unowned self] call in
+                let name = try call.string("name")
+                let mount = try call.optionalBool("mount") ?? (try self.vm(name).config.guestOS == .linux)
+                let disk = ExtraDisk(name: try call.string("disk"), sizeGiB: try call.int("size_gib"), mount: mount)
+                return .json(self.summary(try await self.update(name) { $0.disks.append(disk) }))
+            },
+            MCPTool(name: "remove_disk",
+                    description: "Remove a disk from a shut-down VM. Its file and everything on it are deleted.",
+                    schema: Self.schema(["name": Self.vmName, "disk": Self.string("The disk's name.")], required: ["name", "disk"]),
+                    risk: .risky) { [unowned self] call in
+                let disk = try call.string("disk")
+                return .json(self.summary(try await self.update(try call.string("name")) { c in
+                    guard c.disks.contains(where: { $0.name == disk }) else { throw MonadError("No disk named \(disk).") }
+                    c.disks.removeAll { $0.name == disk }
                 }))
             },
             MCPTool(name: "add_share",

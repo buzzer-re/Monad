@@ -317,6 +317,47 @@ final class VMLifecycleTests: XCTestCase {
         do { try await vm.resume(); XCTFail("nothing to resume") } catch {}
     }
 
+    /// Add Disk: each disk is a sparse file in the VM's folder, made when
+    /// the VM starts, so it takes no room the guest has not written.
+    func testExtraDisksAreMadeWhenTheVMStarts() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 2, mount: true),
+                                               ExtraDisk(name: "raw", sizeGiB: 1, mount: false)] }
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let file = vm.paths.extraDisk("data")
+        let values = try file.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
+        XCTAssertEqual(values.fileSize, 2 << 30)
+        XCTAssertLessThan(values.totalFileAllocatedSize ?? .max, 1 << 20, "sparse")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vm.paths.extraDisk("raw").path))
+        // Formatted and mounted by the guest script, only the disks that ask.
+        func isDisks(_ c: FakeCommandRunner.Call) -> Bool { c.arguments.last?.hasPrefix("sudo -n sh -s -- ") == true }
+        await assertEventually { self.runner.calls.contains(where: isDisks) }
+        let run = try XCTUnwrap(runner.calls.first(where: isDisks))
+        XCTAssertEqual(run.arguments.last, "sudo -n sh -s -- \(vm.config.user) data")
+        XCTAssertEqual(run.stdin, Data(try CloudInit.disksScript().utf8))
+    }
+
+    /// A disk keeps its data: one already made is not made again, and a
+    /// disk is removed (its file deleted) only from a VM that is shut down.
+    func testADiskIsRemovedOnlyFromAStoppedVM() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: false)] }
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let file = vm.paths.extraDisk("data")
+        try FileHandle(forWritingTo: file).write(contentsOf: Data("kept".utf8))
+        var without = vm.config
+        without.disks = []
+        XCTAssertThrowsError(try vm.update(without), "not while it runs")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        await vm.stop()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(try FileHandle(forReadingFrom: file).read(upToCount: 4), Data("kept".utf8), "not made again")
+        await vm.stop()
+        try vm.update(without)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "its file goes with it")
+    }
+
     /// A VM running low on memory or disk is warned about while it runs
     /// (the app makes notifications of it), not once it has stopped.
     func testAVMRunningLowIsWarnedWhileItRuns() async throws {

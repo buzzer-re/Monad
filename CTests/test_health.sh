@@ -88,6 +88,15 @@ check "snapshot: status" 0 "$st"
 check "snapshot: the whole line (a share bound twice counted once; no CPU yet: nothing to compare with)" "MONAD-H| snap up=3725 mem=40960/2014312 swap=0/0 psi=42.50,31.25 load=7.81 procs=412 dstate=2 cpu=- io=- busy= top=node:1480000,Web_Content:220000,bun:96000 disk=/:20100000/20511312,/mnt/work:500000000/976490576" "$out"
 check "snapshot: to the port too" "$out" "$port"
 
+# Disks added in the VM's settings (a virtio disk at /mnt/<name>) have a
+# field of their own, before the shares; none: no field.
+reset
+printf '/dev/vdc /mnt/data ext4 rw 0 0\n/dev/vdd /srv ext4 rw 0 0\n/dev/vde /mnt/a\\040b ext4 rw 0 0\n' >>"$PROC/mounts"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vdc 102400 92160 10240 90%% /mnt/data\n' >"$WORK/df._mnt_data"
+run snapshot
+check "extra disks: their own field" "vol=/mnt/data:92160/102400" "$(printf '%s\n' "$out" | grep -o 'vol=[^ ]*')"
+check "extra disks: before the disks" yes "$(printf '%s\n' "$out" | grep -q 'vol=[^ ]* disk=/:' && echo yes || echo no)"
+
 # As df says it: used of what can be used (ext4 keeps 5% for root, which a
 # program cannot write to), so a disk df calls 92% full is 92% full here.
 reset

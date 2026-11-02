@@ -78,6 +78,8 @@ struct VMDetailView: View {
     @State private var turning: ForwardRule?
     @State private var addingBridge = false
     @State private var addingHostCommand = false
+    @State private var addingDisk = false
+    @State private var removingDisk: String?
     @State private var restartPrompt: (title: String, message: String)?
     /// Monad networks the VM can join and the firewall tags there are (read
     /// when the page shows).
@@ -229,6 +231,21 @@ struct VMDetailView: View {
                 draft.addBridge(bridge)
                 addingBridge = false
             } onCancel: { addingBridge = false }
+        }
+        .sheet(isPresented: $addingDisk) {
+            DiskEditor(guestOS: draft.config.guestOS, taken: Set(draft.config.disks.map(\.name))) { disk in
+                draft.config.disks.append(disk)
+                addingDisk = false
+            } onCancel: { addingDisk = false }
+        }
+        .confirmationDialog("Remove the disk “\(removingDisk ?? "")”?",
+                            isPresented: Binding(get: { removingDisk != nil }, set: { if !$0 { removingDisk = nil } })) {
+            Button("Remove Disk", role: .destructive) {
+                draft.config.disks.removeAll { $0.name == removingDisk }
+                removingDisk = nil
+            }
+        } message: {
+            Text("Its file and everything on it are deleted when you save.")
         }
         .sheet(isPresented: $addingHostCommand) {
             HostCommandEditor(shares: draft.config.sharing.shares) { command in
@@ -443,7 +460,31 @@ struct VMDetailView: View {
             } header: {
                 Text("Memory Balloon")
             }
+            Section {
+                ForEach(draft.config.disks, id: \.name) { d in
+                    let saved = vm.config.disks.contains { $0.name == d.name }
+                    SettingRow(symbol: "externaldrive", color: .gray, title: d.name, detail: Self.diskDetail(d, guestOS: draft.config.guestOS)) {
+                        Button("Remove") { removingDisk = d.name }
+                            .disabled(saved && vm.isRunning)
+                            .help(saved && vm.isRunning ? "Shut the VM down to remove a disk." : "")
+                    }
+                }
+                Button("Add Disk…") { addingDisk = true }
+                    .disabled(draft.config.disks.count >= InstanceConfig.maxExtraDisks)
+            } header: {
+                Text("Disks")
+            } footer: {
+                Text("Disks besides its own, each a file in the VM's folder that takes only the room written to it. A new disk is attached when the VM starts.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
         }
+    }
+
+    static func diskDetail(_ d: ExtraDisk, guestOS: GuestOS) -> String {
+        let size = "\(d.sizeGiB) GB"
+        if guestOS == .macos { return size + ". In macOS, Disk Utility asks to initialize it the first time." }
+        return d.mount ? size + ", formatted if blank (ext4) and mounted at \(d.mountPoint)."
+                       : size + ", left as it is: /dev/disk/by-id/virtio-\(d.name) in the VM."
     }
 
     // MARK: Security (macOS)
@@ -1376,6 +1417,75 @@ private struct ForwardEditor: View {
 /// Adds a stdio bridge: a name, the program (by name or full path) and its
 /// arguments, and where the VM reaches it. What the VM can then do is
 /// asked before it is added.
+/// Add Disk: a name, a size and, in a Linux VM, whether Monad formats and
+/// mounts it.
+private struct DiskEditor: View {
+    let guestOS: GuestOS
+    let taken: Set<String>
+    var onAdd: (ExtraDisk) -> Void
+    var onCancel: () -> Void
+
+    @State private var name = ""
+    @State private var size = 20
+    @State private var mount = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PageHeader(symbol: "externaldrive.badge.plus", color: .gray, title: "Add Disk",
+                       subtitle: "Another disk for the VM, attached when it starts.")
+                .padding(.horizontal, 24).padding(.top, 18)
+            Form {
+                TextField("Name", text: $name, prompt: Text(suggested))
+                if !trimmed.isEmpty && disk == nil {
+                    Text(taken.contains(trimmed) ? "The VM has a disk by that name."
+                         : "Lowercase letters, digits and dashes, 16 at most, starting with a letter.")
+                        .font(Design.caption).foregroundStyle(.orange)
+                }
+                QuantityRow(symbol: "externaldrive", color: .gray, title: "Size", value: $size,
+                            range: 1...4096, step: size < 10 ? 1 : 10, unit: "GB",
+                            detail: "The most it can hold: its file grows as the VM writes to it.")
+                if guestOS == .linux {
+                    SettingRow(symbol: "folder", color: .blue, title: "Format and mount",
+                               detail: "Monad formats it (ext4) and mounts it at /mnt/\(effectiveName) after each start. A disk that already has a filesystem is never formatted. Off, it is left blank for you or an agent.") {
+                        Toggle("", isOn: $mount).labelsHidden().toggleStyle(.switch)
+                    }
+                } else {
+                    Notice(symbol: "info.circle", color: .gray, text: "In macOS, Disk Utility asks to initialize the new disk the first time.")
+                        .font(Design.caption)
+                }
+            }
+            .formStyle(.grouped)
+            .font(Design.body)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }.keyboardShortcut(.cancelAction)
+                Button("Add") { if let disk { onAdd(disk) } }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(disk == nil)
+            }
+            .controlSize(.large)
+            .padding(.horizontal, 24).padding(.vertical, 14)
+        }
+        .frame(width: 520, height: 420)
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
+
+    /// "data", then "data2", … the first free.
+    private var suggested: String {
+        (["data"] + (2...9).map { "data\($0)" }).first { !taken.contains($0) } ?? "disk"
+    }
+
+    private var effectiveName: String { trimmed.isEmpty ? suggested : trimmed }
+
+    private var disk: ExtraDisk? {
+        let n = effectiveName
+        guard ExtraDisk.isValidName(n), !taken.contains(n) else { return nil }
+        return ExtraDisk(name: n, sizeGiB: size, mount: guestOS == .linux && mount)
+    }
+}
+
 private struct BridgeEditor: View {
     var onAdd: (CommandBridge) -> Void
     var onCancel: () -> Void

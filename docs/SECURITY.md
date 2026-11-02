@@ -167,6 +167,12 @@ processes).
   are set aside on import and confirmed on edit, and a copy of the VM leaves them behind.
   Auto-forward and the MCP tools use the loopback only. A SOCKS proxy open to the network lets
   other computers send traffic out through the VM, within its firewall.
+- **Disks added to a VM stay in its folder** (2026-11-02): a disk's name becomes a file on the Mac
+  (`disks/<name>.raw` in the VM's folder), a virtio serial and, with Format and mount, an argument
+  of a root script in the guest, so it is lowercase letters, digits and dashes only, 16 at most
+  (`ExtraDisk.isValidName`, checked again by `monad-disks.sh`; `ConfigV2Tests`, `test_disks.sh`). The
+  script never formats a disk that has a filesystem. Removing a disk deletes its file, only while
+  the VM is shut down; over MCP it is a risky tool.
 - **Same-user processes: the cheap parts are fixed** (below).
 - **Images a guest sends stay undecoded unless the VM allows them** (2026-10-10): a per-VM switch,
   off when a VM is made (also from an imported settings file, unless the user keeps it). With it on,

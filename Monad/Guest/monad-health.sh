@@ -12,7 +12,7 @@
 #   boot  id=… kernel=… cpus=N mem=KB           once, at start
 #   snap  up=S mem=AVAIL/TOTAL swap=FREE/TOTAL psi=SOME,FULL load=L
 #         procs=N dstate=N cpu=PCT io=PCT busy=NAME:PCT,…
-#         top=NAME:RSS,… disk=MOUNT:USED/SIZE,…
+#         top=NAME:RSS,… [vol=MOUNT:USED/SIZE,…] disk=MOUNT:USED/SIZE,…
 #                                               every INTERVAL seconds (KB;
 #                                               CPU since the last one, 100
 #                                               is one core)
@@ -152,9 +152,15 @@ snapshot() {
     top=$(cat "$PROC"/[0-9]*/status 2>/dev/null | awk '
         /^Name:/ { sub(/^Name:[ \t]*/, ""); gsub(/[^A-Za-z0-9._-]/, "_"); n = substr($0, 1, 24) }
         /^VmRSS:/ { if (n != "") print $2, n; n = "" }' | sort -rn | head -3 | awk '{ printf "%s%s:%s", (NR > 1 ? "," : ""), $2, $1 }')
+    # The disks added in the VM's settings: a virtio disk at /mnt/<name>.
+    vols=""
+    for v in $(awk '$1 ~ /^\/dev\/vd/ && $2 ~ /^\/mnt\/[a-z][a-z0-9-]*$/ { print $2 }' "$PROC/mounts" 2>/dev/null); do
+        d=$(disk "$v" "$v")
+        [ -n "$d" ] && vols="${vols:+$vols,}$d"
+    done
     used=$(cpu)
     # Disks last: a line too long loses the end of the shares, nothing else.
-    echo "snap up=${up:-0} $m psi=${psi:--} $load dstate=$dstate $used top=$top disk=$disks"
+    echo "snap up=${up:-0} $m psi=${psi:--} $load dstate=$dstate $used top=$top ${vols:+vol=$vols }disk=$disks"
 }
 
 # /dev/kmsg records ("PRIO,SEQ,USEC,FLAGS;TEXT", continuation lines start

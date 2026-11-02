@@ -69,6 +69,23 @@ struct AttachedDisk: Codable, Equatable, Hashable {
     }
 }
 
+/// A disk added to a VM (its settings › Disks): a sparse file in the VM's
+/// folder (disks/<name>.raw), attached as a virtio disk the guest sees as
+/// /dev/disk/by-id/virtio-<name>. With `mount`, Monad formats it if it is
+/// blank (Linux, ext4) and mounts it at /mnt/<name> after each boot.
+struct ExtraDisk: Codable, Equatable, Hashable, Sendable {
+    var name: String
+    var sizeGiB: Int
+    var mount: Bool
+
+    var mountPoint: String { "/mnt/" + name }
+
+    /// a-z, then a-z 0-9 -, at most 16 (an ext4 label's length).
+    static func isValidName(_ name: String) -> Bool {
+        name.range(of: "^[a-z][a-z0-9-]{0,15}$", options: .regularExpression) != nil
+    }
+}
+
 struct SharedFolder: Codable, Equatable, Hashable {
     var hostPath: String
     var guestPath: String
@@ -277,6 +294,8 @@ struct InstanceConfig: Equatable {
     /// Live target via the balloon; nil means `memoryGiB`.
     var memoryTargetGiB: Int?
     var diskGiB: Int
+    /// Disks added after it was made; attached at each start.
+    var disks: [ExtraDisk] = []
     /// NICs in order; empty means no network device at all.
     var networks: [NetworkAttachment]
     /// Where the VM may connect through a Monad NAT network.
@@ -333,6 +352,9 @@ struct InstanceConfig: Equatable {
     /// macOS needs this much at least (Apple's installer and a usable system).
     static let macMinimumMemoryGiB = 4
     static let macMinimumDiskGiB = 40
+    /// Extra disks a VM may have, and how large each may be.
+    static let maxExtraDisks = 8
+    static let maxExtraDiskGiB = 65_536
 
     /// The group it is listed in (Virtual Machines); the group's firewall
     /// tag, if there is one, applies to it as a tag would.
@@ -481,7 +503,7 @@ struct InstanceConfig: Equatable {
 
 extension InstanceConfig: Codable {
     private enum Keys: String, CodingKey {
-        case version, name, distro, release, image, user, cpus, memoryGiB, memoryTargetGiB, diskGiB, networks, firewall
+        case version, name, distro, release, image, user, cpus, memoryGiB, memoryTargetGiB, diskGiB, disks, networks, firewall
         case sharing
         case forwards, autoForward, profiles, theme, ephemeral, createdAt, startAtLaunch, attached
         case copiedFrom, bridges, inlineImages, hostCommands, agents, parent, group, guestOS, restoreImage
@@ -505,6 +527,7 @@ extension InstanceConfig: Codable {
         cpus = try c.decodeIfPresent(Int.self, forKey: .cpus) ?? VMDefaults.cpus
         memoryGiB = try c.decodeIfPresent(Int.self, forKey: .memoryGiB) ?? VMDefaults.memoryGiB
         diskGiB = try c.decodeIfPresent(Int.self, forKey: .diskGiB) ?? VMDefaults.diskGiB
+        disks = try c.decodeIfPresent([ExtraDisk].self, forKey: .disks) ?? []
         ephemeral = try c.decodeIfPresent(Bool.self, forKey: .ephemeral) ?? false
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? InstanceConfig.now()
         // Older configs have none: the default (the Mac and its LAN blocked).
@@ -570,6 +593,7 @@ extension InstanceConfig: Codable {
         try c.encode(memoryGiB, forKey: .memoryGiB)
         try c.encodeIfPresent(memoryTargetGiB, forKey: .memoryTargetGiB)
         try c.encode(diskGiB, forKey: .diskGiB)
+        if !disks.isEmpty { try c.encode(disks, forKey: .disks) }
         try c.encode(networks, forKey: .networks)
         // Only when set, so configs without one stay as they were.
         if firewall != VMFirewall() { try c.encode(firewall, forKey: .firewall) }
@@ -674,6 +698,10 @@ extension InstanceConfig {
         case systemIntegrityProtection
         case fullDiskAccess
         case macOSOnly(String)
+        case linuxOnly(String)
+        case extraDisk(String)
+        case extraDiskSize(Int)
+        case tooManyExtraDisks
         case attachedDisk(String)
         case sharingDisabled
         case shareHostPath(String)
@@ -716,6 +744,10 @@ extension InstanceConfig {
             case .systemIntegrityProtection: return "System Integrity Protection is a macOS setting: only a macOS VM can turn it off."
             case .fullDiskAccess: return "Full disk access is a macOS setting: only a macOS VM can turn it off."
             case .macOSOnly(let what): return "\(what) is a macOS setting."
+            case .linuxOnly(let what): return "\(what) is for Linux VMs: in macOS, Disk Utility formats a new disk."
+            case .extraDisk(let n): return "“\(n)” cannot name a disk: use lowercase letters, digits and dashes (16 at most, starting with a letter), each name once."
+            case .extraDiskSize(let s): return "A disk of \(s) GB cannot be made: from 1 GB to \(InstanceConfig.maxExtraDiskGiB) GB."
+            case .tooManyExtraDisks: return "A VM has at most \(InstanceConfig.maxExtraDisks) extra disks."
             case .attachedDisk(let d): return "“\(d)” is not a Lima VM's folder."
             case .sharingDisabled: return "Turn on runtime sharing for this VM before adding shared folders."
             case .shareHostPath(let p): return "The Mac folder must be an absolute path: \(p)"
@@ -889,6 +921,16 @@ extension InstanceConfig {
 
         if !sharing.shares.isEmpty && !sharing.runtimeEnabled { throw ValidationError.sharingDisabled }
         var guestPaths = Set<String>()
+        guard disks.count <= Self.maxExtraDisks else { throw ValidationError.tooManyExtraDisks }
+        var diskNames = Set<String>()
+        for d in disks {
+            guard ExtraDisk.isValidName(d.name), diskNames.insert(d.name).inserted else { throw ValidationError.extraDisk(d.name) }
+            guard (1...Self.maxExtraDiskGiB).contains(d.sizeGiB) else { throw ValidationError.extraDiskSize(d.sizeGiB) }
+            if d.mount {
+                guard guestOS == .linux else { throw ValidationError.linuxOnly("Formatting and mounting a disk") }
+                guestPaths.insert(d.mountPoint)
+            }
+        }
         for share in sharing.shares {
             guard share.hostPath.hasPrefix("/"), !Self.hasControl(share.hostPath) else {
                 throw ValidationError.shareHostPath(share.hostPath)
@@ -953,6 +995,7 @@ enum ConfigChange {
         differences(old, new, [
             ("CPUs", { $0.cpus == $1.cpus }),
             ("memory", { $0.memoryGiB == $1.memoryGiB }),
+            ("disks", { $0.disks == $1.disks }),
             ("network", { $0.networks == $1.networks }),
             ("folder sharing", { $0.sharing.runtimeEnabled == $1.sharing.runtimeEnabled }),
             ("System Integrity Protection", { $0.systemIntegrityProtection == $1.systemIntegrityProtection }),
@@ -992,6 +1035,7 @@ enum ConfigChange {
             ("memory", { $0.memoryGiB == $1.memoryGiB }),
             ("memory target", { $0.memoryTargetGiB == $1.memoryTargetGiB }),
             ("disk size", { $0.diskGiB == $1.diskGiB }),
+            ("disks", { $0.disks == $1.disks }),
             ("network", { $0.networks == $1.networks }),
             ("firewall", { $0.firewall == $1.firewall }),
             ("folder sharing", { $0.sharing.runtimeEnabled == $1.sharing.runtimeEnabled }),

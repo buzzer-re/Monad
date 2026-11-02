@@ -60,6 +60,9 @@ struct InstancePaths {
     /// The disk as it was before Repair Disk last ran (an APFS clone).
     var diskBeforeRepair: URL { dir.appendingPathComponent("disk.before-repair.raw") }
     var seed: URL { dir.appendingPathComponent("cidata.iso") }
+    /// The disks added in its settings (ExtraDisk), one file each.
+    var extraDisks: URL { dir.appendingPathComponent("disks", isDirectory: true) }
+    func extraDisk(_ name: String) -> URL { extraDisks.appendingPathComponent(name + ".raw") }
     var efiVars: URL { dir.appendingPathComponent("efi-vars.fd") }
     var machineID: URL { dir.appendingPathComponent("machine-id.bin") }
     /// macOS guests (Phase 14): what Apple's installer leaves beside the disk.

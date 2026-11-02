@@ -154,6 +154,26 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertEqual(attachments.first?.url.path, paths.disk.path)
     }
 
+    /// Disks added in its settings: after the root disk and the seed,
+    /// writable, each named so Linux shows /dev/disk/by-id/virtio-<name>.
+    func testExtraDisksAreAttachedByName() throws {
+        try Data(count: 2048).write(to: paths.seed)
+        var c = defaults
+        c.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: true), ExtraDisk(name: "scratch", sizeGiB: 1, mount: false)]
+        for d in c.disks {
+            try FileManager.default.createDirectory(at: paths.extraDisk(d.name).deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(count: 4096).write(to: paths.extraDisk(d.name))
+        }
+        let vz = try build(c)
+        XCTAssertEqual(vz.storageDevices.count, 4)
+        let blocks = vz.storageDevices.compactMap { $0 as? VZVirtioBlockDeviceConfiguration }
+        XCTAssertEqual(blocks.suffix(2).map(\.blockDeviceIdentifier), ["data", "scratch"])
+        let files = vz.storageDevices.suffix(2).compactMap { $0.attachment as? VZDiskImageStorageDeviceAttachment }
+        XCTAssertEqual(files.map(\.url.path), [paths.extraDisk("data").path, paths.extraDisk("scratch").path])
+        XCTAssertEqual(files.map(\.isReadOnly), [false, false])
+        XCTAssertEqual(paths.extraDisk("data").path, paths.dir.appendingPathComponent("disks/data.raw").path)
+    }
+
     func testNoNetworkMeansNoNIC() throws {
         var c = defaults
         c.networks = []

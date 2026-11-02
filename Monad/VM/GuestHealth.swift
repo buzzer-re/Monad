@@ -49,6 +49,8 @@ struct GuestHealth: Sendable {
     static let warningClears = 85
     /// Snapshots in a row memory must be low for (a moment can be a spike).
     static let lowMemorySnapshots = 2
+    /// Added disks read from one snapshot, at most.
+    static let maxVolumes = InstanceConfig.maxExtraDisks
     /// Most programs named as stopped for memory.
     private static let maxStopped = 3
 
@@ -59,6 +61,8 @@ struct GuestHealth: Sendable {
     private var memoryLowFor = 0
     private var memoryWarned = false
     private var diskWarned = false
+    /// The disks added in its settings, by mount point (/mnt/<name>).
+    private var volumes: [String: (percent: Int, warned: Bool)] = [:]
     private var said: Set<Problem> = []
 
     init() {}
@@ -95,6 +99,9 @@ struct GuestHealth: Sendable {
         var w: [GuestWarning] = []
         if memoryWarned, let p = memoryPercent { w.append(GuestWarning(kind: .lowMemory, percent: p)) }
         if diskWarned, let p = diskPercent { w.append(GuestWarning(kind: .lowDisk, percent: p, mount: "/")) }
+        for (mount, v) in volumes.sorted(by: { $0.key < $1.key }) where v.warned {
+            w.append(GuestWarning(kind: .lowDisk, percent: v.percent, mount: mount))
+        }
         return w
     }
 
@@ -151,6 +158,19 @@ struct GuestHealth: Sendable {
             if memoryLowFor >= Self.lowMemorySnapshots { memoryWarned = true }
             if p < Self.warningClears { memoryWarned = false }
         }
+        var seen: [String: (percent: Int, warned: Bool)] = [:]
+        if let r = line.range(of: " vol=") {
+            for entry in line[r.upperBound...].prefix(while: { $0 != " " }).split(separator: ",").prefix(GuestHealth.maxVolumes) {
+                guard let colon = entry.firstIndex(of: ":") else { continue }
+                let mount = String(entry[..<colon])
+                guard mount.hasPrefix("/mnt/"), ExtraDisk.isValidName(String(mount.dropFirst(5))),
+                      let (used, size) = Self.pair(entry[entry.index(after: colon)...]) else { continue }
+                let p = Int(used * 100 / size)
+                let was = volumes[mount]?.warned ?? false
+                seen[mount] = (p, p >= Self.warnAt || (was && p >= Self.warningClears))
+            }
+        }
+        volumes = seen
         if let r = line.range(of: " disk=/:"), let (used, size) = Self.pair(line[r.upperBound...]) {
             let p = Int(used * 100 / size)
             diskPercent = p

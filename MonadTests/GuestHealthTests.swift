@@ -82,6 +82,21 @@ final class GuestHealthTests: XCTestCase {
         XCTAssertEqual(h.warnings, [], "a new boot starts clean")
     }
 
+    /// A disk added in the VM's settings warns by its mount point, like
+    /// the root disk; one no longer mounted is forgotten.
+    func testAnAddedDiskAlmostFullIsWarnedByItsMount() {
+        var h = GuestHealth()
+        _ = h.read(["snap up=1 mem=1/2 top= vol=/mnt/data:92160/102400,/mnt/logs:1/10 disk=/:1/10"])
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowDisk, percent: 90, mount: "/mnt/data")])
+        _ = h.read(["snap up=16 mem=1/2 top= vol=/mnt/data:88000/102400 disk=/:19/20"])
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowDisk, percent: 95, mount: "/"),
+                                    GuestWarning(kind: .lowDisk, percent: 85, mount: "/mnt/data")], "the root disk first")
+        _ = h.read(["snap up=31 mem=1/2 top= disk=/:1/20"])
+        XCTAssertEqual(h.warnings, [], "unmounted: forgotten")
+        _ = h.read(["snap up=46 mem=1/2 top= vol=/mnt/../etc:9/10,/etc:9/10,/mnt/A:9/10,/mnt/x:5/0 disk=/:1/20"])
+        XCTAssertEqual(h.warnings, [], "only Monad's disk mounts")
+    }
+
     /// The guest writes these lines: names are cut and plain, and nonsense
     /// makes no problem.
     func testHostileLinesChangeNothingElse() {

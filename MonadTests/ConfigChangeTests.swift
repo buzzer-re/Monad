@@ -62,6 +62,13 @@ final class ConfigChangeTests: XCTestCase {
         XCTAssertEqual(ConfigChange.restartOnly(from: base, to: new), ["CPUs", "memory", "network", "folder sharing"])
     }
 
+    /// A disk is attached when the VM starts: added or removed, it waits.
+    func testExtraDisksWaitForTheNextBoot() {
+        let new = edited { $0.disks = [ExtraDisk(name: "data", sizeGiB: 50, mount: true)] }
+        XCTAssertEqual(ConfigChange.restartOnly(from: base, to: new), ["disks"])
+        XCTAssertEqual(ConfigChange.fixed(from: base, to: new), [])
+    }
+
     func testSharesAreLiveOnceTheSharingDeviceExists() {
         var shared = base
         shared.sharing.runtimeEnabled = true

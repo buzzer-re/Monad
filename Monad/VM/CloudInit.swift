@@ -41,6 +41,8 @@ enum CloudInit {
     /// in health.log: not over ssh, which is what stops answering then
     /// (Guest/monad-health.sh).
     static func healthScript() throws -> String { try bundled("monad-health", "sh") }
+    /// Formats and mounts a Linux VM's extra disks (Guest/monad-disks.sh).
+    static func disksScript() throws -> String { try bundled("monad-disks", "sh") }
     static let healthPath = "/usr/local/lib/monad/health"
 
     /// Started by systemd at every boot, ssh or not. The OOM killer passes
