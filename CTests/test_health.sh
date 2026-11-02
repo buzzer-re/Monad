@@ -88,6 +88,16 @@ check "snapshot: status" 0 "$st"
 check "snapshot: the whole line (a share bound twice counted once; no CPU yet: nothing to compare with)" "MONAD-H| snap up=3725 mem=40960/2014312 swap=0/0 psi=42.50,31.25 load=7.81 procs=412 dstate=2 cpu=- io=- busy= top=node:1480000,Web_Content:220000,bun:96000 disk=/:20100000/20511312,/mnt/work:500000000/976490576" "$out"
 check "snapshot: to the port too" "$out" "$port"
 
+# As df says it: used of what can be used (ext4 keeps 5% for root, which a
+# program cannot write to), so a disk df calls 92% full is 92% full here.
+reset
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 5074592 4404508 391520 92%% /\n' >"$WORK/df._"
+run snapshot
+check "disk: as df counts" "disk=/:4404508/4796028" "$(printf '%s\n' "$out" | grep -o 'disk=/:[^,]*')"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vdb 68719476736 3000000000 62000000000 5%% /\n' >"$WORK/df._"
+run snapshot
+check "disk: a large one in plain digits" "disk=/:3000000000/65000000000" "$(printf '%s\n' "$out" | grep -o 'disk=/:[^,]*')"
+
 # CPU since the snapshot before: 100 is one core (as Activity Monitor
 # counts), and the processes that used the most. 10 s later, node used
 # 12 s of CPU (1200 ticks), Web Content 3 s; the guest 18 s busy, 2 s

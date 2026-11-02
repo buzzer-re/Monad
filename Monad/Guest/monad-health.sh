@@ -81,8 +81,10 @@ emit() {
 
 # Free and total KB of a mount point; df is cut off if the mount hangs
 # (a share whose Mac side went away), so a stuck share never stops the rest.
+# USED/SIZE as df counts it: of what can be used (used + available), not
+# the filesystem's whole size, of which ext4 keeps 5% for root.
 disk() { # LABEL MOUNT
-    timeout 3 df -Pk "$2" 2>/dev/null | awk -v l="$1" 'NR == 2 { printf "%s:%s/%s", substr(l, 1, 40), $3, $2 }'
+    timeout 3 df -Pk "$2" 2>/dev/null | awk -v l="$1" 'NR == 2 { printf "%s:%s/%.0f", substr(l, 1, 40), $3, $3 + $4 }'
 }
 
 # CPU since the last snapshot: the guest's (busy, and waiting for disks)

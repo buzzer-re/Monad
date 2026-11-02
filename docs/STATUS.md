@@ -50,7 +50,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   filesystem tools on it in a temporary VM (macOS 15 and later); its kernel console reaches `serial.log`,
   errors only unless Settings › Virtual Machines › Full boot messages is on, and the boot before is
   kept as `serial.log.1`; a Linux VM writes its health (memory, swap and its pressure, CPU and the
-  processes using it, disks, the biggest processes, the kernel's OOM kills, crashes, hangs and I/O
+  processes using it, disks (full as df counts it), the biggest processes, the kernel's OOM kills, crashes, hangs and I/O
   errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots;
   MonadHost tells from it that the guest's kernel crashed, it ran out of memory or its disk is full,
   in the VM's log, `get_vm`, a failed boot's message, the VM's window and list, and its tabs once
