@@ -462,6 +462,20 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertNil(vm.currentSnapshot)
     }
 
+    /// Snapshots taken in one second (their times keep whole seconds) still
+    /// list in the order taken: one comes after the one it was taken after.
+    func testSnapshotsOfOneSecondListInTheOrderTaken() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        var names: [String] = []
+        for i in 0..<12 {
+            names.append("s\(i)")
+            _ = try await vm.takeSnapshot(name: "s\(i)")
+        }
+        XCTAssertEqual(vm.snapshots.map(\.name), names)
+        XCTAssertEqual(SnapshotStore(paths: vm.paths).list().map(\.name), names)
+    }
+
     func testWhatCannotBeSnapshotted() async throws {
         let vm = try makeInstance()
         try Data("system".utf8).write(to: vm.paths.disk)

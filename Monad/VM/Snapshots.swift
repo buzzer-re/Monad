@@ -47,12 +47,22 @@ struct SnapshotStore {
         let ids = (try? fm.contentsOfDirectory(atPath: paths.snapshots.path)) ?? []
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return ids.filter(Snapshot.isValidID).compactMap { id in
+        let all = ids.filter(Snapshot.isValidID).compactMap { id -> Snapshot? in
             guard let data = try? Data(contentsOf: paths.snapshotInfo(id)),
                   let snap = try? decoder.decode(Snapshot.self, from: data), snap.id == id else { return nil }
             return snap
         }
-        .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        // Times keep whole seconds: in one second, one taken after another
+        // is deeper in the tree.
+        let parents = Dictionary(all.map { ($0.id, $0.parent) }, uniquingKeysWith: { a, _ in a })
+        func depth(_ id: String) -> Int {
+            var d = 0, at = parents[id] ?? nil
+            while let p = at, d < Snapshot.maxCount { d += 1; at = parents[p] ?? nil }
+            return d
+        }
+        return all.map { ($0, depth($0.id)) }
+            .sorted { ($0.0.createdAt, $0.1, $0.0.id) < ($1.0.createdAt, $1.1, $1.0.id) }
+            .map(\.0)
     }
 
     func save(_ snap: Snapshot) throws {
