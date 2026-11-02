@@ -75,13 +75,18 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   that cannot reach MonadHost replaces launchd's job only while no VM runs, never ending a host
   that runs VMs (two Debug copies used to take turns, each turn powering every VM off).
   An outdated MonadHost kept for its running VMs is replaced once the last of them stops.
+- **Updates:** the Release build checks GitHub's latest release once a day (Settings › Updates ›
+  Check for updates, on by default) and on Monad › Check for Updates, and asks before it installs a
+  newer one with install.sh's checks (SHA-256, bundle id, version, signature); `monad-update.sh`
+  swaps it in once Monad has quit and opens it, while the VMs keep running. The Debug build never
+  updates itself.
 
 ## Tests
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
-| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,115 Swift tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
+| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,200 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
 
@@ -107,6 +112,8 @@ warnings, this file updated, and no private names or paths in what is committed.
   repository must be public for the install script's address and `releases/latest` to work.
 - **At the first release:** `release.yml` has not run yet, and the zip installed by hand (Open
   Anyway) is untried on a clean Mac, MonadHost starting from it included.
+- **At the next release:** an update installed by Monad itself has not run on the Mac (it needs a
+  release newer than the one installed); its parts are tested (`AppUpdateTests`, `test_update.sh`).
 - **To check by hand on the Mac** (`docs/SECURITY.md` › Checked on the Mac): an ad hoc tool signed
   with Monad's identifier is refused by MonadHost; macOS's App Management stops other apps changing
   `/Applications/Monad.app`; recovery's reader window never takes focus.

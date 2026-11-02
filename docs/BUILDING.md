@@ -77,6 +77,18 @@ only when the SHA-256 matches, the app is `dev.monad.Monad` and `codesign --veri
 bash). Unlike `release.sh install` it has no "Release this" job and no Enter to skip the wait for
 MonadHost: it waits until Monad has quit and its VMs have stopped.
 
+The Release build updates itself the same way (`Monad/App/AppUpdate.swift`, `AppUpdater.swift`):
+once a day while Settings › Updates › Check for updates is on, and on Monad › Check for Updates, it
+asks where `releases/latest` leads, and when that tag's version is higher than its own
+`CFBundleShortVersionString` it asks the user. On Update it downloads both files to a temporary
+folder and makes install.sh's checks (the SHA-256, `dev.monad.Monad`, the version the tag names,
+`codesign --verify --deep --strict`), then starts `monad-update.sh` from that folder and quits. The
+script waits for that copy to exit, swaps the new one in beside the old (the old one goes back and
+opens again if a step fails), removes the quarantine flag and opens it; it writes to
+`logs/monad-update.log`. VMs keep running, and the new Monad replaces the old MonadHost once none
+does. So each release needs a higher `MARKETING_VERSION`, or no copy offers it. Tests:
+`AppUpdateTests`, `CTests/test_update.sh` (dash and bash).
+
 ## Check which MonadHost the Release build uses
 
 ```sh

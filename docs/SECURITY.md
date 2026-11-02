@@ -130,6 +130,24 @@ the isolation check before a shell), with a few things of its own. In the releas
 Not promised: that recovery's screens stay where the steps expect them, or that Apple's limit of
 two running macOS VMs (Virtualization's, in any app) leaves room for another.
 
+## Updates (2026-11-01)
+
+The Release build asks `https://github.com/buzzer-re/Monad/releases/latest` where it leads, once a
+day unless Settings › Updates › Check for updates is off. The request carries nothing about the
+user or the VMs. A landing anywhere but `…/releases/tag/v<numbers>` on github.com over https is no
+release (`UpdateCheck.release`). Nothing is downloaded or installed until the user says Update.
+The download is used only when it matches the release's SHA-256, its app is `dev.monad.Monad` of
+the version the tag names, and `codesign --verify --deep --strict` holds (`UpdateDownload`;
+`AppUpdateTests`); a copy macOS translocated, or in a folder the user cannot write, is not updated.
+The swap (`monad-update.sh`; `CTests/test_update.sh`) waits for the app to quit, only replaces a
+`dev.monad.Monad` with another, and puts the old copy back if a step fails.
+
+What this does not promise: the SHA-256 comes from the same release, so it catches a broken
+download, not a release or GitHub account that was taken over; an ad hoc signature says the app
+is intact, not who made it (as with install.sh). Between the checks and the swap the update sits
+in the user's temporary folder, where a hostile same-user process could change it (see Same-user
+processes).
+
 ## Decisions (2026-10-05)
 
 - **Clipboard writes by a guest (OSC 52) stay on by default**, within limits: at most 100 KB,

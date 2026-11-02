@@ -70,6 +70,8 @@
 			membershipExceptions = (
 				App/AgentViews.swift,
 				App/AppDelegate.swift,
+				App/AppUpdate.swift,
+				App/AppUpdater.swift,
 				App/CanvasNotesView.swift,
 				App/CanvasView.swift,
 				App/CanvasWindowController.swift,

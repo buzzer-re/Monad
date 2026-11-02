@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         firewallPrompts = FirewallPromptController(host: HostAgent.client)
         approvalPrompts = ApprovalPromptController(host: HostAgent.client)
         macSetupPrompts = MacSetupPromptController(host: HostAgent.client)
+        AppUpdater.shared.start()
         newWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -175,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// "Version 1.0 (release, built …, FA2769A0)".
     @objc func showAbout(_ sender: Any?) {
         NSApp.orderFrontStandardAboutPanel(options: [.version: Flavor.currentAboutVersion])
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        AppUpdater.shared.check(byUser: true)
     }
 
     @objc func newWindow(_ sender: Any?) {
@@ -463,6 +468,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // Application
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Monad", action: #selector(showAbout(_:)), keyEquivalent: "")
+        if AppUpdater.shared.isAvailable {
+            appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
+        }
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())

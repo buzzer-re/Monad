@@ -58,7 +58,7 @@ final class SettingsRequest: ObservableObject {
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case terminal, privacy, machines, distributions, networks, firewall, profiles, agents, logs
+    case terminal, privacy, machines, distributions, networks, firewall, profiles, agents, logs, updates
 
     var id: String { rawValue }
 
@@ -73,6 +73,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return "Profiles"
         case .agents: return "Agents"
         case .logs: return "Logs"
+        case .updates: return "Updates"
         }
     }
 
@@ -87,6 +88,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return "wand.and.stars"
         case .agents: return "sparkles"
         case .logs: return "doc.text.magnifyingglass"
+        case .updates: return "arrow.down.circle.fill"
         }
     }
 
@@ -101,6 +103,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return .pink
         case .agents: return .purple
         case .logs: return .orange
+        case .updates: return .teal
         }
     }
 
@@ -116,6 +119,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: ProfilesSettingsPane()
         case .agents: AgentsSettingsPane()
         case .logs: LogsSettingsPane()
+        case .updates: UpdatesSettingsPane()
         }
     }
 }
@@ -289,6 +293,44 @@ private struct LogsSettingsPane: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Updates
+
+private struct UpdatesSettingsPane: View {
+    @AppStorage(SettingsKey.checkForUpdates) private var checkForUpdates = true
+    private let updater = AppUpdater.shared
+
+    var body: some View {
+        Form {
+            Section {
+                SettingRow(symbol: "arrow.down.circle", color: .teal, title: "Check for updates",
+                           detail: "Once a day Monad asks GitHub for its latest release, and when there is a newer one, asks you before it installs it. The check sends nothing about you or your VMs.") {
+                    Toggle("", isOn: $checkForUpdates).labelsHidden().toggleStyle(.switch)
+                }
+                .disabled(!updater.isAvailable)
+                SettingRow(symbol: "info.circle", color: .gray, title: "Monad \(AppVersion.current?.text ?? "?")",
+                           detail: Flavor.currentAboutVersion) {
+                    Button("Check Now") { updater.check(byUser: true) }
+                        .disabled(!updater.isAvailable)
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                if !updater.isAvailable {
+                    Notice(symbol: "hammer.fill", color: .gray,
+                           text: "This is the Debug build, which Xcode makes: only the Release build updates itself.")
+                        .font(Design.caption)
+                } else {
+                    Notice(symbol: "checkmark.shield.fill", color: .green,
+                           text: "An update is installed only when it matches the release's SHA-256, is Monad's Release build of that version and its signature holds. Your VMs keep running while Monad restarts.")
+                        .font(Design.caption)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .font(Design.body)
     }
 }
 

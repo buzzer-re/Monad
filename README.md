@@ -34,6 +34,8 @@ scripts/install.sh --from ~/Downloads/Monad.zip  # a zip or Monad.app you alread
 
 Monad is signed ad hoc, so after each update macOS asks again for access to your folders and the local network. Keep Monad in `/Applications`.
 
+Monad checks for a newer release once a day and asks before it installs one (Monad › Check for Updates does it now). It installs an update only after the same checks as the script, then restarts; your VMs keep running. Turn it off in Settings › Updates › Check for updates.
+
 ## Every tab is a virtual machine
 
 ![A Monad window with tabs for the VMs default, web, db and mac-lab. The default VM boots: Virtualization.framework, Ubuntu 26.04 with its checksums checked, ssh over vsock, the isolation check, then uname -sm prints Linux aarch64.](docs/images/terminal.png)
