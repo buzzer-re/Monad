@@ -541,6 +541,18 @@ final class HostServiceTests: XCTestCase {
         XCTAssertEqual(fixture.factory.machine.pauseLog, ["pause", "resume"])
     }
 
+    /// To ask the user, MonadHost opens the app it lives in, by its path:
+    /// "open -b" let Launch Services pick any copy with the bundle id (an
+    /// older Debug build elsewhere), which replaced MonadHost and shut its
+    /// VMs down on every MCP approval (seen 2026-11-02).
+    func testTheAppOpenedToAskIsTheOneAroundThisMonadHost() {
+        let host = URL(fileURLWithPath: "/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app/Contents/MacOS/MonadHost")
+        XCTAssertEqual(HostService.openAppArguments(executable: host),
+                       ["/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app"])
+        XCTAssertNil(HostService.openAppArguments(executable: URL(fileURLWithPath: "/usr/local/bin/MonadHost")),
+                     "not inside an app: nothing is opened")
+    }
+
     func testRestartAppliesSavedSettings() async throws {
         let (c, log) = await connect()
         try await provisioned(c, log)

@@ -173,6 +173,10 @@ processes).
   (`ExtraDisk.isValidName`, checked again by `monad-disks.sh`; `ConfigV2Tests`, `test_disks.sh`). The
   script never formats a disk that has a filesystem. Removing a disk deletes its file, only while
   the VM is shut down; over MCP it is a risky tool.
+- **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
+  with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
+  copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it
+  lives in, by path (`HostService.openAppArguments`; `HostServiceTests`).
 - **Same-user processes: the cheap parts are fixed** (below).
 - **Images a guest sends stay undecoded unless the VM allows them** (2026-10-10): a per-VM switch,
   off when a VM is made (also from an imported settings file, unless the user keeps it). With it on,

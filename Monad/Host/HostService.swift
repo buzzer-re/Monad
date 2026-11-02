@@ -49,11 +49,24 @@ final class HostService {
     /// MonadHost (`openMonad`), nothing in tests.
     var openApp: () -> Void = {}
 
+    /// Opens (or brings forward) the app this MonadHost lives in, by its
+    /// path: "open -b" let Launch Services pick any copy with the bundle id,
+    /// such as an older Debug build elsewhere, which replaced MonadHost and
+    /// shut its VMs down whenever an agent's call asked the user.
     static func openMonad() {
+        guard let executable = Bundle.main.executableURL, let arguments = openAppArguments(executable: executable) else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-b", Flavor.current.appIdentifier]
+        p.arguments = arguments
         try? p.run()
+    }
+
+    /// `open`'s arguments for the app around MonadHost's `executable`
+    /// (…/X.app/Contents/MacOS/MonadHost); nil when it is not in an app.
+    nonisolated static func openAppArguments(executable: URL) -> [String]? {
+        let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard app.pathExtension == "app", executable.deletingLastPathComponent().lastPathComponent == "MacOS" else { return nil }
+        return [app.path]
     }
     /// Monad's version. MonadHost lives in Monad.app/Contents/MacOS, but its
     /// Bundle.main carries the tool's own embedded plist (no version), and
