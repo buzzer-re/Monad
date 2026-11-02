@@ -63,8 +63,10 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   `delete_snapshot` keep the VM's disks and settings as APFS clones, and a running VM's memory
   (Virtualization's saved state, while it is paused a moment), as a tree; restoring one taken
   running brings the VM back running where it was, its clock set to the Mac's. Checked on the Mac:
-  a file in `/dev/shm` and a running process came back after a restore. Not yet: a new VM from a
-  snapshot (clone), which needs the guest to get a new identity (machine-id).
+  a file in `/dev/shm` and a running process came back after a restore. A new VM is made from a
+  snapshot (its Snapshots page, the New VM sheet's "Start from: a snapshot", `clone_vm`), and a
+  stopped Linux VM is copied too: its disks cloned, with a new seed (host name, host keys), key
+  and machine-id. Checked on the Mac: the copy got its own host name, machine-id and address.
 - **Disks:** a VM takes up to 8 more disks (Resources › Disks, `add_disk`/`remove_disk`), sparse
   files in its folder attached by name at the next start; in a Linux VM Monad formats a blank one
   (ext4) and mounts it at `/mnt/<name>` (Guest/monad-disks.sh, never over a filesystem), and its

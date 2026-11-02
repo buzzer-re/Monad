@@ -83,6 +83,9 @@ final class MonadToolsTests: XCTestCase {
         let line = try XCTUnwrap((taken["snapshots"] as? [String])?.first)
         let id = try XCTUnwrap(vm.snapshots.first?.id)
         XCTAssertEqual(line, "\(id): clean, shut down, current")
+        let copied = try object(try await call("clone_vm", ["name": .string("web"), "new_name": .string("web-copy"),
+                                                             "snapshot": .string(id)]))
+        XCTAssertEqual(copied["name"] as? String, "web-copy")
         try await call("restore_snapshot", ["name": .string("web"), "snapshot": .string(id)])
         XCTAssertEqual(vm.currentSnapshot, id)
         try await call("delete_snapshot", ["name": .string("web"), "snapshot": .string(id)])

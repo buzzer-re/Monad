@@ -209,18 +209,21 @@ final class MonadTools {
                 return MCPResult(text: "Deleted \(name).")
             },
             MCPTool(name: "clone_vm",
-                    description: "Copy a stopped macOS VM: the same system, account and files, with a machine identity of its own "
-                        + "(its disk is cloned, so it takes no room until it changes). Shared folders, bridges, host commands, "
-                        + "forwards into the Mac and an agent role stay with the original.",
+                    description: "Copy a stopped VM, or one of its snapshots (by id, from get_vm; the VM may run then): the same "
+                        + "system and files, with an identity of its own (Linux: host name, keys, machine-id; macOS: machine "
+                        + "identifier). Its disks are cloned, so they take no room until they change. Shared folders, bridges, "
+                        + "host commands, forwards into the Mac and an agent role stay with the original.",
                     schema: Self.schema(["name": Self.vmName,
                                          "new_name": Self.string("The copy's name: letters, digits and dashes, up to 32."),
+                                         "snapshot": Self.string("Copy this snapshot of it instead of the VM as it is."),
                                          "start": Self.boolean("Start the copy once made (default false).")],
                                         required: ["name", "new_name"]), risk: .normal) { [unowned self] call in
                 let copy = try self.vm(try call.string("name")).config.copy(named: try call.string("new_name"))
                 var c = copy.config
                 let left = copy.left
                 if case .vm(let parent) = call.caller { try self.makeChild(&c, of: parent) }
-                _ = try await self.request(.clone, name: try call.string("name"), config: c)
+                let snapshot = try call.optionalString("snapshot")
+                _ = try await self.request(.clone, name: try call.string("name"), config: c) { $0.snapshot = snapshot }
                 var snap = try self.service.snapshot(self.vm(c.name))
                 if try call.optionalBool("start") ?? false { snap = try await self.request(.start, name: c.name).instance ?? snap }
                 var result = MCPResult.json(self.summary(snap))

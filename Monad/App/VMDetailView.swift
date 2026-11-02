@@ -1433,6 +1433,8 @@ private struct SnapshotsPage: View {
     @State private var newName = ""
     @State private var restoring: SnapshotSummary?
     @State private var deleting: SnapshotSummary?
+    @State private var copying: SnapshotSummary?
+    @State private var copyName = ""
     @State private var busy: String?
     @State private var errorMessage: String?
 
@@ -1505,6 +1507,29 @@ private struct SnapshotsPage: View {
         } message: {
             Text("The VM stays as it is; the snapshots taken after it are kept.")
         }
+        .sheet(item: $copying) { snap in
+            VStack(alignment: .leading, spacing: 14) {
+                Text("New VM from “\(snap.name)”").font(.headline)
+                TextField("Name", text: $copyName)
+                Text("Its disks are clones of the snapshot's (no room until they change), with its settings. It gets an identity of its own; shared folders, bridges and host commands stay with “\(vm.name)”.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { copying = nil }.keyboardShortcut(.cancelAction)
+                    Button("Create") {
+                        let name = copyName.trimmingCharacters(in: .whitespaces), id = snap.id, source = vm.name
+                        let settings = vm.config.copy(named: name).config
+                        copying = nil
+                        run("Making \(name)…") { _ = try await host.clone(source, as: settings, snapshot: id) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!InstanceConfig.isValidName(copyName.trimmingCharacters(in: .whitespaces)))
+                }
+            }
+            .padding(20)
+            .frame(width: 440)
+        }
         .alert("Snapshot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -1535,6 +1560,12 @@ private struct SnapshotsPage: View {
                 Text(s.createdAt.formatted(date: .abbreviated, time: .shortened)).font(Design.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("New VM…") {
+                copyName = vm.name + "-copy"
+                copying = s
+            }
+            .help("A new VM from this snapshot, with an identity of its own")
+            .disabled(busy != nil)
             Button("Restore…") { restoring = s }.disabled(busy != nil)
             Button { deleting = s } label: { Image(systemName: "trash") }
                 .help("Delete this snapshot")

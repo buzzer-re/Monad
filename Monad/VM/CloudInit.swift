@@ -378,8 +378,14 @@ enum CloudInit {
     /// have vsock port 22. A copy of a Lima VM ("Copy to Monad") is Monad's
     /// own: lasting masks, Lima's guest agent included, and Lima's per-boot
     /// script removed (it would look for Lima's seed at every boot).
+    /// A copy's first boot (a new VM from a snapshot or another VM): the
+    /// disk's machine-id is the original's, and with it its DHCP client id,
+    /// so both would get one lease. A new one, and networkd asks again.
+    static let newMachineIDCommand =
+        "rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup; systemctl restart systemd-networkd 2>/dev/null || true"
+
     static func userData(config: InstanceConfig, guest: DistroConfig.GuestProfile, publicKey: String,
-                         bootMessages: BootMessages = .quiet) -> String {
+                         bootMessages: BootMessages = .quiet, newIdentity: Bool = false) -> String {
         let user = config.user
         let lima = config.attached != nil
         let key = publicKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -528,7 +534,7 @@ enum CloudInit {
             content: |
         \(yamlBlock(GuestDiscovery.profileScript, indent: 6))
         \(consoleFile)runcmd:
-          - [systemd-tmpfiles, --create, /etc/tmpfiles.d/monad-sshd.conf]
+        \(newIdentity ? "  - [sh, -c, \"\(newMachineIDCommand)\"]\n" : "")  - [systemd-tmpfiles, --create, /etc/tmpfiles.d/monad-sshd.conf]
         \(lastingMask)  - [sh, -c, "[ -e /sys/fs/selinux/enforce ] || install -D -m 0644 \(sshdReapPath) \(sshdReapDropIn)"]
           - [systemctl, daemon-reload]
           - [sh, \(selinuxScriptPath)]
@@ -609,11 +615,11 @@ enum CloudInit {
     /// Write key, seed ISO and ssh config for a new instance.
     static func provision(config: InstanceConfig, guest: DistroConfig.GuestProfile, paths: InstancePaths,
                           runner: CommandRunning = LoggingCommandRunner(SystemCommandRunner()),
-                          bootMessages: BootMessages = .quiet) async throws {
+                          bootMessages: BootMessages = .quiet, newIdentity: Bool = false) async throws {
         _ = try agentScript()
         try await prepareSSH(config: config, paths: paths, runner: runner)
         let pub = try String(contentsOf: paths.publicKey, encoding: .utf8)
-        let ud = Data(userData(config: config, guest: guest, publicKey: pub, bootMessages: bootMessages).utf8)
+        let ud = Data(userData(config: config, guest: guest, publicKey: pub, bootMessages: bootMessages, newIdentity: newIdentity).utf8)
         let md = Data(metaData(config: config, instanceID: "monad-\(config.name)-\(UUID().uuidString.lowercased())").utf8)
 
         let rc: Int32 = ud.withUnsafeBytes { udp in

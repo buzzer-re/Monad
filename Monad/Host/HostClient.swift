@@ -538,8 +538,10 @@ final class HostClient: ObservableObject {
     }
 
     /// A copy of the stopped VM `name` with `config` (InstanceConfig.copy).
-    func clone(_ name: String, as config: InstanceConfig) async throws -> RemoteVM {
-        try instance(from: try await request(.clone, name: name, config: config))
+    /// A copy of VM `name` (stopped), or of its snapshot `snapshot` (whose
+    /// settings it takes; only `config`'s name counts then).
+    func clone(_ name: String, as config: InstanceConfig, snapshot: String? = nil) async throws -> RemoteVM {
+        try instance(from: try await request(.clone, name: name, config: config) { $0.snapshot = snapshot })
     }
 
     func update(_ config: InstanceConfig) async throws {

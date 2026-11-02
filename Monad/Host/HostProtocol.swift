@@ -87,7 +87,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case setDefault      // name: Make Default → defaultVM
         case answerMacSetup  // name, macSetupWork or macSetupError: a macOS VM's setup step done or not (Phase 14)
         case openDesktop     // name: a macOS VM's desktop in a window (shown by the host) → instance
-        case clone           // name, config: a copy of the stopped VM `name` with these settings → instance
+        case clone           // name, config, snapshot?: a copy of the stopped VM `name` (or of its snapshot) → instance
         case repairDisk      // name: Repair Disk on the stopped Linux VM (minutes) → instance, message: what it did
     }
 
@@ -113,7 +113,7 @@ struct HostRequest: Codable, Equatable, Sendable {
     /// answerMacSetup: the root step's work folder, or why it did not run.
     var macSetupWork: String?
     var macSetupError: String?
-    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot: its id.
+    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot, clone: its id.
     var snapshot: String?
 
     init(id: UInt64, op: Op, name: String? = nil, force: Bool? = nil, config: InstanceConfig? = nil,
@@ -160,6 +160,7 @@ struct HostRequest: Codable, Equatable, Sendable {
             guard let name, InstanceConfig.isValidName(name), let config, InstanceConfig.isValidName(config.name) else {
                 throw HostProtocolError.invalid("clone needs a VM name and a configuration with a valid name.")
             }
+            if let snapshot, !Snapshot.isValidID(snapshot) { throw HostProtocolError.invalid("clone needs a snapshot's id.") }
         case .answerFirewall:
             guard let name, InstanceConfig.isValidName(name), let a = firewallAnswer else {
                 throw HostProtocolError.invalid("answerFirewall needs a VM name and an answer.")

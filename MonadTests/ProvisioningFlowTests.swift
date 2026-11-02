@@ -704,6 +704,37 @@ final class ProvisioningFlowTests: XCTestCase {
         XCTAssertTrue(sent.first?.arguments.contains(vm.sshHost) == true)
     }
 
+    /// A new VM from a snapshot (cloning): the snapshot's disks and
+    /// settings under a new name, with an identity of its own: a new key,
+    /// a new seed (so cloud-init sets the new host name and host keys), a
+    /// new machine-id in the guest (else two clones share a DHCP lease), a
+    /// new MAC. The source may run meanwhile; it is left as it is.
+    func testANewVMFromASnapshotHasAnIdentityOfItsOwn() async throws {
+        let source = try await createdVM("unit")
+        try Data("system at the snapshot".utf8).write(to: source.paths.disk)
+        let snap = try await source.takeSnapshot(name: "clean")
+        try Data("system later".utf8).write(to: source.paths.disk)
+        manager.start(source)
+        await assertEventually { source.state == .ready }
+
+        let (settings, _) = snap.config.copy(named: "copy")
+        let copy = try await manager.clone(source, as: "copy", settings: settings, snapshot: snap.id)
+        XCTAssertEqual(copy.state, .stopped)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: copy.paths.disk), as: UTF8.self), "system at the snapshot")
+        XCTAssertEqual(copy.config.name, "copy")
+        XCTAssertNil(copy.config.networks.first?.macAddress, "a MAC of its own when it first starts")
+        XCTAssertTrue(runner.calls.contains { $0.executable == "/usr/bin/ssh-keygen" && $0.arguments.contains(copy.paths.privateKey.path) },
+                      "a key of its own")
+        let seed = String(decoding: try Data(contentsOf: copy.paths.seed), as: UTF8.self)
+        XCTAssertTrue(seed.contains("local-hostname: monad-copy"), "its own host name")
+        XCTAssertTrue(seed.contains(CloudInit.newMachineIDCommand), "its own machine-id")
+        XCTAssertFalse(String(decoding: try Data(contentsOf: source.paths.seed), as: UTF8.self).contains(CloudInit.newMachineIDCommand),
+                       "a VM made from an image does not need one")
+        XCTAssertTrue(copy.snapshots.isEmpty, "a new VM starts without snapshots")
+        XCTAssertEqual(source.state, .ready, "the source runs on")
+        XCTAssertEqual(manager.instances.map(\.name).filter { $0 == "copy" }.count, 1)
+    }
+
     func testAFailedEphemeralVMLeavesNothing() async throws {
         images.error = TestError("offline")
         let vm = manager.createEphemeral()

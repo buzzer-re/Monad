@@ -578,9 +578,18 @@ final class HostConnection {
         case .clone:
             let source = try vm(r.name)
             var config = r.config!
+            if let id = r.snapshot {
+                // A snapshot's copy has the snapshot's settings, less what reaches into the Mac.
+                guard let snap = source.snapshots.first(where: { $0.id == id }) else {
+                    throw MonadError("\(source.name) has no snapshot \(id).")
+                }
+                let parent = config.parent // an orchestrator's copy is its child
+                config = snap.config.copy(named: config.name).config
+                config.parent = parent
+            }
             try SharePolicy.apply(&config, places: service.sharePlaces)
             try config.validate(maxCPUs: service.limits.maxCPUs, maxMemoryGiB: service.limits.maxMemoryGiB)
-            return answer(try await manager.clone(source, as: config.name, settings: config))
+            return answer(try await manager.clone(source, as: config.name, settings: config, snapshot: r.snapshot))
 
         case .openDesktop:
             let target = try vm(r.name)

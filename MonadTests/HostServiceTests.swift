@@ -555,6 +555,17 @@ final class HostServiceTests: XCTestCase {
         let id = try XCTUnwrap(r.instance?.snapshots?.first?.id)
         XCTAssertEqual(r.instance?.snapshots?.first?.name, "clean")
         XCTAssertEqual(r.instance?.currentSnapshot, id)
+        // A new VM from it: its settings are the snapshot's, the name the request's.
+        nextID += 1
+        var other = try XCTUnwrap(log.latest("default")).config
+        other.name = "from-clean"
+        other.cpus = 7
+        var clone = HostRequest(id: nextID, op: .clone, name: "default", config: other)
+        clone.snapshot = id
+        let made = await c.handle(clone)
+        XCTAssertTrue(made.ok, made.error ?? "")
+        XCTAssertEqual(made.instance?.name, "from-clean")
+        XCTAssertEqual(made.instance?.config.cpus, try XCTUnwrap(log.latest("default")).config.cpus, "the snapshot's settings")
         for op in [HostRequest.Op.restoreSnapshot, .deleteSnapshot] {
             nextID += 1
             var req = HostRequest(id: nextID, op: op, name: "default")

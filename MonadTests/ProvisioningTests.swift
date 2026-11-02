@@ -571,6 +571,15 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(CloudInit.userData(config: config, guest: ubuntu, publicKey: "k").contains("\t"))
     }
 
+    /// A copy (a new VM from a snapshot or another VM) gets a machine-id
+    /// of its own at its first boot; a VM made from an image needs none.
+    func testACopyGetsAMachineIDOfItsOwn() {
+        let c = InstanceConfig.defaults(name: "copy")
+        XCTAssertTrue(CloudInit.userData(config: c, guest: ubuntu, publicKey: "k", newIdentity: true)
+            .contains("  - [sh, -c, \"\(CloudInit.newMachineIDCommand)\"]\n  - [systemd-tmpfiles"))
+        XCTAssertFalse(CloudInit.userData(config: c, guest: ubuntu, publicKey: "k").contains("systemd-machine-id-setup"))
+    }
+
     func testMetaData() {
         let md = CloudInit.metaData(config: config, instanceID: "iid-1")
         XCTAssertEqual(md, "instance-id: iid-1\nlocal-hostname: monad-unit\n")
