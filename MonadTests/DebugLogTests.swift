@@ -127,12 +127,28 @@ final class DebugLogTests: XCTestCase {
 
     // MARK: The setting
 
+    /// On until the user turns it off: when a VM goes wrong the log of what
+    /// happened is already there (a report came in with none). A choice
+    /// saved either way holds; a file that cannot be read means on.
+    func testItIsOnUnlessTurnedOff() throws {
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.path))
+        XCTAssertTrue(DebugLog.load(settings: settings), "no choice yet: on")
+        let name = "dev.monad.test.logging.\(UUID().uuidString)"
+        try DebugLog.save(enabled: false, settings: settings, notification: name)
+        XCTAssertFalse(DebugLog.load(settings: settings))
+        try DebugLog.save(enabled: true, settings: settings, notification: name)
+        XCTAssertTrue(DebugLog.load(settings: settings))
+        try Data("not json".utf8).write(to: settings)
+        XCTAssertTrue(DebugLog.load(settings: settings))
+    }
+
     /// Settings › Logs saves the switch where both processes read it, and
     /// tells them at once.
     func testTheSwitchIsSharedThroughAFileAndANotification() throws {
         let morning = self.morning
         let host = makeLog(process: "MonadHost") { morning }
         let name = "dev.monad.test.logging.\(UUID().uuidString)"
+        try DebugLog.save(enabled: false, settings: settings, notification: name)
         host.watchSettings(notification: name)
         XCTAssertFalse(host.isEnabled)
         try DebugLog.save(enabled: true, settings: settings, notification: name)

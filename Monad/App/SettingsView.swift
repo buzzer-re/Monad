@@ -247,7 +247,7 @@ private struct LogsSettingsPane: View {
         Form {
             Section {
                 SettingRow(symbol: "doc.text.magnifyingglass", color: .gray, title: "Debug logging",
-                           detail: "Monad and its VM service write each step they take to a log file, one a day. Turn it on to look into a problem, and include the file when you report one.") {
+                           detail: "Monad and its VM service write each step they take to a log file, one a day. On unless you turn it off; include the file when you report a problem.") {
                     Toggle("", isOn: Binding(get: { enabled }, set: { set($0) })).labelsHidden().toggleStyle(.switch)
                 }
                 SettingRow(symbol: "folder", color: .blue, title: "Log files",
