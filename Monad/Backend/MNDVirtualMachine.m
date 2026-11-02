@@ -13,6 +13,11 @@
 /* Guest console output kept on disk per VM (twice this at most, with the
  * rotated file): a guest can print without end. */
 static const size_t kConsoleLogCap = 8u << 20;
+/* The guest's health lines (Guest/monad-health.sh): one every 15 s, kept
+ * across boots, a few days of them under this cap. */
+static const size_t kHealthLogCap = 2u << 20;
+/* The virtio console port the guest finds its health port by. */
+static NSString *const kHealthPortName = @"dev.monad.health";
 
 NSErrorDomain const MNDVirtualMachineErrorDomain = @"dev.monad.vm";
 
@@ -40,6 +45,16 @@ static NSError *MNDError(NSInteger code, NSString *message) {
 }
 @end
 
+@implementation MNDExtraDisk
+- (instancetype)initWithIdentifier:(NSString *)identifier path:(NSString *)path {
+    if ((self = [super init])) {
+        _identifier = [identifier copy];
+        _path = [path copy];
+    }
+    return self;
+}
+@end
+
 @implementation MNDVMConfig
 - (instancetype)init {
     if ((self = [super init])) {
@@ -48,6 +63,7 @@ static NSError *MNDError(NSInteger code, NSString *message) {
         _networkEnabled = YES;
         _sharingTag = @"monad";
         _sharedDirectories = @[];
+        _extraDisks = @[];
     }
     return self;
 }
@@ -120,10 +136,12 @@ static NSError *MNDNoInput(NSString *what) {
     NSLock *_connectionsLock;
     MNDVirtualMachineState _state;
     uint64_t _memorySize;
-    // Guest console: a pipe read here and written to a size-capped log.
+    // Guest console and health port: pipes read here and written to
+    // size-capped logs, on one queue.
     dispatch_queue_t _consoleQueue;
     dispatch_source_t _console;
     mnd_rotlog *_consoleLog;
+    dispatch_source_t _health;
     // The disk attached while running (Repair Disk); used on _queue only.
     id _usbDisk;
 }
@@ -152,10 +170,23 @@ static NSError *MNDNoInput(NSString *what) {
     _connections = [NSMutableDictionary dictionary];
     _connectionsLock = [NSLock new];
 
-    NSFileHandle *consoleOut = nil;
-    if (config.serialLogPath && !(consoleOut = [self openConsoleLog:config.serialLogPath error:error])) return nil;
+    _consoleQueue = dispatch_queue_create("dev.monad.vm.console", DISPATCH_QUEUE_SERIAL);
+    NSFileHandle *consoleOut = nil, *healthOut = nil;
+    if (config.serialLogPath && !(consoleOut = [self openLog:config.serialLogPath
+                                                         cap:kConsoleLogCap
+                                                         log:&_consoleLog
+                                                      source:&_console
+                                                     forward:NO
+                                                       error:error])) return nil;
+    if (config.healthLogPath && !config.macOS && !(healthOut = [self openLog:config.healthLogPath
+                                                                         cap:kHealthLogCap
+                                                                         log:NULL
+                                                                      source:&_health
+                                                                     forward:YES
+                                                                       error:error])) return nil;
     VZVirtualMachineConfiguration *vzc = [MNDVirtualMachine configurationForConfig:config
                                                                      consoleOutput:consoleOut
+                                                                      healthOutput:healthOut
                                                                              error:error];
     if (!vzc) return nil;
     NSError *validation = nil;
@@ -176,15 +207,22 @@ static NSError *MNDNoInput(NSString *what) {
 - (void)dealloc {
     [self stopBridge];
     if (_console) dispatch_source_cancel(_console); /* closes the pipe and the log */
+    if (_health) dispatch_source_cancel(_health);
 }
 
 #pragma mark - Console log
 
-/* Returns the write end for the guest's console; the read end is drained on
- * a private queue into a log that rotates at kConsoleLogCap. */
-- (nullable NSFileHandle *)openConsoleLog:(NSString *)path error:(NSError **)error {
+/* Returns the write end for a guest's console port; the read end is drained
+ * on the console queue into a log at path that rotates at cap, and handed to
+ * healthHandler too when forward is set. */
+- (nullable NSFileHandle *)openLog:(NSString *)path
+                               cap:(size_t)cap
+                               log:(mnd_rotlog **)outLog
+                            source:(dispatch_source_t __strong *)outSource
+                           forward:(BOOL)forward
+                             error:(NSError **)error {
     int e = 0;
-    mnd_rotlog *log = mnd_rotlog_open(path.fileSystemRepresentation, kConsoleLogCap, &e);
+    mnd_rotlog *log = mnd_rotlog_open(path.fileSystemRepresentation, cap, &e);
     if (!log) {
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:e userInfo:nil];
         return nil;
@@ -199,15 +237,17 @@ static NSError *MNDNoInput(NSString *what) {
     fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
     int rfd = fds[0];
-    _consoleLog = log;
-    _consoleQueue = dispatch_queue_create("dev.monad.vm.console", DISPATCH_QUEUE_SERIAL);
+    if (outLog) *outLog = log;
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)rfd, 0, _consoleQueue);
     char *buf = malloc(64 * 1024);
+    __weak MNDVirtualMachine *weakSelf = self;
     dispatch_source_set_event_handler(src, ^{
         for (int i = 0; i < 16; i++) { /* bounded work per event */
             ssize_t n = read(rfd, buf, 64 * 1024);
             if (n > 0) {
                 mnd_rotlog_write(log, buf, (size_t)n);
+                void (^handler)(NSData *) = forward ? weakSelf.healthHandler : nil;
+                if (handler) handler([NSData dataWithBytes:buf length:(NSUInteger)n]);
                 continue;
             }
             if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
@@ -220,7 +260,7 @@ static NSError *MNDNoInput(NSString *what) {
         free(buf);
         mnd_rotlog_close(log);
     });
-    _console = src;
+    *outSource = src;
     dispatch_resume(src);
     return [[NSFileHandle alloc] initWithFileDescriptor:fds[1] closeOnDealloc:YES];
 }
@@ -334,11 +374,13 @@ static NSError *MNDNoInput(NSString *what) {
 + (nullable VZVirtualMachineConfiguration *)virtualMachineConfigurationForConfig:(MNDVMConfig *)c
                                                                            error:(NSError **)error {
     NSFileHandle *sink = c.serialLogPath ? [NSFileHandle fileHandleForWritingAtPath:@"/dev/null"] : nil;
-    return [self configurationForConfig:c consoleOutput:sink error:error];
+    NSFileHandle *health = c.healthLogPath && !c.macOS ? [NSFileHandle fileHandleForWritingAtPath:@"/dev/null"] : nil;
+    return [self configurationForConfig:c consoleOutput:sink healthOutput:health error:error];
 }
 
 + (nullable VZVirtualMachineConfiguration *)configurationForConfig:(MNDVMConfig *)c
                                                      consoleOutput:(nullable NSFileHandle *)consoleOut
+                                                      healthOutput:(nullable NSFileHandle *)healthOut
                                                              error:(NSError **)error {
     VZVirtualMachineConfiguration *vzc = [[VZVirtualMachineConfiguration alloc] init];
 
@@ -386,6 +428,19 @@ static NSError *MNDNoInput(NSString *what) {
         if (!seed) return nil;
         [storage addObject:[[VZVirtioBlockDeviceConfiguration alloc] initWithAttachment:seed]];
     }
+    for (MNDExtraDisk *d in c.extraDisks) {
+        if (![VZVirtioBlockDeviceConfiguration validateBlockDeviceIdentifier:d.identifier error:error]) return nil;
+        VZDiskImageStorageDeviceAttachment *a =
+            [[VZDiskImageStorageDeviceAttachment alloc] initWithURL:[NSURL fileURLWithPath:d.path]
+                                                           readOnly:NO
+                                                        cachingMode:VZDiskImageCachingModeAutomatic
+                                                synchronizationMode:VZDiskImageSynchronizationModeFull
+                                                              error:error];
+        if (!a) return nil;
+        VZVirtioBlockDeviceConfiguration *block = [[VZVirtioBlockDeviceConfiguration alloc] initWithAttachment:a];
+        block.blockDeviceIdentifier = d.identifier;
+        [storage addObject:block];
+    }
     vzc.storageDevices = storage;
 
     // Network: a Monad network (a socket to monad-netd) or Apple's NAT. With
@@ -421,6 +476,19 @@ static NSError *MNDNoInput(NSString *what) {
         VZVirtioConsoleDeviceSerialPortConfiguration *serial = [[VZVirtioConsoleDeviceSerialPortConfiguration alloc] init];
         serial.attachment = att;
         vzc.serialPorts = @[ serial ];
+    }
+
+    // The health port: a named virtio console port the guest writes its
+    // health lines to (Guest/monad-health.sh), so they reach the Mac when
+    // ssh no longer does. Write only: nothing goes back into the guest.
+    if (healthOut) {
+        VZVirtioConsolePortConfiguration *port = [[VZVirtioConsolePortConfiguration alloc] init];
+        port.name = kHealthPortName;
+        port.attachment = [[VZFileHandleSerialPortAttachment alloc] initWithFileHandleForReading:nil
+                                                                            fileHandleForWriting:healthOut];
+        VZVirtioConsoleDeviceConfiguration *console = [[VZVirtioConsoleDeviceConfiguration alloc] init];
+        console.ports[0] = port;
+        vzc.consoleDevices = @[ console ];
     }
 
     // A macOS guest's display, keyboard and pointer: its desktop, and
@@ -497,7 +565,8 @@ static NSError *MNDNoInput(NSString *what) {
         [self setState:MNDVirtualMachineStateStarting error:nil];
         if (self->_consoleLog) {
             mnd_rotlog *log = self->_consoleLog;
-            dispatch_sync(self->_consoleQueue, ^{ mnd_rotlog_reset(log); }); /* each boot starts a fresh log */
+            /* Each boot starts its own log; the one before is serial.log.1. */
+            dispatch_sync(self->_consoleQueue, ^{ mnd_rotlog_rotate(log); });
         }
         void (^started)(NSError *_Nullable) = ^(NSError *_Nullable err) {
             if (err) os_log_error(MNDLog(), "start failed: %{public}@", err);
@@ -537,6 +606,64 @@ static NSError *MNDNoInput(NSString *what) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
         }];
     });
+}
+
+- (void)pauseWithCompletion:(void (^)(NSError *_Nullable))completion {
+    dispatch_async(_queue, ^{
+        if (!self->_vm.canPause) {
+            NSError *e = MNDError(8, @"The virtual machine cannot be paused in its current state.");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(e); });
+            return;
+        }
+        [self->_vm pauseWithCompletionHandler:^(NSError *_Nullable err) {
+            if (err) os_log_error(MNDLog(), "pause failed: %{public}@", err);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+        }];
+    });
+}
+
+- (void)resumeWithCompletion:(void (^)(NSError *_Nullable))completion {
+    dispatch_async(_queue, ^{
+        if (!self->_vm.canResume) {
+            NSError *e = MNDError(8, @"The virtual machine is not paused.");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(e); });
+            return;
+        }
+        [self->_vm resumeWithCompletionHandler:^(NSError *_Nullable err) {
+            if (err) os_log_error(MNDLog(), "resume failed: %{public}@", err);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+        }];
+    });
+}
+
+- (void)saveStateToPath:(NSString *)path completion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 14, *)) {
+        dispatch_async(_queue, ^{
+            [self->_vm saveMachineStateToURL:[NSURL fileURLWithPath:path]
+                           completionHandler:^(NSError *_Nullable err) {
+                if (err) os_log_error(MNDLog(), "save failed: %{public}@", err);
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+            }];
+        });
+    } else {
+        completion(MNDError(9, @"Saving a VM's memory needs macOS 14 or later."));
+    }
+}
+
+- (void)restoreStateFromPath:(NSString *)path completion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 14, *)) {
+        dispatch_async(_queue, ^{
+            [self setState:MNDVirtualMachineStateStarting error:nil];
+            [self->_vm restoreMachineStateFromURL:[NSURL fileURLWithPath:path]
+                                completionHandler:^(NSError *_Nullable err) {
+                if (err) os_log_error(MNDLog(), "restore failed: %{public}@", err);
+                [self setState:err ? MNDVirtualMachineStateError : MNDVirtualMachineStateRunning error:err];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+            }];
+        });
+    } else {
+        completion(MNDError(9, @"Restoring a VM's memory needs macOS 14 or later."));
+    }
 }
 
 - (void)guestDidStopVirtualMachine:(VZVirtualMachine *)virtualMachine {

@@ -15,13 +15,14 @@ struct VMDetailView: View {
     static let size = NSSize(width: 860, height: 640)
 
     enum Page: String, CaseIterable, Identifiable {
-        case overview, resources, network, security, connections, profiles, folders, forwarding, configuration, log
+        case overview, resources, snapshots, network, security, connections, profiles, folders, forwarding, configuration, log
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .overview: return "Overview"
             case .resources: return "Resources"
+            case .snapshots: return "Snapshots"
             case .network: return "Network"
             case .security: return "Security"
             case .connections: return "Connections"
@@ -37,6 +38,7 @@ struct VMDetailView: View {
             switch self {
             case .overview: return "info.circle.fill"
             case .resources: return "cpu.fill"
+            case .snapshots: return "clock.arrow.circlepath"
             case .network: return "network"
             case .security: return "lock.shield.fill"
             case .connections: return "point.3.connected.trianglepath.dotted"
@@ -52,6 +54,7 @@ struct VMDetailView: View {
             switch self {
             case .overview: return .gray
             case .resources: return .blue
+            case .snapshots: return .green
             case .network: return .indigo
             case .security: return .red
             case .connections: return .orange
@@ -78,6 +81,8 @@ struct VMDetailView: View {
     @State private var turning: ForwardRule?
     @State private var addingBridge = false
     @State private var addingHostCommand = false
+    @State private var addingDisk = false
+    @State private var removingDisk: String?
     @State private var restartPrompt: (title: String, message: String)?
     /// Monad networks the VM can join and the firewall tags there are (read
     /// when the page shows).
@@ -99,7 +104,9 @@ struct VMDetailView: View {
 
     /// The pages this VM has (Security: macOS only).
     private var pages: [Page] {
-        Page.allCases.filter { $0 != .security || vm.config.guestOS == .macos }
+        Page.allCases.filter {
+            ($0 != .security || vm.config.guestOS == .macos) && ($0 != .snapshots || !vm.config.ephemeral)
+        }
     }
 
     private var networkDetail: String {
@@ -151,7 +158,7 @@ struct VMDetailView: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(vm.name).font(.system(size: 17, weight: .bold))
-                    StatusBadge(state: exists ? vm.state : .stopped)
+                    StatusBadge(state: exists ? vm.state : .stopped, paused: exists && vm.paused)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.vertical, 10)
@@ -162,6 +169,7 @@ struct VMDetailView: View {
                     switch page {
                     case .overview: overview
                     case .resources: resources
+                    case .snapshots: SnapshotsPage(vm: vm, host: host)
                     case .network: network
                     case .security: security
                     case .connections:
@@ -230,6 +238,21 @@ struct VMDetailView: View {
                 addingBridge = false
             } onCancel: { addingBridge = false }
         }
+        .sheet(isPresented: $addingDisk) {
+            DiskEditor(guestOS: draft.config.guestOS, taken: Set(draft.config.disks.map(\.name))) { disk in
+                draft.config.disks.append(disk)
+                addingDisk = false
+            } onCancel: { addingDisk = false }
+        }
+        .confirmationDialog("Remove the disk “\(removingDisk ?? "")”?",
+                            isPresented: Binding(get: { removingDisk != nil }, set: { if !$0 { removingDisk = nil } })) {
+            Button("Remove Disk", role: .destructive) {
+                draft.config.disks.removeAll { $0.name == removingDisk }
+                removingDisk = nil
+            }
+        } message: {
+            Text("Its file and everything on it are deleted when you save.")
+        }
         .sheet(isPresented: $addingHostCommand) {
             HostCommandEditor(shares: draft.config.sharing.shares) { command in
                 draft.config.hostCommands.append(command)
@@ -279,6 +302,13 @@ struct VMDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     if vm.isRunning {
+                        if vm.paused {
+                            Button { run { try await host.resume(vm.name) } } label: { Label("Resume", systemImage: "playpause.fill") }
+                        } else {
+                            Button { run { try await host.pause(vm.name) } } label: { Label("Pause", systemImage: "pause.fill") }
+                                .disabled(vm.state != .ready)
+                                .help("Its programs stop where they are, its memory kept, until you resume it.")
+                        }
                         Button { run { try await host.stop(vm.name) } } label: { Label("Shut Down", systemImage: "stop.fill") }
                             .disabled(vm.state == .stopping)
                         Button { restart() } label: { Label("Restart", systemImage: "arrow.clockwise") }
@@ -291,8 +321,17 @@ struct VMDetailView: View {
                 }
                 .controlSize(.large)
             }
-            if !vm.pendingRestart.isEmpty || vm.sharesError != nil || vm.state.isFailed {
+            if !vm.pendingRestart.isEmpty || vm.sharesError != nil || vm.healthProblem != nil || vm.state.isFailed {
                 Section("Attention") {
+                    if let problem = vm.healthProblem {
+                        HStack {
+                            Notice(symbol: "stethoscope", color: .red, text: problem)
+                            Spacer()
+                            if problem.contains("kernel crashed") {
+                                Button("Restart Now") { restart() }.disabled(vm.state != .ready)
+                            }
+                        }
+                    }
                     if !vm.pendingRestart.isEmpty {
                         HStack {
                             Notice(symbol: "arrow.clockwise.circle.fill", color: .orange,
@@ -379,7 +418,7 @@ struct VMDetailView: View {
                 }
             }
             Section("Details") {
-                LabeledContent("State", value: exists ? vm.state.label : "Deleted")
+                LabeledContent("State", value: exists ? (vm.paused ? "Paused" : vm.state.label) : "Deleted")
                 LabeledContent("Processors", value: "\(vm.config.cpus)")
                 LabeledContent("Memory", value: "\(vm.config.memoryGiB) GB")
                 LabeledContent("Disk", value: "\(vm.config.diskGiB) GB" + (vm.config.attached == nil ? "" : ", Lima's"))
@@ -427,7 +466,31 @@ struct VMDetailView: View {
             } header: {
                 Text("Memory Balloon")
             }
+            Section {
+                ForEach(draft.config.disks, id: \.name) { d in
+                    let saved = vm.config.disks.contains { $0.name == d.name }
+                    SettingRow(symbol: "externaldrive", color: .gray, title: d.name, detail: Self.diskDetail(d, guestOS: draft.config.guestOS)) {
+                        Button("Remove") { removingDisk = d.name }
+                            .disabled(saved && vm.isRunning)
+                            .help(saved && vm.isRunning ? "Shut the VM down to remove a disk." : "")
+                    }
+                }
+                Button("Add Disk…") { addingDisk = true }
+                    .disabled(draft.config.disks.count >= InstanceConfig.maxExtraDisks)
+            } header: {
+                Text("Disks")
+            } footer: {
+                Text("Disks besides its own, each a file in the VM's folder that takes only the room written to it. A new disk is attached when the VM starts.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
         }
+    }
+
+    static func diskDetail(_ d: ExtraDisk, guestOS: GuestOS) -> String {
+        let size = "\(d.sizeGiB) GB"
+        if guestOS == .macos { return size + ". In macOS, Disk Utility asks to initialize it the first time." }
+        return d.mount ? size + ", formatted if blank (ext4) and mounted at \(d.mountPoint)."
+                       : size + ", left as it is: /dev/disk/by-id/virtio-\(d.name) in the VM."
     }
 
     // MARK: Security (macOS)
@@ -1360,6 +1423,254 @@ private struct ForwardEditor: View {
 /// Adds a stdio bridge: a name, the program (by name or full path) and its
 /// arguments, and where the VM reaches it. What the VM can then do is
 /// asked before it is added.
+/// A VM's snapshots, like VMware's Snapshot Manager: the tree (each under
+/// the one it was taken after), where the VM is, and Take, Restore, Delete.
+private struct SnapshotsPage: View {
+    @ObservedObject var vm: RemoteVM
+    let host: HostClient
+
+    @State private var naming = false
+    @State private var newName = ""
+    @State private var restoring: SnapshotSummary?
+    @State private var deleting: SnapshotSummary?
+    @State private var copying: SnapshotSummary?
+    @State private var copyName = ""
+    @State private var busy: String?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Form {
+            Section {
+                if vm.snapshots.isEmpty {
+                    Text("No snapshots yet.").foregroundStyle(.secondary)
+                }
+                ForEach(SnapshotSummary.tree(vm.snapshots), id: \.snapshot.id) { item in
+                    row(item.snapshot, depth: item.depth)
+                }
+            } header: {
+                HStack {
+                    Text("Snapshots")
+                    Spacer()
+                    if let busy {
+                        ProgressView().controlSize(.small)
+                        Text(busy).font(Design.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Take Snapshot…") {
+                        newName = Self.defaultName()
+                        naming = true
+                    }
+                    .disabled(busy != nil || !(vm.state == .ready || vm.state == .stopped))
+                }
+            } footer: {
+                Text("A snapshot keeps the VM's disks and settings as they are, and its memory when it is running: restoring it brings the VM back running, where it was. Disks are copied as APFS clones, which take room only as they differ; saved memory takes as much room as the VM's memory.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $naming) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Take a Snapshot of “\(vm.name)”").font(.headline)
+                TextField("Name", text: $newName)
+                Text(vm.state == .ready ? "It pauses for a moment while its memory is saved." : "It is shut down: its disks and settings are kept.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { naming = false }.keyboardShortcut(.cancelAction)
+                    Button("Take Snapshot") {
+                        naming = false
+                        take(newName)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!Snapshot.isValidName(newName))
+                }
+            }
+            .padding(20)
+            .frame(width: 420)
+        }
+        .confirmationDialog("Restore “\(restoring?.name ?? "")”?",
+                            isPresented: Binding(get: { restoring != nil }, set: { if !$0 { restoring = nil } })) {
+            if let snap = restoring {
+                Button("Take a Snapshot First, Then Restore") { restore(snap, savingFirst: true) }
+                Button("Restore", role: .destructive) { restore(snap, savingFirst: false) }
+            }
+        } message: {
+            Text(restoreMessage)
+        }
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            if let snap = deleting {
+                Button("Delete Snapshot", role: .destructive) {
+                    let id = snap.id
+                    run("Deleting…") { try await host.deleteSnapshot(vm.name, id: id) }
+                }
+            }
+        } message: {
+            Text("The VM stays as it is; the snapshots taken after it are kept.")
+        }
+        .sheet(item: $copying) { snap in
+            VStack(alignment: .leading, spacing: 14) {
+                Text("New VM from “\(snap.name)”").font(.headline)
+                TextField("Name", text: $copyName)
+                Text("Its disks are clones of the snapshot's (no room until they change), with its settings. It gets an identity of its own; shared folders, bridges and host commands stay with “\(vm.name)”.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { copying = nil }.keyboardShortcut(.cancelAction)
+                    Button("Create") {
+                        let name = copyName.trimmingCharacters(in: .whitespaces), id = snap.id, source = vm.name
+                        let settings = vm.config.copy(named: name).config
+                        copying = nil
+                        run("Making \(name)…") { _ = try await host.clone(source, as: settings, snapshot: id) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!InstanceConfig.isValidName(copyName.trimmingCharacters(in: .whitespaces)))
+                }
+            }
+            .padding(20)
+            .frame(width: 440)
+        }
+        .alert("Snapshot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var restoreMessage: String {
+        let lost: String = vm.isRunning ? ", and what it is now is lost: it is powered off first." : "; what it is now is lost."
+        let after: String = restoring?.memory == true ? " It starts again where it was." : ""
+        return "“\(vm.name)” goes back to how it was then" + lost + after
+    }
+
+    private func row(_ s: SnapshotSummary, depth: Int) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: s.memory ? "play.circle.fill" : "stop.circle")
+                .foregroundStyle(s.memory ? .green : .secondary)
+                .help(s.memory ? "Taken running: restores running" : "Taken shut down")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(s.name).font(Design.rowTitle)
+                    if s.id == vm.currentSnapshot {
+                        Text("You are here").font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                    }
+                }
+                Text(s.createdAt.formatted(date: .abbreviated, time: .shortened)).font(Design.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("New VM…") {
+                copyName = vm.name + "-copy"
+                copying = s
+            }
+            .help("A new VM from this snapshot, with an identity of its own")
+            .disabled(busy != nil)
+            Button("Restore…") { restoring = s }.disabled(busy != nil)
+            Button { deleting = s } label: { Image(systemName: "trash") }
+                .help("Delete this snapshot")
+                .disabled(busy != nil)
+        }
+        .padding(.leading, CGFloat(min(depth, 8)) * 18)
+    }
+
+    private func take(_ name: String) {
+        run("Taking a snapshot…") { try await host.takeSnapshot(vm.name, named: name) }
+    }
+
+    private func restore(_ snap: SnapshotSummary, savingFirst: Bool) {
+        let name = vm.name, id = snap.id
+        run("Restoring…") {
+            if savingFirst { try await host.takeSnapshot(name, named: Self.defaultName(before: snap.name)) }
+            try await host.restoreSnapshot(name, id: id)
+        }
+    }
+
+    private func run(_ what: String, _ action: @escaping @MainActor () async throws -> Void) {
+        busy = what
+        Task { @MainActor in
+            defer { busy = nil }
+            do { try await action() } catch { errorMessage = HostAgent.describe(error) }
+        }
+    }
+
+    /// "Snapshot Nov 2, 3:41 PM" (or before restoring one: "Before restoring …").
+    static func defaultName(before restoring: String? = nil) -> String {
+        let when = Date().formatted(date: .abbreviated, time: .shortened)
+        guard let restoring else { return "Snapshot \(when)" }
+        return String("Before restoring \(restoring) (\(when))".prefix(Snapshot.maxNameLength))
+    }
+}
+
+/// Add Disk: a name, a size and, in a Linux VM, whether Monad formats and
+/// mounts it.
+private struct DiskEditor: View {
+    let guestOS: GuestOS
+    let taken: Set<String>
+    var onAdd: (ExtraDisk) -> Void
+    var onCancel: () -> Void
+
+    @State private var name = ""
+    @State private var size = 20
+    @State private var mount = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PageHeader(symbol: "externaldrive.badge.plus", color: .gray, title: "Add Disk",
+                       subtitle: "Another disk for the VM, attached when it starts.")
+                .padding(.horizontal, 24).padding(.top, 18)
+            Form {
+                TextField("Name", text: $name, prompt: Text(suggested))
+                if !trimmed.isEmpty && disk == nil {
+                    Text(taken.contains(trimmed) ? "The VM has a disk by that name."
+                         : "Lowercase letters, digits and dashes, 16 at most, starting with a letter.")
+                        .font(Design.caption).foregroundStyle(.orange)
+                }
+                QuantityRow(symbol: "externaldrive", color: .gray, title: "Size", value: $size,
+                            range: 1...4096, step: size < 10 ? 1 : 10, unit: "GB",
+                            detail: "The most it can hold: its file grows as the VM writes to it.")
+                if guestOS == .linux {
+                    SettingRow(symbol: "folder", color: .blue, title: "Format and mount",
+                               detail: "Monad formats it (ext4) and mounts it at /mnt/\(effectiveName) after each start. A disk that already has a filesystem is never formatted. Off, it is left blank for you or an agent.") {
+                        Toggle("", isOn: $mount).labelsHidden().toggleStyle(.switch)
+                    }
+                } else {
+                    Notice(symbol: "info.circle", color: .gray, text: "In macOS, Disk Utility asks to initialize the new disk the first time.")
+                        .font(Design.caption)
+                }
+            }
+            .formStyle(.grouped)
+            .font(Design.body)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }.keyboardShortcut(.cancelAction)
+                Button("Add") { if let disk { onAdd(disk) } }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(disk == nil)
+            }
+            .controlSize(.large)
+            .padding(.horizontal, 24).padding(.vertical, 14)
+        }
+        .frame(width: 520, height: 420)
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
+
+    /// "data", then "data2", … the first free.
+    private var suggested: String {
+        (["data"] + (2...9).map { "data\($0)" }).first { !taken.contains($0) } ?? "disk"
+    }
+
+    private var effectiveName: String { trimmed.isEmpty ? suggested : trimmed }
+
+    private var disk: ExtraDisk? {
+        let n = effectiveName
+        guard ExtraDisk.isValidName(n), !taken.contains(n) else { return nil }
+        return ExtraDisk(name: n, sizeGiB: size, mount: guestOS == .linux && mount)
+    }
+}
+
 private struct BridgeEditor: View {
     var onAdd: (CommandBridge) -> Void
     var onCancel: () -> Void
@@ -1660,13 +1971,18 @@ enum PreviewFixtures {
 // MARK: - Log
 
 /// The VM's Log page: the latest part of its log (VMLog), read again only
-/// when the file changed.
+/// when the file changed, and then only what was added when it just grew.
 @MainActor
 final class VMLogPageModel: ObservableObject {
     let url: URL
     @Published private(set) var text = ""
     private var seen: [Int64] = []
+    /// Bytes of the current file already in `text` (nil: read it whole).
+    private var readTo: Int64?
     private var timer: Timer?
+    /// The text is cut back to VMLog's 512 KB only past this, so most
+    /// changes add to the end and the view only appends.
+    static let trimAt = 640 << 10
 
     init(url: URL) { self.url = url }
 
@@ -1675,15 +1991,41 @@ final class VMLogPageModel: ObservableObject {
     func refresh() -> Bool {
         let stamp = [url, VMLog.previous(of: url)].flatMap { u -> [Int64] in
             var st = stat()
-            guard stat(u.path, &st) == 0 else { return [-1, -1] }
-            return [Int64(st.st_size), Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)]
+            guard stat(u.path, &st) == 0 else { return [-1, -1, -1] }
+            return [Int64(st.st_size), Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec),
+                    Int64(st.st_ino)]
         }
         guard stamp != seen else { return false }
+        let old = seen
         seen = stamp
+        // Only the current file grew (same file, the one before unchanged):
+        // what was added is read, not the whole log again.
+        if let from = readTo, old.count == 6, old[2] == stamp[2], Array(old[3...]) == Array(stamp[3...]),
+           stamp[0] > from, let added = Self.bytes(of: url, from: from) {
+            readTo = stamp[0]
+            text += String(decoding: added, as: UTF8.self)
+            if text.utf8.count > Self.trimAt { text = Self.tail(text) }
+            return true
+        }
+        readTo = stamp[0] >= 0 ? stamp[0] : nil
         let new = VMLog.read(url)
         guard new != text else { return false }
         text = new
         return true
+    }
+
+    private static func bytes(of url: URL, from offset: Int64) -> Data? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: UInt64(offset))) != nil else { return nil }
+        return try? h.readToEnd()
+    }
+
+    /// The last 512 KB, from a line start.
+    private static func tail(_ s: String) -> String {
+        let bytes = Array(s.utf8.suffix(512 << 10))
+        let start = bytes.firstIndex(of: UInt8(ascii: "\n")).map { $0 + 1 } ?? 0
+        return String(decoding: bytes[start...], as: UTF8.self)
     }
 
     /// Looked at once a second while the page shows.
@@ -1725,23 +2067,67 @@ struct VMLogPage: View {
                 .disabled(model.text.isEmpty)
             }
             .controlSize(.large)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.text.isEmpty ? "Nothing yet." : model.text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(model.text.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
-                .onChange(of: model.text) { proxy.scrollTo("end", anchor: .bottom) }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-            }
+            LogTextView(text: model.text.isEmpty ? "Nothing yet." : model.text, dimmed: model.text.isEmpty)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(24)
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+    }
+}
+
+/// A log shown as it grows: an NSTextView that lays out only what is on
+/// screen and gets only the new lines when the log grew. A SwiftUI Text of
+/// the same 512 KB was laid out whole at each change, 2 s of the main
+/// thread for one new line, and the window of a VM logging once a second
+/// stopped answering.
+struct LogTextView: NSViewRepresentable {
+    let text: String
+    var dimmed = false
+
+    final class Coordinator {
+        var shown = ""
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        guard let view = scroll.documentView as? NSTextView else { return scroll }
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.drawsBackground = true
+        view.backgroundColor = .textBackgroundColor
+        view.textContainerInset = NSSize(width: 10, height: 10)
+        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        view.layoutManager?.allowsNonContiguousLayout = true
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let c = context.coordinator
+        let color: NSColor = dimmed ? .secondaryLabelColor : .labelColor
+        guard text != c.shown || view.textColor != color else { return }
+        // Following the end only if it was there: someone reading further up stays put.
+        let atEnd = scroll.documentVisibleRect.maxY >= view.bounds.maxY - 20 || c.shown.isEmpty
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                                                         .foregroundColor: color]
+        storage.beginEditing()
+        let shownBytes = c.shown.utf8.count
+        if !c.shown.isEmpty, view.textColor == color, text.utf8.count > shownBytes,
+           text.utf8.prefix(shownBytes).elementsEqual(c.shown.utf8) {
+            let added = text.utf8.dropFirst(shownBytes)
+            storage.append(NSAttributedString(string: String(decoding: added, as: UTF8.self), attributes: attributes))
+        } else {
+            storage.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+        }
+        storage.endEditing()
+        view.textColor = color
+        c.shown = text
+        if atEnd { view.scrollToEndOfDocument(nil) }
     }
 }

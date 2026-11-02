@@ -211,11 +211,22 @@ final class PTYSession {
         }
     }
 
+    /// Stops the child's process group where it is (SIGSTOP), or lets it
+    /// go on (SIGCONT): a tab on a paused VM, whose ssh would otherwise give
+    /// up on the silent guest.
+    func freeze(_ on: Bool) {
+        queue.async { [weak self] in
+            guard let self, self.pid > 0, !self.exited else { return }
+            _ = mnd_pty_signal(self.pid, on ? SIGSTOP : SIGCONT)
+        }
+    }
+
     /// Hang up the session (like closing a terminal window).
     func terminate() {
         queue.async { [weak self] in
             guard let self, self.pid > 0, !self.exited else { return }
             _ = mnd_pty_signal(self.pid, SIGHUP)
+            _ = mnd_pty_signal(self.pid, SIGCONT) // a frozen one hears it too
             let pid = self.pid
             // Escalate if the process ignores SIGHUP.
             self.queue.asyncAfter(deadline: .now() + 3) { [weak self] in

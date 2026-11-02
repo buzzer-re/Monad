@@ -34,6 +34,7 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 | Boundary | Enforced by | Tested by |
 |---|---|---|
 | Only Monad's own processes drive MonadHost | XPC code requirement on each client (`HostXPCSecurity.clientRequirement`, read at each connection): the team and identifiers for team-signed builds; for ad hoc ones, each identifier with the code hash of the Monad.app installed beside MonadHost (or MonadHost itself, for `--mcp`). The app checks MonadHost by identifier only (see Same-user processes) | `XPCTransportTests` (`testAdHocClientsArePinnedToTheInstalledBinaries`: right identifier, other hash refused; foreign identifier and ad hoc peer against a team requirement refused) |
+| A guest's health port carries text one way, into a capped log | A Linux VM's one console device is a single port (`dev.monad.health`) the guest writes to and nothing reads back into; MonadHost appends what comes to `health.log` (2 MB, one rotated file, never through a link) and only reads it as bounded plain lines (300 bytes, controls dropped, an unfinished line over 4 KB dropped); what it tells the user from them names a program or function only in plain characters, cut to 32 | `DeviceModelTests`, `test_rotlog.c`, `GuestHealthTests`, `GuestReportTests` |
 | A guest cannot connect to the host over vsock | No `VZVirtioSocketListener` exists; the host dials ports 22 and 1024 | `InvariantTests.testTheHostNeverListensOnVsock` |
 | The guest's network sshd is off; ssh reaches the guest only over vsock | Cloud-init masks the distro's ssh units, the isolation check fails the boot closed if TCP 22 listens or the listening ports cannot be read (it needs no sudo). A Lima VM's masks hold for one boot (`--runtime`, set again at every Monad boot), so Lima keeps its sshd | `CloudInitTests`, `VMLifecycleTests` |
 | A compromised netd cannot touch files, start processes, listen, or use unix sockets | `sandbox_init` profile in `mnd_netd_main.c` | `NetdProcessTests` (`--netd-sandbox-check`, with a control for the unix socket) |
@@ -129,6 +130,24 @@ the isolation check before a shell), with a few things of its own. In the releas
 Not promised: that recovery's screens stay where the steps expect them, or that Apple's limit of
 two running macOS VMs (Virtualization's, in any app) leaves room for another.
 
+## Updates (2026-11-01)
+
+The Release build asks `https://github.com/buzzer-re/Monad/releases/latest` where it leads, once a
+day unless Settings › Updates › Check for updates is off. The request carries nothing about the
+user or the VMs. A landing anywhere but `…/releases/tag/v<numbers>` on github.com over https is no
+release (`UpdateCheck.release`). Nothing is downloaded or installed until the user says Update.
+The download is used only when it matches the release's SHA-256, its app is `dev.monad.Monad` of
+the version the tag names, and `codesign --verify --deep --strict` holds (`UpdateDownload`;
+`AppUpdateTests`); a copy macOS translocated, or in a folder the user cannot write, is not updated.
+The swap (`monad-update.sh`; `CTests/test_update.sh`) waits for the app to quit, only replaces a
+`dev.monad.Monad` with another, and puts the old copy back if a step fails.
+
+What this does not promise: the SHA-256 comes from the same release, so it catches a broken
+download, not a release or GitHub account that was taken over; an ad hoc signature says the app
+is intact, not who made it (as with install.sh). Between the checks and the swap the update sits
+in the user's temporary folder, where a hostile same-user process could change it (see Same-user
+processes).
+
 ## Decisions (2026-10-05)
 
 - **Clipboard writes by a guest (OSC 52) stay on by default**, within limits: at most 100 KB,
@@ -148,6 +167,21 @@ two running macOS VMs (Virtualization's, in any app) leaves room for another.
   are set aside on import and confirmed on edit, and a copy of the VM leaves them behind.
   Auto-forward and the MCP tools use the loopback only. A SOCKS proxy open to the network lets
   other computers send traffic out through the VM, within its firewall.
+- **Disks added to a VM stay in its folder** (2026-11-02): a disk's name becomes a file on the Mac
+  (`disks/<name>.raw` in the VM's folder), a virtio serial and, with Format and mount, an argument
+  of a root script in the guest, so it is lowercase letters, digits and dashes only, 16 at most
+  (`ExtraDisk.isValidName`, checked again by `monad-disks.sh`; `ConfigV2Tests`, `test_disks.sh`). The
+  script never formats a disk that has a filesystem. Removing a disk deletes its file, only while
+  the VM is shut down; over MCP it is a risky tool.
+- **A snapshot of a running VM holds its memory** (2026-11-02): `snapshots/<id>/memory.vzsave` in the
+  VM's private folder has whatever the guest had in memory (keys, passwords typed in it). It is
+  deleted with the snapshot. Snapshot ids are 8 hex digits made by Monad, never the user's text;
+  names are plain text, 64 characters at most (`Snapshot.isValidName`, `HostProtocolTests`).
+  Restoring or deleting one over MCP is a risky tool.
+- **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
+  with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
+  copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it
+  lives in, by path (`HostService.openAppArguments`; `HostServiceTests`).
 - **Same-user processes: the cheap parts are fixed** (below).
 - **Images a guest sends stay undecoded unless the VM allows them** (2026-10-10): a per-VM switch,
   off when a VM is made (also from an imported settings file, unless the user keeps it). With it on,

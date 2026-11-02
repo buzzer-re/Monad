@@ -56,9 +56,50 @@ final class LaunchctlAgentTests: XCTestCase {
 
     func testReloadReplacesTheJob() async throws {
         runner.setHandler { call in call.arguments.first == "print" ? .fail(113, "Could not find service") : .ok() }
-        try await agent.reload()
-        XCTAssertEqual(commands, [bootoutJob, printJob, bootstrapJob])
+        try await agent.reload(vmsRunning: false)
+        XCTAssertEqual(commands, [printJob, bootoutJob, printJob, bootstrapJob])
         XCTAssertTrue(FileManager.default.fileExists(atPath: agent.plistURL.path))
+    }
+
+    /// A MonadHost that runs VMs (another copy of Monad's, or one this app
+    /// can no longer reach after an update) is never booted out: that would
+    /// power them off (seen: two Debug copies taking turns, every VM shut
+    /// down at each turn). One with no VM running is replaced, even while it
+    /// runs: this app's own connections start it on demand, so it is
+    /// running whenever it is looked at (seen: a stale registration kept for
+    /// good).
+    func testReloadNeverEndsAHostThatRunsVMs() async throws {
+        let running = "gui/501/dev.monad.host = {\n\tstate = running\n\tpid = 4242\n}\n"
+        runner.setHandler { call in call.arguments.first == "print" ? .ok(running) : .ok() }
+        do {
+            try await agent.reload(vmsRunning: true)
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("still running"), error.localizedDescription)
+        }
+        XCTAssertEqual(commands, [printJob], "no bootout")
+        try await agent.reload(vmsRunning: false)
+        XCTAssertTrue(commands.contains(bootoutJob), "no VMs: replaced though it runs")
+        // A job that is not running is replaced whatever the marks say (they
+        // are left behind by a MonadHost that crashed).
+        runner.setHandler { call in
+            call.arguments.first == "print" ? .ok("gui/501/dev.monad.host = {\n\tstate = not running\n}\n") : .ok()
+        }
+        let before = commands.filter { $0 == bootoutJob }.count
+        try await agent.reload(vmsRunning: true)
+        XCTAssertEqual(commands.filter { $0 == bootoutJob }.count, before + 1)
+    }
+
+    /// The marks MonadHost keeps in each running VM's folder.
+    func testVMsRunningAreSeenByTheirMarks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertFalse(LaunchctlAgent.vmsRunning(in: root), "no folder")
+        let a = InstancePaths(name: "a", root: root), b = InstancePaths(name: "b", root: root)
+        for p in [a, b] { try FileManager.default.createDirectory(at: p.dir, withIntermediateDirectories: true) }
+        XCTAssertFalse(LaunchctlAgent.vmsRunning(in: root))
+        try Data("2026-11-01 19:00:00".utf8).write(to: b.runningMark)
+        XCTAssertTrue(LaunchctlAgent.vmsRunning(in: root))
     }
 
     /// The old job is still going for a while after the bootout: the new one
@@ -68,10 +109,11 @@ final class LaunchctlAgentTests: XCTestCase {
         runner.setHandler { call in
             guard call.arguments.first == "print" else { return .ok() }
             prints += 1
-            return prints <= 2 ? .ok("state = running\n") : .fail(113, "Could not find service")
+            if prints == 1 { return .ok("state = not running\n") }
+            return prints <= 3 ? .ok("state = running\n") : .fail(113, "Could not find service")
         }
-        try await agent.reload()
-        XCTAssertEqual(commands, [bootoutJob, printJob, printJob, printJob, bootstrapJob])
+        try await agent.reload(vmsRunning: false)
+        XCTAssertEqual(commands, [printJob, bootoutJob, printJob, printJob, printJob, bootstrapJob])
         XCTAssertGreaterThan(clock.totalSlept, 0)
     }
 

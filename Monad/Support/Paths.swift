@@ -55,11 +55,25 @@ struct InstancePaths {
         dir = root.appendingPathComponent(name, isDirectory: true)
     }
 
+    /// A snapshot's folder, which holds the same files as the VM's.
+    init(snapshotDir: URL) {
+        dir = snapshotDir
+    }
+
     var config: URL { dir.appendingPathComponent("instance.json") }
     var disk: URL { dir.appendingPathComponent("disk.raw") }
     /// The disk as it was before Repair Disk last ran (an APFS clone).
     var diskBeforeRepair: URL { dir.appendingPathComponent("disk.before-repair.raw") }
     var seed: URL { dir.appendingPathComponent("cidata.iso") }
+    /// The disks added in its settings (ExtraDisk), one file each.
+    var extraDisks: URL { dir.appendingPathComponent("disks", isDirectory: true) }
+    func extraDisk(_ name: String) -> URL { extraDisks.appendingPathComponent(name + ".raw") }
+    /// Its snapshots (Snapshots.swift), a folder each, and which one it is at.
+    var snapshots: URL { dir.appendingPathComponent("snapshots", isDirectory: true) }
+    func snapshot(_ id: String) -> URL { snapshots.appendingPathComponent(id, isDirectory: true) }
+    func snapshotInfo(_ id: String) -> URL { snapshot(id).appendingPathComponent("snapshot.json") }
+    func snapshotMemory(_ id: String) -> URL { snapshot(id).appendingPathComponent("memory.vzsave") }
+    var currentSnapshot: URL { snapshots.appendingPathComponent("current") }
     var efiVars: URL { dir.appendingPathComponent("efi-vars.fd") }
     var machineID: URL { dir.appendingPathComponent("machine-id.bin") }
     /// macOS guests (Phase 14): what Apple's installer leaves beside the disk.
@@ -81,6 +95,9 @@ struct InstancePaths {
     /// The screen as each of recovery's waits ended, from its last run (PNGs).
     var recoveryScreens: URL { dir.appendingPathComponent("recovery-screens", isDirectory: true) }
     var serialLog: URL { dir.appendingPathComponent("serial.log") }
+    /// What a Linux guest says of its health (Guest/monad-health.sh), from
+    /// its health port; kept across boots.
+    var healthLog: URL { dir.appendingPathComponent("health.log") }
     /// What Monad did with the VM, for its Log page (VMLog).
     var vmLog: URL { dir.appendingPathComponent("vm.log") }
     /// There while the VM's machine runs (when it started); one left behind

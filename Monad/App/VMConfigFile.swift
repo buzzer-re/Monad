@@ -260,11 +260,12 @@ enum VMConfigFile {
     /// The keys a VM's settings hold, by where they are (list items share
     /// their list's path). docs/CONFIG.md describes each.
     private static let keys: [String: Set<String>] = [
-        "": ["version", "name", "distro", "release", "image", "user", "cpus", "memoryGiB", "memoryTargetGiB", "diskGiB",
+        "": ["version", "name", "distro", "release", "image", "user", "cpus", "memoryGiB", "memoryTargetGiB", "diskGiB", "disks",
              "networks", "firewall", "sharing", "forwards", "autoForward", "profiles", "theme", "ephemeral", "createdAt", "guestOS",
              "startAtLaunch", "inlineImages", "attached", "copiedFrom", "bridges", "hostCommands", "agents", "parent",
              "systemIntegrityProtection", "fullDiskAccess", "autoLogin", "desktopAutofill", "bootToRecovery"],
         "agents": ["role", "guestPort", "maxChildren", "childCPUs", "childMemoryGiB"],
+        "disks": ["name", "sizeGiB", "mount"],
         "networks": ["network", "macAddress"],
         "firewall": ["allowlist", "allowLAN", "monitor", "rules", "tags"],
         "firewall.rules": ["action", "proto", "target", "ports"],
@@ -364,6 +365,7 @@ enum VMConfigFile {
         case .systemIntegrityProtection?: return "systemIntegrityProtection"
         case .fullDiskAccess?: return "fullDiskAccess"
         case .macOSOnly?: return "autoLogin"
+        case .linuxOnly?, .extraDisk?, .extraDiskSize?, .tooManyExtraDisks?: return "disks"
         case .attachedDisk?: return "attached"
         case .sharingDisabled?: return "sharing.runtimeEnabled"
         case .shareHostPath?, .shareGuestPath?, .duplicateGuestPath?: return "sharing.shares"

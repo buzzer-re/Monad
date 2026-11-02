@@ -189,6 +189,15 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                 vm.$snapshot.map(\.config.theme).removeDuplicates()
                     .sink { [weak self] _ in DispatchQueue.main.async { self?.refreshTheme() } }
                     .store(in: &self.cancellables)
+                // A paused VM: its ssh stops with it, so it does not give
+                // up on the silent guest, and goes on when it resumes.
+                vm.$snapshot.map { $0.paused ?? false }.removeDuplicates()
+                    .sink { [weak self] paused in DispatchQueue.main.async { self?.session?.freeze(paused) } }
+                    .store(in: &self.cancellables)
+                // What the guest's health says is wrong, once the session ended.
+                vm.$snapshot.map(\.health).removeDuplicates()
+                    .sink { [weak self] _ in DispatchQueue.main.async { self?.sayHealth() } }
+                    .store(in: &self.cancellables)
                 // Images in the terminal: the VM's setting, live.
                 vm.$snapshot.map(\.config.inlineImages).removeDuplicates()
                     .sink { [weak self] on in DispatchQueue.main.async { self?.model.imagesAllowed = on } }
@@ -544,10 +553,35 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         return delays[attempt]
     }
 
+    /// What a program that died may have left on: mouse reports (every
+    /// encoding), focus events, bracketed paste, application cursor keys and
+    /// keypad, the alternate screen and scroll, a hidden cursor, colors.
+    /// Left on, the next shell gets mouse reports and pastes as garbage.
+    nonisolated static let sessionEndReset = "\u{1B}[?9l\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1005l\u{1B}[?1006l\u{1B}[?1015l"
+        + "\u{1B}[?1004l\u{1B}[?2004l\u{1B}[?1l\u{1B}>\u{1B}[?1007l\u{1B}[?1049l\u{1B}[?25h\u{1B}[0m"
+
+    /// What the guest's health says is wrong, to say in the tab: once its
+    /// session has ended (never over a running one), and once each.
+    nonisolated static func healthNotice(_ health: String?, shown: String?, sessionEnded: Bool) -> String? {
+        guard sessionEnded, let health, health != shown else { return nil }
+        return health
+    }
+
+    /// The health problem this tab said last.
+    private var healthShown: String?
+
+    private func sayHealth() {
+        guard let notice = Self.healthNotice(vm?.healthProblem, shown: healthShown, sessionEnded: phase == .exited) else { return }
+        healthShown = notice
+        error(notice)
+    }
+
     private func sessionExited(_ status: Int32) {
         guard !closed else { return }
         session = nil
         phase = .exited
+        model.feed(Self.sessionEndReset)
+        sayHealth()
         let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
         debug(code >= 0 ? "the session ended with status \(code)\(code == 255 ? " (ssh could not connect or lost the connection)" : "")"
               : "the session was ended by signal \(status & 0x7f)")
@@ -639,6 +673,47 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     func terminalView(_ view: MonadTerminalView, didResizeTo cols: Int, rows: Int, pixels: CGSize) {
         session?.resize(cols: cols, rows: rows, pixelWidth: Int(pixels.width), pixelHeight: Int(pixels.height))
         onGridChange?(cols, rows)
+    }
+
+    /// A host shell: the pictures are saved on the Mac and their paths typed
+    /// (a VM tab uploads them into the VM and types those paths).
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool {
+        guard target == .host else { return terminalView(view, receivedImages: images) }
+        do {
+            let paths = try Self.savePastedImages(images, in: Self.hostPastes)
+            view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
+        } catch {
+            view.showToast("The picture could not be saved: \(error.localizedDescription)", duration: 5)
+        }
+        return true
+    }
+
+    /// Where pictures pasted into host shells are kept: the user's own
+    /// temporary folder, which macOS clears in time.
+    static let hostPastes = FileManager.default.temporaryDirectory.appendingPathComponent("Monad pastes", isDirectory: true)
+
+    /// Writes each picture into `dir` (made private to the user) under its
+    /// suggested name, a number added when taken; returns their paths.
+    nonisolated static func savePastedImages(_ images: [ImagePayload], in dir: URL) throws -> [String] {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        return try images.map { img in
+            let plain = String(img.suggestedName.unicodeScalars.filter {
+                CharacterSet.alphanumerics.contains($0) || "-_.".unicodeScalars.contains($0)
+            }.map(Character.init)).replacingOccurrences(of: "..", with: ".")
+            let base = (plain as NSString).deletingPathExtension.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let name = base.isEmpty ? "picture" : base
+            var url = dir.appendingPathComponent("\(name).png")
+            var n = 1
+            while fm.fileExists(atPath: url.path) {
+                url = dir.appendingPathComponent("\(name)-\(n).png")
+                n += 1
+            }
+            try img.png.write(to: url, options: .withoutOverwriting)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return url.path
+        }
     }
 
     func terminalView(_ view: MonadTerminalView, receivedImages images: [ImagePayload]) -> Bool {

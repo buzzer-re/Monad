@@ -24,6 +24,14 @@ protocol TerminalViewDelegate: AnyObject {
     func terminalView(_ view: MonadTerminalView, receivedImages images: [ImagePayload]) -> Bool
     /// Non-image files were dropped. Return false to insert their host paths.
     func terminalView(_ view: MonadTerminalView, receivedFiles urls: [URL]) -> Bool
+    /// Images were pasted (⌘V). Return false to fall back to the text.
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool
+}
+
+extension TerminalViewDelegate {
+    func terminalView(_ view: MonadTerminalView, pastedImages images: [ImagePayload]) -> Bool {
+        terminalView(view, receivedImages: images)
+    }
 }
 
 private enum Mod {
@@ -434,7 +442,10 @@ final class MonadTerminalView: NSView, @preconcurrency NSTextInputClient, NSMenu
                                 scale: scale, context: ctx)
                 continue
             }
-            guard let g = fonts.glyph(for: cp, bold: bold, italic: italic) else { continue }
+            guard var g = fonts.glyph(for: cp, bold: bold, italic: italic) else { continue }
+            if cellsWide == 1, x + 1 < count, cells[x + 1].cp == 0 || cells[x + 1].cp == 0x20 {
+                g = fonts.roomy(g, scalar: cp)
+            }
             if g.font !== batchFont || r.fg != batchColor {
                 flushGlyphs()
                 batchFont = g.font
@@ -1079,7 +1090,7 @@ final class MonadTerminalView: NSView, @preconcurrency NSTextInputClient, NSMenu
     @objc func paste(_ sender: Any?) {
         let pb = NSPasteboard.general
         let images = Self.images(from: pb)
-        if !images.isEmpty, delegate?.terminalView(self, receivedImages: images) == true { return }
+        if !images.isEmpty, delegate?.terminalView(self, pastedImages: images) == true { return }
         guard let text = pb.string(forType: .string), !text.isEmpty else { return }
         pasteText(text)
     }

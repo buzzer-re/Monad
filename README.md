@@ -34,6 +34,8 @@ scripts/install.sh --from ~/Downloads/Monad.zip  # a zip or Monad.app you alread
 
 Monad is signed ad hoc, so after each update macOS asks again for access to your folders and the local network. Keep Monad in `/Applications`.
 
+Monad checks for a newer release once a day and asks before it installs one (Monad › Check for Updates does it now). It installs an update only after the same checks as the script, then restarts; your VMs keep running. Turn it off in Settings › Updates › Check for updates.
+
 ## Every tab is a virtual machine
 
 ![A Monad window with tabs for the VMs default, web, db and mac-lab. The default VM boots: Virtualization.framework, Ubuntu 26.04 with its checksums checked, ssh over vsock, the isolation check, then uname -sm prints Linux aarch64.](docs/images/terminal.png)
@@ -134,6 +136,11 @@ Host commands give a VM's agents the Mac commands you defined for it as tools: a
 
 - Paste an image or drop files into a tab and they are copied into the VM (`~/.monad/shots/` and `~/.monad/uploads/`), with the path typed at the prompt. That's how coding agents like Claude Code take screenshots.
 - Once you have more than a handful of VMs, put them in groups, like VirtualBox does: "coding", "analysis", "agents". A group also works as a firewall tag, so a rule you give the group applies to every VM in it ([docs/GROUPS.md](docs/GROUPS.md)).
+- Snapshots, like VMware's: a VM's Snapshots page keeps its disks and settings, and its memory when it is running, so restoring one brings it back running where it was. A new VM can start from any snapshot (New VM › Start from: a snapshot), with a host name, keys and network identity of its own. Disks are APFS clones, which take room only as they change.
+- Add disks to a VM (its Resources page, or `add_disk`): each is a file that takes only the room written to it. In a Linux VM Monad formats a new one and mounts it at `/mnt/<name>`, or leaves it blank for you to set up.
+- Pause a VM (its row, its window, the canvas, or `pause_vm`): its programs stop where they are and go on when you resume it, with the tabs on it waiting meanwhile and its clock set right again. VMs' clocks are also set right when your Mac wakes from sleep.
+- Like VMware, Monad tells you when a VM is running low: a notification when one has used 90% of its memory or its disk, when Linux in it had to stop a program for memory, and when your Mac's disk has less than 10 GB free.
+- Nerd Font icons in prompts and tools (starship, lsd, eza, nvim plugins) show without installing a Nerd Font: Monad carries the icons-only Symbols Nerd Font ([MIT](Monad/Terminal/Fonts/SymbolsNerdFont-LICENSE.txt); its icon sets' licenses are listed [beside it](Monad/Terminal/Fonts/SymbolsNerdFont-README.md)). A theme's own font wins when it has them.
 - Themes work like Terminal.app's, all of its built-in ones included, with blur, transparency and background images. Images printed in the terminal (fastfetch, imgcat, chafa) are off by default and turned on per VM, since it's the guest choosing what gets decoded on your Mac. Every VM has `img`: `img photo.png`, or `curl -s <url> | img`.
 - A VM's settings can be read and edited as JSON, exported as a backup, or imported to make a new VM ([docs/CONFIG.md](docs/CONFIG.md)).
 - When a Linux VM won't boot, the error says what its disk shows: which filesystems are intact, and which have a damaged superblock or recorded errors. Repair Disk (in the VM's ⋯ menu, macOS 15 or later) attaches the disk to a temporary VM of the same distribution and runs its own tools (e2fsck, fsck.vfat, xfs_repair) on it, after keeping a copy of the disk as it was.

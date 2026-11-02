@@ -19,6 +19,15 @@ final class VMLifecycleTests: XCTestCase {
     private var bridges: FakeBridges!
     /// Settings › Virtual Machines › Full boot messages, for the VM.
     private var bootMessages = BootMessages.quiet
+    /// Every VM a test made: stopped after it, or its agent would keep
+    /// trying to connect on the test clock (whose sleeps end at once) for
+    /// the rest of the suite, and other tests would measure its CPU.
+    private var made: [VMInstance] = []
+
+    override func tearDown() async throws {
+        for vm in made where vm.isRunning { await vm.stop(timeout: 0) }
+        made = []
+    }
 
     override func setUp() async throws {
         tmp = TempDir()
@@ -62,7 +71,9 @@ final class VMLifecycleTests: XCTestCase {
         env.hostCommandServer = { [bridges] in bridges!.make($0, $1, $2) }
         if let endpoints { env.mcpEndpoint = { socket, token, _ in endpoints.make(socket, token) } }
         let profile = guest ?? DistroConfig.GuestProfile(packageManager: "apt")
-        return VMInstance(config: config, paths: paths, environment: env, guest: profile)
+        let vm = VMInstance(config: config, paths: paths, environment: env, guest: profile)
+        made.append(vm)
+        return vm
     }
 
     /// Each VM keeps its own log, with debug logging off too: what Monad
@@ -94,7 +105,8 @@ final class VMLifecycleTests: XCTestCase {
         vm.start()
         await assertEventually { vm.state == .ready }
         let check = try XCTUnwrap(runner.calls.first { CloudInit.isIsolationCheck($0.arguments.last) })
-        XCTAssertTrue(check.arguments.last?.contains("mask --now ssh.service ssh.socket sshd.service sshd.socket") ?? false)
+        XCTAssertTrue(check.arguments.last?.contains("for u in ssh.service ssh.socket sshd.service sshd.socket; do") ?? false)
+        XCTAssertTrue(check.arguments.last?.contains("systemctl stop ssh.service ssh.socket sshd.service sshd.socket") ?? false)
     }
 
     private var sshTrueCalls: [FakeCommandRunner.Call] { runner.sshCalls(runningRemote: "true") }
@@ -229,9 +241,290 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertEqual(TimeInterval(CloudInit.reportWatchSeconds), VMInstance.bootTimeout, "the guest watches as long as Monad waits")
     }
 
+    /// What the guest's health port says is wrong reaches the VM's state
+    /// and its log as it comes, lines split across pieces included, and a
+    /// new start begins clean.
+    func testTheGuestsHealthProblemsAreSaidAsTheyCome() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertNil(vm.healthProblem)
+        factory.machine.writeHealth("MONAD-H| boot id=1 kernel=7.0.0 cpus=2 mem=1997472\nMONAD-H| kern 3 Out of memory: Kill")
+        XCTAssertNil(vm.healthProblem, "half a line says nothing")
+        factory.machine.writeHealth("ed process 42 (node) total-vm:9000000kB\nnot a health line: Out of memory: Killed process 1 (x)\n")
+        let said = try XCTUnwrap(vm.healthProblem)
+        XCTAssertTrue(said.contains("Linux stopped node"), said)
+        XCTAssertFalse(said.contains("(x)") || said.contains("stopped node, x"), "only marked lines count")
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("health: The VM ran out of memory: Linux stopped node"))
+
+        await vm.stop()
+        XCTAssertNotNil(vm.healthProblem, "kept after it stops, to see why")
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertNil(vm.healthProblem, "a new start begins clean")
+    }
+
+    /// Pause, like VMware's: the guest's CPUs stop where they are and
+    /// resume there; the VM stays ready (its sessions, forwards and agent
+    /// stay), only paused.
+    func testAReadyVMPausesAndResumes() async throws {
+        let vm = try makeInstance()
+        do { try await vm.pause(); XCTFail("a stopped VM has nothing to pause") } catch {}
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        XCTAssertTrue(vm.paused)
+        XCTAssertEqual(vm.state, .ready)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause"])
+        try await vm.pause()
+        XCTAssertEqual(factory.machine.pauseLog, ["pause"], "already paused")
+        try await vm.resume()
+        XCTAssertFalse(vm.paused)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "resume"])
+        // Its clock stood still too: it is set to the Mac's again.
+        let epoch = Int(clock.now().timeIntervalSince1970)
+        await assertEventually { self.runner.calls.contains { $0.arguments.last == VMInstance.setClockCommand(epoch: epoch) } }
+        XCTAssertEqual(VMInstance.setClockCommand(epoch: 1_793_631_933),
+                       "sudo -n date -u -s @1793631933 >/dev/null 2>&1 || sudo -n date -u -f %s 1793631933 >/dev/null")
+        vm.log.flush()
+        let log = VMLog.read(vm.paths.vmLog)
+        XCTAssertTrue(log.contains("paused") && log.contains("resumed"), log)
+    }
+
+    /// A paused guest cannot hear the power button: Stop resumes it first,
+    /// then shuts it down cleanly.
+    func testStoppingAPausedVMResumesItFirst() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        await vm.stop()
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "resume"])
+        XCTAssertEqual(factory.machine.stopRequests, 1)
+        XCTAssertEqual(vm.state, .stopped)
+        XCTAssertFalse(vm.paused)
+    }
+
+    /// A paused VM that goes away (forced off, an error) is no longer paused.
+    func testAPausedVMThatEndsIsNoLongerPaused() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        await vm.forceStop()
+        XCTAssertFalse(vm.paused)
+        do { try await vm.resume(); XCTFail("nothing to resume") } catch {}
+    }
+
+    /// Add Disk: each disk is a sparse file in the VM's folder, made when
+    /// the VM starts, so it takes no room the guest has not written.
+    func testExtraDisksAreMadeWhenTheVMStarts() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 2, mount: true),
+                                               ExtraDisk(name: "raw", sizeGiB: 1, mount: false)] }
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let file = vm.paths.extraDisk("data")
+        let values = try file.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
+        XCTAssertEqual(values.fileSize, 2 << 30)
+        XCTAssertLessThan(values.totalFileAllocatedSize ?? .max, 1 << 20, "sparse")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vm.paths.extraDisk("raw").path))
+        // Formatted and mounted by the guest script, only the disks that ask.
+        func isDisks(_ c: FakeCommandRunner.Call) -> Bool { c.arguments.last?.hasPrefix("sudo -n sh -s -- ") == true }
+        await assertEventually { self.runner.calls.contains(where: isDisks) }
+        let run = try XCTUnwrap(runner.calls.first(where: isDisks))
+        XCTAssertEqual(run.arguments.last, "sudo -n sh -s -- \(vm.config.user) data")
+        XCTAssertEqual(run.stdin, Data(try CloudInit.disksScript().utf8))
+    }
+
+    /// A disk keeps its data: one already made is not made again, and a
+    /// disk is removed (its file deleted) only from a VM that is shut down.
+    func testADiskIsRemovedOnlyFromAStoppedVM() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: false)] }
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let file = vm.paths.extraDisk("data")
+        try FileHandle(forWritingTo: file).write(contentsOf: Data("kept".utf8))
+        var without = vm.config
+        without.disks = []
+        XCTAssertThrowsError(try vm.update(without), "not while it runs")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        await vm.stop()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(try FileHandle(forReadingFrom: file).read(upToCount: 4), Data("kept".utf8), "not made again")
+        await vm.stop()
+        try vm.update(without)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "its file goes with it")
+    }
+
+    // MARK: Snapshots
+
+    /// The disks and settings of a snapshot as they were, read back.
+    private func snapshotFile(_ vm: VMInstance, _ snap: Snapshot, _ name: String) throws -> String {
+        String(decoding: try Data(contentsOf: vm.paths.snapshot(snap.id).appendingPathComponent(name)), as: UTF8.self)
+    }
+
+    /// A shut-down VM's snapshot: its disks (APFS clones), its added disks
+    /// and its settings as they are, no memory. It is the VM's current one.
+    func testASnapshotOfAStoppedVMKeepsItsDisksAndSettings() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: false)] }
+        try Data("system v1".utf8).write(to: vm.paths.disk)
+        try FileManager.default.createDirectory(at: vm.paths.extraDisks, withIntermediateDirectories: true)
+        try Data("data v1".utf8).write(to: vm.paths.extraDisk("data"))
+        let snap = try await vm.takeSnapshot(name: "Before the upgrade")
+        XCTAssertEqual(snap.name, "Before the upgrade")
+        XCTAssertFalse(snap.memory)
+        XCTAssertNil(snap.parent)
+        XCTAssertEqual(snap.config.disks.map(\.name), ["data"])
+        XCTAssertEqual(try snapshotFile(vm, snap, "disk.raw"), "system v1")
+        XCTAssertEqual(try snapshotFile(vm, snap, "disks/data.raw"), "data v1")
+        XCTAssertEqual(vm.snapshots.map(\.id), [snap.id])
+        XCTAssertEqual(vm.currentSnapshot, snap.id)
+        XCTAssertEqual(factory.machine.pauseLog, [], "nothing ran")
+        // Read back from disk by a new instance of the VM.
+        XCTAssertEqual(SnapshotStore(paths: vm.paths).list(), [snap])
+    }
+
+    /// A running VM's snapshot also keeps its memory, saved while it is
+    /// paused (with its disks cloned meanwhile, so both are of one moment);
+    /// it goes on running after.
+    func testASnapshotOfARunningVMSavesItsMemoryWhilePaused() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let snap = try await vm.takeSnapshot(name: "running")
+        XCTAssertTrue(snap.memory)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "save", "resume"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vm.paths.snapshotMemory(snap.id).path))
+        XCTAssertEqual(vm.state, .ready)
+        XCTAssertFalse(vm.paused)
+        // A paused VM stays paused.
+        try await vm.pause()
+        _ = try await vm.takeSnapshot(name: "paused")
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "save", "resume", "pause", "save"])
+        XCTAssertTrue(vm.paused)
+        XCTAssertEqual(vm.snapshots.map(\.name), ["running", "paused"])
+        XCTAssertEqual(vm.snapshots.last?.parent, snap.id, "taken after the first: its child")
+    }
+
+    /// Restore: the disks, added disks and settings go back to the
+    /// snapshot's; a shut-down snapshot leaves the VM shut down.
+    func testRestoringPutsTheDisksAndSettingsBack() async throws {
+        let vm = try makeInstance { $0.cpus = 2 }
+        try Data("system v1".utf8).write(to: vm.paths.disk)
+        let snap = try await vm.takeSnapshot(name: "v1")
+        try Data("system v2, broken".utf8).write(to: vm.paths.disk)
+        var changed = vm.config
+        changed.cpus = 3
+        try vm.update(changed)
+        try await vm.restoreSnapshot(snap.id)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: vm.paths.disk), as: UTF8.self), "system v1")
+        XCTAssertEqual(vm.config.cpus, 2)
+        XCTAssertEqual(try InstanceConfig.load(from: vm.paths.config).cpus, 2, "saved")
+        XCTAssertEqual(vm.state, .stopped)
+        XCTAssertEqual(vm.currentSnapshot, snap.id)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: vm.paths.snapshot(snap.id).appendingPathComponent("disk.raw")),
+                              as: UTF8.self), "system v1", "the snapshot itself is kept, for another restore")
+    }
+
+    /// A running snapshot comes back running, where it was: its memory is
+    /// restored instead of a boot, and its clock set to the Mac's.
+    func testRestoringAMemorySnapshotResumesWhereItWas() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let snap = try await vm.takeSnapshot(name: "mid-work")
+        let starts = factory.machine.started
+        try await vm.restoreSnapshot(snap.id)
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(factory.machine.started, starts, "no boot")
+        XCTAssertEqual(Array(factory.machine.pauseLog.suffix(2)), ["restore", "resume"])
+        await assertEventually { self.runner.calls.contains { $0.arguments.last?.hasPrefix("sudo -n date -u -s @") == true } }
+    }
+
+    /// Deleting a snapshot keeps the ones taken after it (their parent is
+    /// its parent now) and removes its files.
+    func testDeletingASnapshotKeepsTheOnesAfterIt() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        let a = try await vm.takeSnapshot(name: "a")
+        let b = try await vm.takeSnapshot(name: "b")
+        XCTAssertEqual(b.parent, a.id)
+        try vm.deleteSnapshot(a.id)
+        XCTAssertEqual(vm.snapshots.map(\.name), ["b"])
+        XCTAssertNil(vm.snapshots.first?.parent)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vm.paths.snapshot(a.id).path))
+        XCTAssertEqual(vm.currentSnapshot, b.id)
+        try vm.deleteSnapshot(b.id)
+        XCTAssertNil(vm.currentSnapshot)
+    }
+
+    /// Snapshots taken in one second (their times keep whole seconds) still
+    /// list in the order taken: one comes after the one it was taken after.
+    func testSnapshotsOfOneSecondListInTheOrderTaken() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        var names: [String] = []
+        for i in 0..<12 {
+            names.append("s\(i)")
+            _ = try await vm.takeSnapshot(name: "s\(i)")
+        }
+        XCTAssertEqual(vm.snapshots.map(\.name), names)
+        XCTAssertEqual(SnapshotStore(paths: vm.paths).list().map(\.name), names)
+    }
+
+    func testWhatCannotBeSnapshotted() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        for bad in ["", String(repeating: "a", count: 65), "a\nb", "\u{202E}x"] {
+            do { _ = try await vm.takeSnapshot(name: bad); XCTFail(bad) } catch {}
+        }
+        let tmp = try makeInstance(name: "tmp-1") { $0.ephemeral = true }
+        do { _ = try await tmp.takeSnapshot(name: "x"); XCTFail("an ephemeral VM is thrown away") } catch {}
+        XCTAssertTrue(vm.snapshots.isEmpty)
+    }
+
+    /// A VM running low on memory or disk is warned about while it runs
+    /// (the app makes notifications of it), not once it has stopped.
+    func testAVMRunningLowIsWarnedWhileItRuns() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(vm.healthWarnings, [])
+        factory.machine.writeHealth("MONAD-H| snap up=1 mem=140000/2000000 swap=0/0 top= disk=/:18200000/20000000\n"
+                                    + "MONAD-H| snap up=16 mem=140000/2000000 swap=0/0 top= disk=/:18200000/20000000\n")
+        XCTAssertEqual(vm.healthWarnings, [GuestWarning(kind: .lowMemory, percent: 93),
+                                           GuestWarning(kind: .lowDisk, percent: 91, mount: "/")])
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("health: low memory (93% in use)"), VMLog.read(vm.paths.vmLog))
+        await vm.stop()
+        XCTAssertEqual(vm.healthWarnings, [], "only while it runs")
+    }
+
+    /// A guest whose kernel crashed (seen: on every exec, so ssh never got a
+    /// shell) fails its boot saying so, not only "not reachable over SSH".
+    func testABootThatFailsSaysTheGuestsKernelCrashed() async throws {
+        let vm = try makeInstance()
+        factory.machine.probeAnswers = [false]
+        var written = false
+        factory.machine.onProbe = { [weak self] in
+            guard !written else { return }
+            written = true
+            self?.factory.machine.writeHealth("MONAD-H| kern 0 Internal error: Oops: 0000000096000004 [#1]  SMP\n"
+                + "MONAD-H| kern 4 CPU: 1 UID: 0 PID: 17297 Comm: sshd Not tainted 7.0.0\nMONAD-H| kern 4 pc : find_attach+0x13c/0x4f8\n")
+        }
+        vm.start()
+        await assertEventually("state: \(vm.state)") { vm.isFailed }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.contains("The guest did not become reachable over SSH. The VM's kernel crashed (in find_attach, running sshd)"), message)
+    }
+
     /// On a first boot cloud-init may still be changing sshd when the check
     /// runs, and drop it. No answer proves nothing either way: the check is
-    /// asked again (an exposed guest still fails at once, see below).
+    /// asked again (an exposed guest still fails, see below).
     func testAnUnansweredIsolationCheckIsAskedAgain() async throws {
         var checks = 0
         runner.setHandler { call in
@@ -280,8 +573,11 @@ final class VMLifecycleTests: XCTestCase {
     }
 
     func testIsolationFailureFailsClosed() async throws {
+        var checks = 0
         runner.setHandler { call in
-            CloudInit.isIsolationCheck(call.arguments.last) ? .ok("tcp22-open\n") : .ok()
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            checks += 1
+            return .ok("tcp22-open\n")
         }
         let vm = try makeInstance()
         vm.start()
@@ -289,6 +585,46 @@ final class VMLifecycleTests: XCTestCase {
         guard case .failed(let message) = vm.state else { return XCTFail() }
         XCTAssertTrue(message.lowercased().contains("isolation"), message)
         XCTAssertEqual(factory.machine.forceStops, 1, "an exposed guest must not stay up")
+        XCTAssertGreaterThan(checks, 1, "asked again for a while first")
+        XCTAssertLessThan(clock.totalSlept, VMInstance.exposedGrace + 5, "but not for the whole boot")
+    }
+
+    /// What the guest answers the check with goes into the failure message
+    /// only as one plain, short line: it is the guest's text.
+    func testAnExposedGuestsAnswerIsPlainAndShortInTheMessage() async throws {
+        runner.setHandler { call in
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            return .ok("tcp22-open (\u{1B}]0;owned\u{07}\u{202E}" + String(repeating: "x", count: 10_000) + ")\nsecond line\n")
+        }
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.isFailed }
+        guard case .failed(let message) = vm.state else { return XCTFail() }
+        XCTAssertTrue(message.hasPrefix("Guest isolation check failed (tcp22-open ("), message)
+        XCTAssertFalse(message.contains("\u{1B}") || message.contains("\u{07}") || message.contains("\u{202E}"), message)
+        XCTAssertFalse(message.contains("second line"), message)
+        XCTAssertLessThan(message.count, 400, message)
+    }
+
+    /// Seen with Debian 13 on the Mac: on a first boot the distro's own sshd
+    /// still listens on TCP 22 for a moment while cloud-init sets the guest
+    /// up, and the first check found it open: the new VM failed, and booted
+    /// fine when started again. An open port is asked about again for a
+    /// short while; no shell is handed out until it is closed.
+    func testAPortClosedSoonAfterTheFirstCheckIsReady() async throws {
+        var checks = 0
+        runner.setHandler { call in
+            guard CloudInit.isIsolationCheck(call.arguments.last) else { return .ok() }
+            checks += 1
+            return .ok(checks <= 2 ? "tcp22-open\n" : "ok\n")
+        }
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually("\(vm.state)") { vm.state == .ready }
+        XCTAssertEqual(checks, 3)
+        XCTAssertEqual(factory.machine.forceStops, 0)
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("TCP 22 still open, asking again"))
     }
 
     // MARK: Guest components
@@ -455,7 +791,7 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertFalse(known.contains("AAAAOLD"), "host keys from before are forgotten")
         let isolation = runner.calls.compactMap(\.arguments.last).filter { CloudInit.isIsolationCheck($0) }
         XCTAssertFalse(isolation.isEmpty)
-        XCTAssertTrue(isolation.allSatisfy { $0.contains("mask --runtime --now") }, "Lima's sshd comes back at its next boot")
+        XCTAssertTrue(isolation.allSatisfy { $0.contains("systemctl mask --runtime \"$u\"") }, "Lima's sshd comes back at its next boot")
     }
 
     /// The release and the debug Monad never boot one Lima disk at once:

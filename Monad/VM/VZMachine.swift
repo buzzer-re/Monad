@@ -34,6 +34,14 @@ final class VZMachineFactory: VirtualMachineFactory {
 final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, DiskAttaching, MNDVirtualMachineDelegate {
     private let vm: MNDVirtualMachine
     var onEvent: ((VMRuntimeEvent) -> Void)?
+    var onHealthOutput: ((Data) -> Void)? {
+        didSet {
+            guard let handler = onHealthOutput else { vm.healthHandler = nil; return }
+            vm.healthHandler = { data in
+                DispatchQueue.main.async { MainActor.assumeIsolated { handler(data) } }
+            }
+        }
+    }
 
     init(config: InstanceConfig, paths: InstancePaths, nic: FileHandle?, recovery: Bool = false, takesDisks: Bool = false) throws {
         vm = try MNDVirtualMachine(config: Self.vmConfig(for: config, paths: paths, nic: nic, recovery: recovery,
@@ -58,6 +66,7 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             c.displayPixelsPerInch = UInt(MacRecovery.displayPixelsPerInch)
         }
         c.diskPath = config.disk(in: paths).path
+        c.extraDisks = config.disks.map { MNDExtraDisk(identifier: $0.name, path: paths.extraDisk($0.name).path) }
         c.efiVariableStorePath = paths.efiVars.path
         if config.guestOS == .macos {
             c.macOS = true
@@ -69,6 +78,7 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             c.machineIdentifierPath = paths.machineID.path
         }
         c.serialLogPath = paths.serialLog.path
+        if config.guestOS != .macos { c.healthLogPath = paths.healthLog.path }
         c.cpuCount = UInt(max(1, config.cpus))
         c.memoryBytes = UInt64(max(1, config.memoryGiB)) << 30
         c.networkEnabled = !config.networks.isEmpty
@@ -95,6 +105,14 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
     func requestStop() async throws { try await vm.requestStop() }
 
     func forceStop() async { try? await vm.forceStop() }
+
+    func pause() async throws { try await vm.pause() }
+
+    func resume() async throws { try await vm.resume() }
+
+    func saveState(to file: URL) async throws { try await vm.saveState(toPath: file.path) }
+
+    func restoreState(from file: URL) async throws { try await vm.restoreState(fromPath: file.path) }
 
     func setMemoryTarget(bytes: UInt64) { vm.setMemoryTarget(bytes: bytes) }
 

@@ -58,7 +58,7 @@ final class SettingsRequest: ObservableObject {
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case terminal, privacy, machines, distributions, networks, firewall, profiles, agents, logs
+    case terminal, privacy, machines, distributions, networks, firewall, profiles, agents, logs, updates
 
     var id: String { rawValue }
 
@@ -73,6 +73,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return "Profiles"
         case .agents: return "Agents"
         case .logs: return "Logs"
+        case .updates: return "Updates"
         }
     }
 
@@ -87,6 +88,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return "wand.and.stars"
         case .agents: return "sparkles"
         case .logs: return "doc.text.magnifyingglass"
+        case .updates: return "arrow.down.circle.fill"
         }
     }
 
@@ -101,6 +103,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: return .pink
         case .agents: return .purple
         case .logs: return .orange
+        case .updates: return .teal
         }
     }
 
@@ -116,6 +119,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .profiles: ProfilesSettingsPane()
         case .agents: AgentsSettingsPane()
         case .logs: LogsSettingsPane()
+        case .updates: UpdatesSettingsPane()
         }
     }
 }
@@ -247,7 +251,7 @@ private struct LogsSettingsPane: View {
         Form {
             Section {
                 SettingRow(symbol: "doc.text.magnifyingglass", color: .gray, title: "Debug logging",
-                           detail: "Monad and its VM service write each step they take to a log file, one a day. Turn it on to look into a problem, and include the file when you report one.") {
+                           detail: "Monad and its VM service write each step they take to a log file, one a day. On unless you turn it off; include the file when you report a problem.") {
                     Toggle("", isOn: Binding(get: { enabled }, set: { set($0) })).labelsHidden().toggleStyle(.switch)
                 }
                 SettingRow(symbol: "folder", color: .blue, title: "Log files",
@@ -292,6 +296,44 @@ private struct LogsSettingsPane: View {
     }
 }
 
+// MARK: - Updates
+
+private struct UpdatesSettingsPane: View {
+    @AppStorage(SettingsKey.checkForUpdates) private var checkForUpdates = true
+    private let updater = AppUpdater.shared
+
+    var body: some View {
+        Form {
+            Section {
+                SettingRow(symbol: "arrow.down.circle", color: .teal, title: "Check for updates",
+                           detail: "Once a day Monad asks GitHub for its latest release, and when there is a newer one, asks you before it installs it. The check sends nothing about you or your VMs.") {
+                    Toggle("", isOn: $checkForUpdates).labelsHidden().toggleStyle(.switch)
+                }
+                .disabled(!updater.isAvailable)
+                SettingRow(symbol: "info.circle", color: .gray, title: "Monad \(AppVersion.current?.text ?? "?")",
+                           detail: Flavor.currentAboutVersion) {
+                    Button("Check Now") { updater.check(byUser: true) }
+                        .disabled(!updater.isAvailable)
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                if !updater.isAvailable {
+                    Notice(symbol: "hammer.fill", color: .gray,
+                           text: "This is the Debug build, which Xcode makes: only the Release build updates itself.")
+                        .font(Design.caption)
+                } else {
+                    Notice(symbol: "checkmark.shield.fill", color: .green,
+                           text: "An update is installed only when it matches the release's SHA-256, is Monad's Release build of that version and its signature holds. Your VMs keep running while Monad restarts.")
+                        .font(Design.caption)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .font(Design.body)
+    }
+}
+
 // MARK: - Virtual machines
 
 private struct MachineSettingsPane: View {
@@ -300,6 +342,7 @@ private struct MachineSettingsPane: View {
     @AppStorage(SettingsKey.defaultDiskGiB) private var disk = 50
     @State private var fullBootMessages = BootMessages.load() == .full
     @State private var errorMessage: String?
+    @AppStorage(SettingsKey.vmAlerts) private var vmAlerts = true
 
     private let capacity = HostCapacity.current
 
@@ -326,6 +369,14 @@ private struct MachineSettingsPane: View {
                 }
             } header: {
                 Text("Starting")
+            }
+            Section {
+                SettingRow(symbol: "bell.badge", color: .red, title: "Warn when a VM runs low",
+                           detail: "A notification when a running VM has used 90% of its memory or of its disk, when Linux in it stops programs for memory or its kernel crashes, and when this Mac has less than 10 GB free.") {
+                    Toggle("", isOn: $vmAlerts).labelsHidden().toggleStyle(.switch)
+                }
+            } header: {
+                Text("Notifications")
             }
         }
         .formStyle(.grouped)

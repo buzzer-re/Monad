@@ -70,6 +70,8 @@
 			membershipExceptions = (
 				App/AgentViews.swift,
 				App/AppDelegate.swift,
+				App/AppUpdate.swift,
+				App/AppUpdater.swift,
 				App/CanvasNotesView.swift,
 				App/CanvasView.swift,
 				App/CanvasWindowController.swift,
@@ -86,6 +88,7 @@
 				App/SettingsView.swift,
 				App/TabRouting.swift,
 				App/ThemeEditorView.swift,
+				App/VMAlerts.swift,
 				App/VMConfigFile.swift,
 				App/VMDetailView.swift,
 				App/VMManagerView.swift,
@@ -612,7 +615,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				OTHER_LDFLAGS = "-lz";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.monad.Monad.debug;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -671,7 +674,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				OTHER_LDFLAGS = "-lz";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.monad.Monad;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -30,10 +30,20 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 - (instancetype)init NS_UNAVAILABLE;
 @end
 
+/// A disk added to a VM: a raw image, named for the guest (virtio serial).
+@interface MNDExtraDisk : NSObject
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *path;
+- (instancetype)initWithIdentifier:(NSString *)identifier path:(NSString *)path NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@end
+
 /// Static description of a guest. All paths are absolute.
 @interface MNDVMConfig : NSObject
 @property (nonatomic, copy) NSString *diskPath;
 @property (nonatomic, copy, nullable) NSString *seedISOPath;
+/// After the root disk and the seed, writable, in order.
+@property (nonatomic, copy) NSArray<MNDExtraDisk *> *extraDisks;
 @property (nonatomic, copy) NSString *efiVariableStorePath;
 /// Linux: a VZGenericMachineIdentifier; macOS: a VZMacMachineIdentifier.
 /// Made when missing.
@@ -45,6 +55,9 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 @property (nonatomic, copy, nullable) NSString *auxiliaryStoragePath;
 @property (nonatomic, copy, nullable) NSString *hardwareModelPath;
 @property (nonatomic, copy, nullable) NSString *serialLogPath;
+/// A Linux guest's health port (a virtio console port named
+/// dev.monad.health) is logged here, kept across boots; nil: no port.
+@property (nonatomic, copy, nullable) NSString *healthLogPath;
 @property (nonatomic) NSUInteger cpuCount;
 @property (nonatomic) uint64_t memoryBytes;
 @property (nonatomic) BOOL networkEnabled;
@@ -119,6 +132,9 @@ NS_SWIFT_SENDABLE
 /// Whether Virtualization would start this machine (not after an error).
 @property (nonatomic, readonly) BOOL canStart;
 @property (nonatomic, readonly) MNDVMConfig *config;
+/// Each piece of the guest's health port output as it comes (after it is
+/// logged), on a private queue. Guest bytes: untrusted.
+@property (atomic, copy, nullable) void (^healthHandler)(NSData *data);
 /// Virtualization's machine, for a view of its display (a
 /// VZVirtualMachineViewAdaptor; everything else goes through this class).
 @property (nonatomic, readonly) VZVirtualMachine *machine;
@@ -128,6 +144,14 @@ NS_SWIFT_SENDABLE
 - (void)requestStopWithCompletion:(void (^)(NSError *_Nullable error))completion;
 /// Immediate power off.
 - (void)forceStopWithCompletion:(void (^)(NSError *_Nullable error))completion;
+/// Stops the guest's CPUs where they are (its memory stays); resume goes on
+/// from there. The state stays Running: paused is the caller's to track.
+- (void)pauseWithCompletion:(void (^)(NSError *_Nullable error))completion;
+- (void)resumeWithCompletion:(void (^)(NSError *_Nullable error))completion;
+/// A paused machine's state (memory, devices) to `path` (macOS 14 and
+/// later); a machine that never started put back as saved, paused.
+- (void)saveStateToPath:(NSString *)path completion:(void (^)(NSError *_Nullable error))completion;
+- (void)restoreStateFromPath:(NSString *)path completion:(void (^)(NSError *_Nullable error))completion;
 
 /// Blocking check whether the guest accepts connections on a vsock port.
 /// Must not be called on the main thread.

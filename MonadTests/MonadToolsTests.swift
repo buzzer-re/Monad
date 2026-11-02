@@ -40,6 +40,73 @@ final class MonadToolsTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(r.text.utf8)) as? [String: Any], r.text)
     }
 
+    /// Agents pause and resume a VM like its window does, and see it paused.
+    func testPauseAndResume() async throws {
+        let vm = try await made("web")
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let paused = try object(try await call("pause_vm", ["name": .string("web")]))
+        XCTAssertEqual(paused["state"] as? String, "Paused")
+        XCTAssertTrue(vm.paused)
+        let resumed = try object(try await call("resume_vm", ["name": .string("web")]))
+        XCTAssertEqual(resumed["state"] as? String, "Running")
+        XCTAssertFalse(vm.paused)
+        XCTAssertTrue(MCPAccess.childTools.isSuperset(of: ["pause_vm", "resume_vm"]), "an orchestrator pauses its children")
+    }
+
+    /// Agents add a disk (formatted and mounted by Monad, or blank for them
+    /// to set up) and remove one; removing deletes its data, so it asks.
+    func testDisksAreAddedAndRemoved() async throws {
+        let vm = try await made("web")
+        let added = try object(try await call("add_disk", ["name": .string("web"), "disk": .string("data"),
+                                                          "size_gib": .number(50)]))
+        XCTAssertEqual(added["disks"] as? [String], ["data: 50 GB at /mnt/data"])
+        XCTAssertEqual(vm.config.disks, [ExtraDisk(name: "data", sizeGiB: 50, mount: true)])
+        try await call("add_disk", ["name": .string("web"), "disk": .string("raw"), "size_gib": .number(5), "mount": .bool(false)])
+        XCTAssertEqual(vm.config.disks.last, ExtraDisk(name: "raw", sizeGiB: 5, mount: false))
+        do {
+            try await call("add_disk", ["name": .string("web"), "disk": .string("Bad Name"), "size_gib": .number(5)])
+            XCTFail("validated")
+        } catch {}
+        try await call("remove_disk", ["name": .string("web"), "disk": .string("raw")])
+        XCTAssertEqual(vm.config.disks.map(\.name), ["data"])
+        XCTAssertEqual(try tool("remove_disk").risk, .risky)
+        XCTAssertEqual(try tool("add_disk").risk, .normal)
+    }
+
+    /// Agents take, restore and delete snapshots; restoring and deleting
+    /// lose something, so they ask.
+    func testSnapshots() async throws {
+        let vm = try await made("web")
+        try Data("system".utf8).write(to: vm.paths.disk)
+        let taken = try object(try await call("take_snapshot", ["name": .string("web"), "snapshot": .string("clean")]))
+        let line = try XCTUnwrap((taken["snapshots"] as? [String])?.first)
+        let id = try XCTUnwrap(vm.snapshots.first?.id)
+        XCTAssertEqual(line, "\(id): clean, shut down, current")
+        let copied = try object(try await call("clone_vm", ["name": .string("web"), "new_name": .string("web-copy"),
+                                                             "snapshot": .string(id)]))
+        XCTAssertEqual(copied["name"] as? String, "web-copy")
+        try await call("restore_snapshot", ["name": .string("web"), "snapshot": .string(id)])
+        XCTAssertEqual(vm.currentSnapshot, id)
+        try await call("delete_snapshot", ["name": .string("web"), "snapshot": .string(id)])
+        XCTAssertTrue(vm.snapshots.isEmpty)
+        XCTAssertEqual(try tool("take_snapshot").risk, .normal)
+        XCTAssertEqual(try tool("restore_snapshot").risk, .risky)
+        XCTAssertEqual(try tool("delete_snapshot").risk, .risky)
+    }
+
+    /// Agents see what a VM is low on, in words.
+    func testAVMsWarningsAreInItsSummary() {
+        let config = InstanceConfig(
+            name: "web", distro: "ubuntu", image: "Ubuntu 26.04", user: "dev", cpus: 2, memoryGiB: 4,
+            memoryTargetGiB: nil, diskGiB: 20, networks: [], sharing: SharingSettings(), forwards: [],
+            autoForward: AutoForwardSettings(), profiles: [], theme: nil, ephemeral: false, createdAt: Date())
+        var snap = VMSnapshot(name: "web", config: config, state: .ready, agent: true, ports: [], sessions: 0)
+        XCTAssertNil(tools.summary(snap).warnings)
+        snap.warnings = [GuestWarning(kind: .lowMemory, percent: 93), GuestWarning(kind: .lowDisk, percent: 91, mount: "/")]
+        XCTAssertEqual(tools.summary(snap).warnings, ["low memory: 93% in use", "low disk space on /: 91% in use"])
+    }
+
     private func made(_ name: String) async throws -> VMInstance {
         try await call("create_vm", ["name": .string(name), "cpus": .number(2), "memory_gib": .number(2),
                                      "disk_gib": .number(10), "start": .bool(false)])
@@ -59,7 +126,7 @@ final class MonadToolsTests: XCTestCase {
             XCTAssertNotNil(t.name.range(of: "^[a-z][a-z_]*$", options: .regularExpression), t.name)
         }
         let risky = Set(all.filter { $0.risk == .risky }.map(\.name))
-        XCTAssertEqual(risky, ["delete_vm", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
+        XCTAssertEqual(risky, ["delete_vm", "remove_disk", "restore_snapshot", "delete_snapshot", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
                                "add_share", "add_bridge", "add_host_command", "set_agent_role", "set_firewall", "set_group",
                                "set_macos_security"])
         XCTAssertEqual(Set(all.filter { $0.risk == .read }.map(\.name)),
@@ -81,6 +148,27 @@ final class MonadToolsTests: XCTestCase {
         do {
             _ = try await call("read_vm_log", ["name": .string("nope")])
             XCTFail("no such VM")
+        } catch {}
+    }
+
+    /// The guest's own logs, read without ssh (a guest out of memory no
+    /// longer answers it): its console, the boot before first, and its
+    /// health lines. Guest text: no control characters reach the agent.
+    func testTheGuestsConsoleAndHealthAreRead() async throws {
+        let vm = try await made("web")
+        try Data("old boot\n".utf8).write(to: vm.paths.serialLog.appendingPathExtension("1"))
+        try Data("[ 1.0] Linux\n\u{1B}]0;evil\u{07}\u{1B}[31mred\n".utf8).write(to: vm.paths.serialLog)
+        let console = try await call("read_vm_log", ["name": .string("web"), "log": .string("console")])
+        XCTAssertEqual(console.text, "old boot\n[ 1.0] Linux\n]0;evil[31mred", console.text)
+        try Data("MONAD-H| snap up=5 mem=1/2\nMONAD-H| kern 3 Out of memory: Killed process 1 (x)\n".utf8)
+            .write(to: vm.paths.healthLog)
+        let health = try await call("read_vm_log", ["name": .string("web"), "log": .string("health"), "lines": .number(1)])
+        XCTAssertEqual(health.text, "MONAD-H| kern 3 Out of memory: Killed process 1 (x)")
+        let none = try await call("read_vm_log", ["name": .string("web"), "log": .string("health"), "lines": .number(0)])
+        XCTAssertEqual(none.text.split(separator: "\n").count, 1, "at least one line")
+        do {
+            _ = try await call("read_vm_log", ["name": .string("web"), "log": .string("../../etc")])
+            XCTFail("only monad, console or health")
         } catch {}
     }
 

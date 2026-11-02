@@ -1121,6 +1121,11 @@ struct CanvasView: View {
                     Button("Settings…") { appDelegate?.showDetails(of: remote) }
                     Divider()
                     if remote.isRunning {
+                        if remote.paused {
+                            Button("Resume") { Task { try? await canvas.host.resume(remote.name) } }
+                        } else if remote.state == .ready {
+                            Button("Pause") { Task { try? await canvas.host.pause(remote.name) } }
+                        }
                         Button("Restart") { Task { try? await canvas.host.restart(remote.name) } }
                         Button("Shut Down") { Task { try? await canvas.host.stop(remote.name) } }
                     } else {
@@ -1259,7 +1264,7 @@ private struct CanvasCard: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                StatusBadge(state: remote?.state ?? .stopped)
+                StatusBadge(state: remote?.state ?? .stopped, paused: remote?.paused ?? false)
                 Spacer(minLength: 4)
                 Text(resources).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                 if vm.linksToMac {
@@ -1306,7 +1311,7 @@ private struct CanvasInspector: View {
                 VMTile(config: c, side: 38)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(vm.name).font(.system(size: 17, weight: .bold)).lineLimit(1)
-                    StatusBadge(state: vm.state)
+                    StatusBadge(state: vm.state, paused: vm.paused)
                 }
                 Spacer()
                 Button { canvas.selected = nil } label: { Image(systemName: "xmark") }

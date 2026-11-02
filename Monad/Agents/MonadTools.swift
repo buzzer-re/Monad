@@ -33,13 +33,16 @@ final class MonadTools {
 
     // MARK: Requests through HostService
 
-    private func request(_ op: HostRequest.Op, name: String? = nil, config: InstanceConfig? = nil, force: Bool? = nil) async throws -> HostResponse {
+    private func request(_ op: HostRequest.Op, name: String? = nil, config: InstanceConfig? = nil, force: Bool? = nil,
+                         edit: (inout HostRequest) throws -> Void = { _ in }) async throws -> HostResponse {
         if nextID == 0 {
             nextID = 1
             _ = await connection.handle(HostRequest(id: 0, op: .hello, version: HostProtocol.version))
         }
         nextID += 1
-        let r = await connection.handle(HostRequest(id: nextID, op: op, name: name, force: force, config: config))
+        var request = HostRequest(id: nextID, op: op, name: name, force: force, config: config)
+        try edit(&request)
+        let r = await connection.handle(request)
         guard r.ok else { throw MonadError(r.error ?? "Monad could not do that.") }
         return r
     }
@@ -74,15 +77,34 @@ final class MonadTools {
         let listening: [String]?
         let forwards: [String]?
         let pendingRestart: [String]?
+        /// What the guest's health says is wrong (its kernel crashed, it
+        /// ran out of memory, its disk is full).
+        let health: String?
+        /// What the running VM is low on ("low memory: 93% in use").
+        let warnings: [String]?
+        /// Disks added to it ("data: 50 GB at /mnt/data").
+        let disks: [String]?
+        /// Its snapshots, oldest first ("0a1b2c3d: clean, running, current").
+        let snapshots: [String]?
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
-        VMSummary(name: s.name, state: s.state.label, distro: s.config.distro, release: s.config.release,
+        VMSummary(name: s.name, state: s.paused == true ? "Paused" : s.state.label, distro: s.config.distro, release: s.config.release,
                   cpus: s.config.cpus, memoryGiB: s.config.memoryGiB, diskGiB: s.config.diskGiB,
                   network: s.config.networks.first?.network, group: s.config.group, ephemeral: s.config.ephemeral,
                   listening: s.ports.isEmpty ? nil : s.ports.map { "\($0.address):\($0.port)" },
                   forwards: s.forwards.map { $0.map { "\($0.flag) \($0.spec)" } },
-                  pendingRestart: s.pendingRestart)
+                  pendingRestart: s.pendingRestart, health: s.health,
+                  warnings: s.warnings.map { $0.map { w in
+                      w.kind == .lowMemory ? "low memory: \(w.percent)% in use"
+                          : "low disk space on \(w.mount ?? "/"): \(w.percent)% in use" } },
+                  disks: s.config.disks.isEmpty ? nil : s.config.disks.map {
+                      "\($0.name): \($0.sizeGiB) GB " + ($0.mount ? "at \($0.mountPoint)" : "blank")
+                  },
+                  snapshots: s.snapshots.map { $0.map { snap in
+                      "\(snap.id): \(snap.name.plain(limit: 64)), " + (snap.memory ? "running" : "shut down")
+                          + (snap.id == s.currentSnapshot ? ", current" : "")
+                  } })
     }
 
     // MARK: Schemas
@@ -168,6 +190,14 @@ final class MonadTools {
                 .json(self.summary(try await self.request(.stop, name: try call.string("name"),
                                                           force: try call.optionalBool("force")).instance!))
             },
+            MCPTool(name: "pause_vm", description: "Pause a running VM: its CPUs stop where they are, its memory stays, until resume_vm.",
+                    schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.pause, name: try call.string("name")).instance!))
+            },
+            MCPTool(name: "resume_vm", description: "Resume a paused VM where it stopped.",
+                    schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.resume, name: try call.string("name")).instance!))
+            },
             MCPTool(name: "restart_vm", description: "Restart a VM (picks up settings that wait for a restart).",
                     schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in
                 .json(self.summary(try await self.request(.restart, name: try call.string("name")).instance!))
@@ -179,18 +209,21 @@ final class MonadTools {
                 return MCPResult(text: "Deleted \(name).")
             },
             MCPTool(name: "clone_vm",
-                    description: "Copy a stopped macOS VM: the same system, account and files, with a machine identity of its own "
-                        + "(its disk is cloned, so it takes no room until it changes). Shared folders, bridges, host commands, "
-                        + "forwards into the Mac and an agent role stay with the original.",
+                    description: "Copy a stopped VM, or one of its snapshots (by id, from get_vm; the VM may run then): the same "
+                        + "system and files, with an identity of its own (Linux: host name, keys, machine-id; macOS: machine "
+                        + "identifier). Its disks are cloned, so they take no room until they change. Shared folders, bridges, "
+                        + "host commands, forwards into the Mac and an agent role stay with the original.",
                     schema: Self.schema(["name": Self.vmName,
                                          "new_name": Self.string("The copy's name: letters, digits and dashes, up to 32."),
+                                         "snapshot": Self.string("Copy this snapshot of it instead of the VM as it is."),
                                          "start": Self.boolean("Start the copy once made (default false).")],
                                         required: ["name", "new_name"]), risk: .normal) { [unowned self] call in
                 let copy = try self.vm(try call.string("name")).config.copy(named: try call.string("new_name"))
                 var c = copy.config
                 let left = copy.left
                 if case .vm(let parent) = call.caller { try self.makeChild(&c, of: parent) }
-                _ = try await self.request(.clone, name: try call.string("name"), config: c)
+                let snapshot = try call.optionalString("snapshot")
+                _ = try await self.request(.clone, name: try call.string("name"), config: c) { $0.snapshot = snapshot }
                 var snap = try self.service.snapshot(self.vm(c.name))
                 if try call.optionalBool("start") ?? false { snap = try await self.request(.start, name: c.name).instance ?? snap }
                 var result = MCPResult.json(self.summary(snap))
@@ -200,14 +233,26 @@ final class MonadTools {
                 return result
             },
             MCPTool(name: "read_vm_log",
-                    description: "A VM's log: what Monad did with it (boots, recovery steps, settings applied, errors), its "
-                        + "last lines, oldest first.",
-                    schema: Self.schema(["name": Self.vmName, "lines": Self.integer("How many (default 100, at most 2000).")],
+                    description: "A VM's logs, their last lines, oldest first. monad (default): what Monad did with it (boots, "
+                        + "recovery steps, settings applied, errors). console: the guest's console, the boot before first "
+                        + "(kernel errors, crashes). health: a Linux guest's health every 15 s and its kernel's OOM kills, "
+                        + "segfaults, hangs and I/O errors, across boots. console and health are read on the Mac, so they "
+                        + "work when the guest no longer answers ssh.",
+                    schema: Self.schema(["name": Self.vmName, "lines": Self.integer("How many (default 100, at most 2000)."),
+                                         "log": Self.string("monad, console or health (default monad).")],
                                         required: ["name"]), risk: .read) { [unowned self] call in
                 let vm = try self.vm(try call.string("name"))
                 let count = min(max(try call.optionalInt("lines") ?? 100, 1), 2000)
-                vm.log.flush()
-                let lines = VMLog.read(vm.paths.vmLog).split(separator: "\n", omittingEmptySubsequences: true)
+                let text: String
+                switch try call.optionalString("log") ?? "monad" {
+                case "monad":
+                    vm.log.flush()
+                    text = VMLog.read(vm.paths.vmLog)
+                case "console": text = Self.guestText(VMLog.read(vm.paths.serialLog))
+                case "health": text = Self.guestText(VMLog.read(vm.paths.healthLog))
+                case let other: throw MonadError("No log “\(other.prefix(32))”: monad, console or health.")
+                }
+                let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
                 return MCPResult(text: lines.suffix(count).joined(separator: "\n"))
             },
             MCPTool(name: "exec",
@@ -344,6 +389,60 @@ final class MonadTools {
                 return .json(self.summary(try await self.update(try call.string("name")) {
                     guard $0.firewall.rules.indices.contains(i) else { throw MonadError("There is no rule \(i).") }
                     $0.firewall.rules.remove(at: i)
+                }))
+            },
+            MCPTool(name: "take_snapshot",
+                    description: "Take a snapshot of a VM: its disks and settings, and its memory too when it is running "
+                        + "(it pauses for a moment), so restore_snapshot brings it back as it is now.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("A name for the snapshot.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.takeSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
+            },
+            MCPTool(name: "restore_snapshot",
+                    description: "Put a VM back as one of its snapshots was (by id, from get_vm). What it is now is lost; "
+                        + "a snapshot taken running starts again where it was.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("The snapshot's id.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .risky) { [unowned self] call in
+                .json(self.summary(try await self.request(.restoreSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
+            },
+            MCPTool(name: "delete_snapshot",
+                    description: "Delete one of a VM's snapshots (by id). The ones taken after it are kept.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("The snapshot's id.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .risky) { [unowned self] call in
+                .json(self.summary(try await self.request(.deleteSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
+            },
+            MCPTool(name: "add_disk",
+                    description: "Add a disk to a VM, attached at its next start. With mount (default true, Linux), Monad "
+                        + "formats it if blank (ext4) and mounts it at /mnt/<disk>; false leaves it blank at "
+                        + "/dev/disk/by-id/virtio-<disk> for you to set up.",
+                    schema: Self.schema(["name": Self.vmName,
+                                         "disk": Self.string("Its name: lowercase letters, digits and dashes, 16 at most."),
+                                         "size_gib": Self.integer("The most it holds, in GB; its file grows as it fills."),
+                                         "mount": Self.boolean("Format if blank and mount at /mnt/<disk> (Linux). Default true.")],
+                                        required: ["name", "disk", "size_gib"]),
+                    risk: .normal) { [unowned self] call in
+                let name = try call.string("name")
+                let mount = try call.optionalBool("mount") ?? (try self.vm(name).config.guestOS == .linux)
+                let disk = ExtraDisk(name: try call.string("disk"), sizeGiB: try call.int("size_gib"), mount: mount)
+                return .json(self.summary(try await self.update(name) { $0.disks.append(disk) }))
+            },
+            MCPTool(name: "remove_disk",
+                    description: "Remove a disk from a shut-down VM. Its file and everything on it are deleted.",
+                    schema: Self.schema(["name": Self.vmName, "disk": Self.string("The disk's name.")], required: ["name", "disk"]),
+                    risk: .risky) { [unowned self] call in
+                let disk = try call.string("disk")
+                return .json(self.summary(try await self.update(try call.string("name")) { c in
+                    guard c.disks.contains(where: { $0.name == disk }) else { throw MonadError("No disk named \(disk).") }
+                    c.disks.removeAll { $0.name == disk }
                 }))
             },
             MCPTool(name: "add_share",
@@ -942,6 +1041,18 @@ final class MonadTools {
     private static func guestPath(_ p: String) throws -> String {
         guard !p.isEmpty, p.utf8.count <= 4096, !HostCommand.hasControl(p) else { throw MonadError("That is not a path.") }
         return p
+    }
+
+    /// What a guest wrote (its console, its health lines), as an agent may
+    /// read it: lines and tabs kept, every other control, C1 and
+    /// bidirectional character dropped.
+    static func guestText(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.filter { c in
+            if c == "\n" || c == "\t" { return true }
+            if c.value < 0x20 || (0x7F...0x9F).contains(c.value) { return false }
+            return !(0x202A...0x202E).contains(c.value) && !(0x2066...0x2069).contains(c.value)
+                && c.value != 0x200E && c.value != 0x200F && c.value != 0x061C
+        }))
     }
 
     static func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

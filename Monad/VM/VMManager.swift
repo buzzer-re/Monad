@@ -279,19 +279,32 @@ final class VMManager: ObservableObject {
         \.macSIPStatus, \.macFullDiskAccess, \.appliedProfiles,
     ]
 
-    /// A copy of a stopped macOS VM named `name`, with `settings` (checked
-    /// by the caller as for create; the source's by default). What is on
-    /// its disk (the system, the account) comes from the source whatever
-    /// `settings` says, and its network cards get new addresses.
-    func clone(_ source: VMInstance, as name: String, settings: InstanceConfig? = nil) async throws -> VMInstance {
-        guard source.config.guestOS == .macos else {
-            throw MonadError("Only macOS VMs can be copied for now.")
+    /// A copy named `name` of the stopped VM `source`, or of its snapshot
+    /// `snapshot` (the source may run then), with `settings` (checked by the
+    /// caller as for create; the source's by default). What is on its disks
+    /// comes from the source whatever `settings` says; it gets an identity
+    /// of its own: new network addresses, and a Linux copy a new key, seed
+    /// (host name, host keys) and machine-id, a macOS one a new machine
+    /// identifier.
+    func clone(_ source: VMInstance, as name: String, settings: InstanceConfig? = nil,
+               snapshot: String? = nil) async throws -> VMInstance {
+        let from: InstancePaths
+        var base = source.config
+        if let snapshot {
+            guard let snap = source.snapshots.first(where: { $0.id == snapshot }) else {
+                throw MonadError("\(source.name) has no snapshot \(snapshot).")
+            }
+            from = InstancePaths(snapshotDir: source.paths.snapshot(snapshot))
+            base = snap.config
+        } else {
+            guard !source.isRunning else {
+                throw MonadError("Stop \(source.name) first: its disk is in use while it runs. Or take a snapshot and copy that.")
+            }
+            from = source.paths
         }
-        guard !source.isRunning else {
-            throw MonadError("Stop \(source.name) first: its disk is in use while it runs.")
-        }
+        guard source.config.attached == nil else { throw MonadError("\(source.name) boots a Lima VM's disk, which Monad does not copy.") }
         guard !source.state.isPreparing, !source.creationFailed,
-              FileManager.default.fileExists(atPath: source.paths.disk.path) else {
+              FileManager.default.fileExists(atPath: from.disk.path) else {
             throw MonadError("\(source.name) is not made yet: there is nothing to copy.")
         }
         guard InstanceConfig.isValidName(name) else { throw MonadError("Names use letters, digits and dashes (max 32).") }
@@ -301,31 +314,44 @@ final class VMManager: ObservableObject {
         }
         copying.insert(name)
         defer { copying.remove(name) }
-        var cfg = settings ?? source.config
+        var cfg = settings ?? base
         cfg.name = name
         cfg.ephemeral = false
-        cfg.guestOS = source.config.guestOS
-        cfg.distro = source.config.distro
-        cfg.release = source.config.release
-        cfg.user = source.config.user
-        cfg.diskGiB = source.config.diskGiB
+        cfg.guestOS = base.guestOS
+        cfg.distro = base.distro
+        cfg.release = base.release
+        cfg.image = base.image
+        cfg.user = base.user
+        cfg.diskGiB = base.diskGiB
+        cfg.disks = base.disks
+        cfg.startAtLaunch = false
         for i in cfg.networks.indices { cfg.networks[i].macAddress = nil }
 
-        let from = source.paths, to = paths(for: name)
+        let to = paths(for: name)
         try Paths.ensurePrivateDirectory(to.dir)
+        if cfg.guestOS != .macos {
+            do {
+                guard let guest = guest(for: cfg) else { throw MonadError("This Monad does not know the distribution \(cfg.distro).") }
+                var clones = [(from.disk, to.disk), (from.efiVars, to.efiVars)]
+                if !cfg.disks.isEmpty { try Paths.ensurePrivateDirectory(to.extraDisks) }
+                clones += cfg.disks.map { (from.extraDisk($0.name), to.extraDisk($0.name)) }
+                try await Self.cloneFiles(clones)
+                try await CloudInit.provision(config: cfg, guest: guest, paths: to, runner: env.runner,
+                                              bootMessages: env.bootMessages(), newIdentity: true)
+                try cfg.save(to: to.config)
+            } catch {
+                try? FileManager.default.removeItem(at: to.dir)
+                throw error
+            }
+            return finishCopy(cfg, of: source, snapshot: snapshot)
+        }
         do {
             let clones = Self.clonedFiles.map { (from[keyPath: $0], to[keyPath: $0]) }
-            try await Task.detached {
-                for (src, dst) in clones {
-                    let rc = mnd_disk_clone(src.path, dst.path)
-                    guard rc == 0 else {
-                        throw MonadError("Could not copy \(src.lastPathComponent): \(String(cString: strerror(rc))).")
-                    }
-                }
-            }.value
+            try await Self.cloneFiles(clones)
             let fm = FileManager.default
-            for file in Self.copiedFiles where fm.fileExists(atPath: from[keyPath: file].path) {
-                try fm.copyItem(at: from[keyPath: file], to: to[keyPath: file])
+            // What is not in a snapshot (keys, the hardware model) is the VM's.
+            for file in Self.copiedFiles where fm.fileExists(atPath: source.paths[keyPath: file].path) {
+                try fm.copyItem(at: source.paths[keyPath: file], to: to[keyPath: file])
             }
             for secret in [to.privateKey, to.macPassword] where fm.fileExists(atPath: secret.path) {
                 try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
@@ -336,11 +362,27 @@ final class VMManager: ObservableObject {
             try? FileManager.default.removeItem(at: to.dir)
             throw error
         }
+        return finishCopy(cfg, of: source, snapshot: snapshot)
+    }
+
+    private func finishCopy(_ cfg: InstanceConfig, of source: VMInstance, snapshot: String?) -> VMInstance {
         let vm = makeInstance(cfg)
-        vm.note("copied from \(source.name)")
+        vm.note("copied from \(source.name)" + (snapshot.map { "'s snapshot \($0)" } ?? ""))
         vm.setStopped()
-        setOrder(order + [name], adding: vm)
+        setOrder(order + [cfg.name], adding: vm)
         return vm
+    }
+
+    /// APFS clones (no room until they differ), off the main actor.
+    private static func cloneFiles(_ pairs: [(URL, URL)]) async throws {
+        try await Task.detached {
+            for (src, dst) in pairs where FileManager.default.fileExists(atPath: src.path) {
+                let rc = mnd_disk_clone(src.path, dst.path)
+                guard rc == 0 else {
+                    throw MonadError("Could not copy \(src.lastPathComponent): \(String(cString: strerror(rc))).")
+                }
+            }
+        }.value
     }
 
     /// A VM that could not be made, gone for one made again in its place.
@@ -685,6 +727,11 @@ final class VMManager: ObservableObject {
     func bootMessagesChanged() {
         let messages = env.bootMessages()
         for vm in instances { vm.applyBootMessages(messages) }
+    }
+
+    /// The Mac woke from sleep: the guests' clocks stood still meanwhile.
+    func macDidWake() {
+        for vm in instances { vm.setGuestClock(because: "the Mac woke") }
     }
 
     // MARK: Shutdown

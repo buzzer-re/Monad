@@ -136,10 +136,17 @@ struct VMManagerView: View {
         .sheet(item: $sheet) { which in
             switch which {
             case .create:
-                CreateVMSheet { config in
+                CreateVMSheet(snapshotSources: host.instances.flatMap { vm in
+                    vm.snapshots.map { CreateVMSheet.SnapshotSource(vm: vm.name, snapshot: $0) }
+                }) { config in
                     let vm = try await host.create(config)
                     (NSApp.delegate as? AppDelegate)?.openTab(in: vm)
                     sheet = nil
+                } onCreateFromSnapshot: { source, snapshot, name in
+                    guard let vm = host.instances.first(where: { $0.name == source }) else { return }
+                    let made = try await host.clone(source, as: vm.config.copy(named: name).config, snapshot: snapshot)
+                    sheet = nil
+                    (NSApp.delegate as? AppDelegate)?.showDetails(of: made)
                 } onCancel: { sheet = nil }
             case .importing(let imported, let file):
                 ImportVMSheet(imported: imported, file: file, taken: Set(host.instances.map(\.name))) { config in
@@ -678,7 +685,7 @@ private struct VMRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Flow(spacing: 8) {
                     Text(vm.name).font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                    StatusBadge(state: vm.state)
+                    StatusBadge(state: vm.state, paused: vm.paused)
                     if vm.config.guestOS == .macos, let sip = VMSettingsDraft.sipTag(vm.macSecurity) {
                         TagLabel(text: sip, color: vm.macSecurity?.sip == "disabled" ? .orange : .green)
                             .help("System Integrity Protection, as macOS said when the VM last started. "
@@ -694,6 +701,10 @@ private struct VMRow: View {
                     if vm.config.startAtLaunch { TagLabel(text: "starts at boot", color: .green) }
                     if !vm.pendingRestart.isEmpty { TagLabel(text: "restart to apply", color: .orange) }
                     if vm.sharesError != nil { TagLabel(text: "folder problem", color: .red) }
+                    if let h = vm.healthProblem {
+                        TagLabel(text: h.contains("kernel crashed") ? "kernel crashed"
+                                 : h.contains("out of memory") ? "out of memory" : "disk full", color: .red)
+                    }
                 }
                 Text(summary).font(Design.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 if case .failed(let why) = vm.state {
@@ -828,6 +839,14 @@ private struct VMControls: View {
         Button("Open Tab") { (NSApp.delegate as? AppDelegate)?.openTab(in: vm) }
             .disabled(vm.state.isPreparing)
         if vm.isRunning {
+            if vm.paused {
+                Button { run { try await host.resume(vm.name) } } label: { Image(systemName: "playpause.fill") }
+                    .help("Resume")
+            } else {
+                Button { run { try await host.pause(vm.name) } } label: { Image(systemName: "pause.fill") }
+                    .help("Pause: its programs stop where they are until you resume it")
+                    .disabled(vm.state != .ready)
+            }
             Button { run { try await host.restart(vm.name) } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Restart")
                 .disabled(vm.state == .stopping)
@@ -943,7 +962,7 @@ private struct LimaTab: View {
             }
             Spacer(minLength: 12)
             if let name = row.monadVM, let vm = host.instances.first(where: { $0.name == name }) {
-                StatusBadge(state: vm.state)
+                StatusBadge(state: vm.state, paused: vm.paused)
                 VMControls(vm: vm, host: host, onError: onError)
             } else {
                 Button(adding == row.id ? "Adding…" : "Use in Monad") { ask(row.id, .inPlace) }
@@ -1149,11 +1168,25 @@ struct CreateVMSheet: View {
     /// Throws to keep the sheet open with the reason; the caller closes it.
     var onCreate: (InstanceConfig) async throws -> Void
     var onCancel: () -> Void
+    /// "Create from snapshot": the snapshots of every VM, and how a VM is
+    /// made from one (source VM, snapshot id, new name).
+    var snapshotSources: [SnapshotSource]
+    var onCreateFromSnapshot: ((String, String, String) async throws -> Void)?
 
-    init(initialNetwork: String? = nil, onCreate: @escaping (InstanceConfig) async throws -> Void,
+    struct SnapshotSource: Identifiable {
+        let vm: String
+        let snapshot: SnapshotSummary
+        var id: String { vm + "/" + snapshot.id }
+    }
+
+    init(initialNetwork: String? = nil, snapshotSources: [SnapshotSource] = [],
+         onCreate: @escaping (InstanceConfig) async throws -> Void,
+         onCreateFromSnapshot: ((String, String, String) async throws -> Void)? = nil,
          onCancel: @escaping () -> Void) {
         self.initialNetwork = initialNetwork
+        self.snapshotSources = onCreateFromSnapshot == nil ? [] : snapshotSources
         self.onCreate = onCreate
+        self.onCreateFromSnapshot = onCreateFromSnapshot
         self.onCancel = onCancel
     }
 
@@ -1171,6 +1204,8 @@ struct CreateVMSheet: View {
     @State private var creatingProfile = false
     /// SIP was switched off: asked first.
     @State private var confirmingSIP = false
+    @State private var fromSnapshot = false
+    @State private var snapshotChoice: String?
 
     private var nameValid: Bool { InstanceConfig.isValidName(name) }
 
@@ -1188,140 +1223,26 @@ struct CreateVMSheet: View {
                             .frame(width: 200)
                     }
                 }
-                if let f = form {
-                    Section("System") {
-                        SettingRow(symbol: "square.stack.3d.up", color: .orange, title: "Distribution") {
-                            Picker("", selection: Binding(get: { f.distro }, set: { form?.distro = $0 })) {
-                                ForEach(f.distros) { Text($0.name).tag($0.id) }
-                            }
-                            .labelsHidden().fixedSize()
-                        }
-                        if f.isMac {
-                            SettingRow(symbol: "arrow.down.circle", color: .pink, title: "Install from",
-                                       detail: "Apple's restore image. A download is kept for the next Mac VM (Settings › Distributions).") {
-                                Picker("", selection: Binding(get: { f.restoreImage }, set: { form?.restoreImage = $0 })) {
-                                    ForEach(f.restoreImages) { Text($0.name).tag($0.id) }
-                                }
-                                .labelsHidden().frame(maxWidth: 260)
-                            }
-                            HStack {
-                                Spacer()
-                                Button("Choose IPSW…") { chooseRestoreImage() }
-                            }
-                        } else {
-                            SettingRow(symbol: "tag", color: .pink, title: "Release") {
-                                Picker("", selection: Binding(get: { f.release }, set: { form?.release = $0 })) {
-                                    ForEach(f.releases) { Text($0.name).tag($0.id) }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .fixedSize()
-                            }
-                        }
-                        Notice(symbol: f.imagesAreChecked ? "checkmark.shield.fill" : "exclamationmark.shield.fill",
-                               color: f.imagesAreChecked ? .green : .orange, text: f.verification)
-                            .font(Design.caption)
-                    }
-                } else {
-                    Notice(symbol: "xmark.octagon.fill", color: .red, text: "The distribution list could not be loaded.")
-                }
-                if let f = form, f.isMac {
+                if !snapshotSources.isEmpty {
+                    let source = snapshotSources
                     Section {
-                        SettingRow(symbol: "lock.shield", color: .red, title: "System Integrity Protection",
-                                   detail: VMSettingsDraft.sipDetail) {
-                            Toggle("", isOn: Binding(get: { !f.disableSIP },
-                                                     set: { on in if on { form?.disableSIP = false } else { confirmingSIP = true } }))
-                                .labelsHidden().toggleStyle(.switch)
+                        Picker("Start from", selection: $fromSnapshot) {
+                            Text("A distribution").tag(false)
+                            Text("A snapshot").tag(true)
                         }
-                        SettingRow(symbol: "externaldrive.badge.checkmark", color: .blue, title: "Full disk access",
-                                   detail: VMSettingsDraft.fullDiskAccessDetail) {
-                            Toggle("", isOn: Binding(get: { f.fullDiskAccess }, set: { form?.fullDiskAccess = $0 }))
-                                .labelsHidden().toggleStyle(.switch)
-                        }
-                        SettingRow(symbol: "person.crop.circle.badge.checkmark", color: .green, title: "Log in automatically",
-                                   detail: "Starts at its desktop, without the login window.") {
-                            Toggle("", isOn: Binding(get: { f.autoLogin }, set: { form?.autoLogin = $0 }))
-                                .labelsHidden().toggleStyle(.switch)
-                        }
-                    } header: {
-                        Text("Security")
-                    }
-                }
-                Section {
-                    QuantityRow(symbol: "cpu", color: .blue, title: "CPUs", value: $cpus, range: 1...capacity.maxCPUs,
-                                unit: cpus == 1 ? "core" : "cores")
-                    QuantityRow(symbol: "memorychip", color: .green, title: "Memory", value: $memory,
-                                range: minimumMemory...max(minimumMemory, capacity.maxMemoryGiB), unit: "GB",
-                                detail: "Up to \(capacity.maxMemoryGiB) GB of this Mac's \(capacity.memoryGiB) GB.")
-                    QuantityRow(symbol: "internaldrive", color: .gray, title: "Disk", value: $disk, range: minimumDisk...1024,
-                                step: 10, unit: "GB", detail: "Fixed once created. Space is used only as it fills.")
-                } header: {
-                    Text("Resources")
-                }
-                if let f = form {
-                    Section {
-                        SettingRow(symbol: "network", color: .blue, title: "Network",
-                                   detail: f.network == nil ? "No network device at all."
-                                       : "VMs on the same network can reach each other. Set up in Settings › Networks.") {
-                            Picker("", selection: Binding(get: { f.network }, set: { form?.network = $0 })) {
-                                Text("None").tag(String?.none)
-                                ForEach(f.networks) { Text($0.name).tag(String?.some($0.id)) }
+                        .pickerStyle(.segmented)
+                        if fromSnapshot {
+                            Picker("Snapshot", selection: $snapshotChoice) {
+                                ForEach(source) { s in Text("\(s.vm) — \(s.snapshot.name)").tag(Optional(s.id)) }
                             }
-                            .labelsHidden().fixedSize()
+                            Notice(symbol: "doc.on.doc", color: .blue,
+                                   text: "The new VM's disks are clones of the snapshot's (no room until they change), with its settings and an identity of its own. Shared folders, bridges and host commands stay with the original.")
+                                .font(Design.caption)
                         }
-                        if f.firewallApplies {
-                            FirewallSwitchRows(firewall: Binding(get: { f.firewall }, set: { form?.firewall = $0 }),
-                                               tags: tags)
-                        }
-                    } header: {
-                        Text("Network")
-                    } footer: {
-                        Text(f.firewallApplies ? "This VM's own firewall. Rules can be added on its Network page later." : "")
-                            .font(Design.caption).foregroundStyle(.secondary)
                     }
                 }
-                if let f = form, !f.profileChoices.isEmpty {
-                    Section {
-                        ForEach(f.profileChoices) { p in
-                            Toggle(isOn: Binding(get: { f.isChosen(p.id) && p.supported }, set: { _ in form?.toggleProfile(p.id) })) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(p.name).font(Design.rowTitle)
-                                    Text(p.supported ? p.summary : "Not available for this distribution.")
-                                        .font(Design.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .toggleStyle(.checkbox)
-                            .disabled(!p.supported)
-                        }
-                        Button("Create New Profile…") { creatingProfile = true }
-                    } header: {
-                        Text("Profiles")
-                    } footer: {
-                        Text("Set up in the VM once it first starts. Progress shows in its tab. Profiles are edited in Settings › Profiles.")
-                            .font(Design.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Section {
-                    SettingRow(symbol: "folder", color: .cyan, title: "Shared folder",
-                               detail: sharePath.isEmpty ? "Optional. More can be added later." : sharePath) {
-                        HStack {
-                            if !sharePath.isEmpty {
-                                Toggle("Read-only", isOn: $shareReadOnly).toggleStyle(.checkbox)
-                                Button { sharePath = "" } label: { Image(systemName: "xmark.circle.fill") }
-                                    .buttonStyle(.borderless).help("Don't share a folder")
-                            }
-                            Button(sharePath.isEmpty ? "Choose…" : "Change…") { chooseFolder() }
-                        }
-                    }
-                    if let f = form {
-                        SettingRow(symbol: "photo", color: .orange, title: "Images in the terminal",
-                                   detail: VMSettingsDraft.inlineImagesDetail) {
-                            Toggle("", isOn: Binding(get: { f.inlineImages }, set: { form?.inlineImages = $0 }))
-                                .labelsHidden().toggleStyle(.switch)
-                        }
-                    }
-                } header: {
-                    Text("Access")
+                if !fromSnapshot {
+                    distributionSections
                 }
             }
             .formStyle(.grouped)
@@ -1334,7 +1255,7 @@ struct CreateVMSheet: View {
                 Button(submission.busy ? "Creating…" : "Create") { create() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!nameValid || form == nil || submission.busy)
+                    .disabled(!nameValid || submission.busy || (fromSnapshot ? chosenSnapshot == nil : form == nil))
             }
             .controlSize(.large)
             .padding(.horizontal, 24).padding(.vertical, 14)
@@ -1355,6 +1276,9 @@ struct CreateVMSheet: View {
                 }
             }
         }
+        .onChange(of: fromSnapshot) {
+            if fromSnapshot, snapshotChoice == nil { snapshotChoice = snapshotSources.first?.id }
+        }
         .onChange(of: form?.distro) {
             // macOS needs more room: raised to its minimums (a usable disk for it).
             guard let f = form else { return }
@@ -1371,6 +1295,146 @@ struct CreateVMSheet: View {
             if let initialNetwork, form?.networks.contains(where: { $0.id == initialNetwork }) == true { form?.network = initialNetwork }
             if let catalog = try? ProfileCatalog.bundled(custom: ProfileStore()) { form?.setProfiles(catalog) }
             tags = (try? FirewallTagStore().all()) ?? []
+        }
+    }
+
+    /// The sections of a VM made from a distribution (or macOS's image).
+    @ViewBuilder
+    private var distributionSections: some View {
+        if let f = form {
+            Section("System") {
+                SettingRow(symbol: "square.stack.3d.up", color: .orange, title: "Distribution") {
+                    Picker("", selection: Binding(get: { f.distro }, set: { form?.distro = $0 })) {
+                        ForEach(f.distros) { Text($0.name).tag($0.id) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                if f.isMac {
+                    SettingRow(symbol: "arrow.down.circle", color: .pink, title: "Install from",
+                               detail: "Apple's restore image. A download is kept for the next Mac VM (Settings › Distributions).") {
+                        Picker("", selection: Binding(get: { f.restoreImage }, set: { form?.restoreImage = $0 })) {
+                            ForEach(f.restoreImages) { Text($0.name).tag($0.id) }
+                        }
+                        .labelsHidden().frame(maxWidth: 260)
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Choose IPSW…") { chooseRestoreImage() }
+                    }
+                } else {
+                    SettingRow(symbol: "tag", color: .pink, title: "Release") {
+                        Picker("", selection: Binding(get: { f.release }, set: { form?.release = $0 })) {
+                            ForEach(f.releases) { Text($0.name).tag($0.id) }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .fixedSize()
+                    }
+                }
+                Notice(symbol: f.imagesAreChecked ? "checkmark.shield.fill" : "exclamationmark.shield.fill",
+                       color: f.imagesAreChecked ? .green : .orange, text: f.verification)
+                    .font(Design.caption)
+            }
+        } else {
+            Notice(symbol: "xmark.octagon.fill", color: .red, text: "The distribution list could not be loaded.")
+        }
+        if let f = form, f.isMac {
+            Section {
+                SettingRow(symbol: "lock.shield", color: .red, title: "System Integrity Protection",
+                           detail: VMSettingsDraft.sipDetail) {
+                    Toggle("", isOn: Binding(get: { !f.disableSIP },
+                                             set: { on in if on { form?.disableSIP = false } else { confirmingSIP = true } }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                SettingRow(symbol: "externaldrive.badge.checkmark", color: .blue, title: "Full disk access",
+                           detail: VMSettingsDraft.fullDiskAccessDetail) {
+                    Toggle("", isOn: Binding(get: { f.fullDiskAccess }, set: { form?.fullDiskAccess = $0 }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                SettingRow(symbol: "person.crop.circle.badge.checkmark", color: .green, title: "Log in automatically",
+                           detail: "Starts at its desktop, without the login window.") {
+                    Toggle("", isOn: Binding(get: { f.autoLogin }, set: { form?.autoLogin = $0 }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+            } header: {
+                Text("Security")
+            }
+        }
+        Section {
+            QuantityRow(symbol: "cpu", color: .blue, title: "CPUs", value: $cpus, range: 1...capacity.maxCPUs,
+                        unit: cpus == 1 ? "core" : "cores")
+            QuantityRow(symbol: "memorychip", color: .green, title: "Memory", value: $memory,
+                        range: minimumMemory...max(minimumMemory, capacity.maxMemoryGiB), unit: "GB",
+                        detail: "Up to \(capacity.maxMemoryGiB) GB of this Mac's \(capacity.memoryGiB) GB.")
+            QuantityRow(symbol: "internaldrive", color: .gray, title: "Disk", value: $disk, range: minimumDisk...1024,
+                        step: 10, unit: "GB", detail: "Fixed once created. Space is used only as it fills.")
+        } header: {
+            Text("Resources")
+        }
+        if let f = form {
+            Section {
+                SettingRow(symbol: "network", color: .blue, title: "Network",
+                           detail: f.network == nil ? "No network device at all."
+                               : "VMs on the same network can reach each other. Set up in Settings › Networks.") {
+                    Picker("", selection: Binding(get: { f.network }, set: { form?.network = $0 })) {
+                        Text("None").tag(String?.none)
+                        ForEach(f.networks) { Text($0.name).tag(String?.some($0.id)) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                if f.firewallApplies {
+                    FirewallSwitchRows(firewall: Binding(get: { f.firewall }, set: { form?.firewall = $0 }),
+                                       tags: tags)
+                }
+            } header: {
+                Text("Network")
+            } footer: {
+                Text(f.firewallApplies ? "This VM's own firewall. Rules can be added on its Network page later." : "")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
+        }
+        if let f = form, !f.profileChoices.isEmpty {
+            Section {
+                ForEach(f.profileChoices) { p in
+                    Toggle(isOn: Binding(get: { f.isChosen(p.id) && p.supported }, set: { _ in form?.toggleProfile(p.id) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(p.name).font(Design.rowTitle)
+                            Text(p.supported ? p.summary : "Not available for this distribution.")
+                                .font(Design.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(!p.supported)
+                }
+                Button("Create New Profile…") { creatingProfile = true }
+            } header: {
+                Text("Profiles")
+            } footer: {
+                Text("Set up in the VM once it first starts. Progress shows in its tab. Profiles are edited in Settings › Profiles.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
+        }
+        Section {
+            SettingRow(symbol: "folder", color: .cyan, title: "Shared folder",
+                       detail: sharePath.isEmpty ? "Optional. More can be added later." : sharePath) {
+                HStack {
+                    if !sharePath.isEmpty {
+                        Toggle("Read-only", isOn: $shareReadOnly).toggleStyle(.checkbox)
+                        Button { sharePath = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.borderless).help("Don't share a folder")
+                    }
+                    Button(sharePath.isEmpty ? "Choose…" : "Change…") { chooseFolder() }
+                }
+            }
+            if let f = form {
+                SettingRow(symbol: "photo", color: .orange, title: "Images in the terminal",
+                           detail: VMSettingsDraft.inlineImagesDetail) {
+                    Toggle("", isOn: Binding(get: { f.inlineImages }, set: { form?.inlineImages = $0 }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+            }
+        } header: {
+            Text("Access")
         }
     }
 
@@ -1395,7 +1459,14 @@ struct CreateVMSheet: View {
         form?.chooseRestoreImage(path: url.path)
     }
 
+    private var chosenSnapshot: SnapshotSource? { snapshotSources.first { $0.id == snapshotChoice } }
+
     private func create() {
+        if fromSnapshot, let s = chosenSnapshot, let make = onCreateFromSnapshot {
+            let name = self.name
+            Task { await submission.submit { try await make(s.vm, s.snapshot.id, name) } }
+            return
+        }
         var c = InstanceConfig.defaults(name: name)
         if let form { c = form.apply(to: c) }
         c.cpus = capacity.clampCPUs(cpus)

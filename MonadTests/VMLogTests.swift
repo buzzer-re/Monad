@@ -4,6 +4,7 @@
 //  back for the VM's Log page.
 //
 
+import SwiftUI
 import XCTest
 @testable import Monad
 
@@ -85,4 +86,93 @@ final class VMLogPageModelTests: XCTestCase {
         XCTAssertTrue(model.refresh())
         XCTAssertTrue(model.text.contains("state booting → ready"), model.text)
     }
+
+    /// What was added is read, and the text is what the whole log would
+    /// read: after it grew, after it was rotated, and once past the trim.
+    func testOnlyWhatWasAddedIsReadAndTheTextStaysTheLog() throws {
+        let tmp = TempDir()
+        let url = tmp.url.appendingPathComponent("vm.log")
+        let model = VMLogPageModel(url: url)
+        try Data("one\n".utf8).write(to: url)
+        XCTAssertTrue(model.refresh())
+        let h = try FileHandle(forWritingTo: url)
+        try h.seekToEnd()
+        try h.write(contentsOf: Data("two\n".utf8))
+        try h.close()
+        XCTAssertTrue(model.refresh())
+        XCTAssertEqual(model.text, "one\ntwo\n")
+        // Rotated (VMLog renames it to vm.log.1 and starts a new one).
+        try FileManager.default.moveItem(at: url, to: VMLog.previous(of: url))
+        try Data("three\n".utf8).write(to: url)
+        XCTAssertTrue(model.refresh())
+        XCTAssertEqual(model.text, VMLog.read(url))
+        XCTAssertEqual(model.text, "one\ntwo\nthree\n")
+        // Grown past the trim: the last 512 KB, from a line start.
+        let line = String(repeating: "x", count: 99) + "\n"
+        let big = try FileHandle(forWritingTo: url)
+        try big.seekToEnd()
+        try big.write(contentsOf: Data(String(repeating: line, count: (VMLogPageModel.trimAt / 100) + 10).utf8))
+        try big.close()
+        XCTAssertTrue(model.refresh())
+        XCTAssertLessThanOrEqual(model.text.utf8.count, 512 << 10)
+        XCTAssertTrue(model.text.hasPrefix(line), "from a line start")
+    }
+
+    /// A VM in trouble writes to its log about once a second (ssh retries,
+    /// the agent coming and going) and the page shows it as it comes: each
+    /// change must cost the window little, or the VM's window stops
+    /// answering (reported with a VM whose kernel crashed). Measured with a
+    /// log at the size the page reads (512 KB).
+    func testAFullLogCostsTheWindowLittleEachTimeItGrows() throws {
+        let tmp = TempDir()
+        let url = tmp.url.appendingPathComponent("vm.log")
+        let line = "2026-11-01 19:37:22 ssh: could not connect (try 3 of 5), trying again in 4 s, and some more words\n"
+        try Data(String(repeating: line, count: (512 << 10) / line.utf8.count).utf8).write(to: url)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let host = NSHostingView(rootView: VMLogPage(url: url))
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        host.display()
+        // What a second costs the main thread (the window's) with the page
+        // open and nothing new. The main thread only: what other tests left
+        // running costs other threads and says nothing about the window.
+        func quietSecond() -> TimeInterval {
+            let cpu = mainThreadCPUSeconds()
+            RunLoop.main.run(until: Date().addingTimeInterval(1.1))
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            return mainThreadCPUSeconds() - cpu
+        }
+        let quiet = quietSecond()
+        var worst: TimeInterval = 0
+        for i in 0..<3 {
+            let h = try FileHandle(forWritingTo: url)
+            try h.seekToEnd()
+            try h.write(contentsOf: Data("2026-11-01 19:38:0\(i) agent: disconnected after 15.8 s\n".utf8))
+            try h.close()
+            // The page looks once a second; what it does then is CPU spent.
+            let cpu = mainThreadCPUSeconds()
+            RunLoop.main.run(until: Date().addingTimeInterval(1.1))
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            worst = max(worst, mainThreadCPUSeconds() - cpu)
+        }
+        XCTAssertLessThan(worst - quiet, 0.05, "\(worst) s of the main thread for one new line (\(quiet) s for a second with none)")
+    }
+}
+
+/// CPU time the calling thread used so far (the main thread, in a test).
+func mainThreadCPUSeconds() -> TimeInterval {
+    var info = thread_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let port = mach_thread_self()
+    defer { mach_port_deallocate(mach_task_self_, port) }
+    let r = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { thread_info(port, thread_flavor_t(THREAD_BASIC_INFO), $0, &count) }
+    }
+    guard r == KERN_SUCCESS else { return 0 }
+    return TimeInterval(info.user_time.seconds) + TimeInterval(info.user_time.microseconds) / 1e6
+        + TimeInterval(info.system_time.seconds) + TimeInterval(info.system_time.microseconds) / 1e6
 }

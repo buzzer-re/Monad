@@ -49,11 +49,24 @@ final class HostService {
     /// MonadHost (`openMonad`), nothing in tests.
     var openApp: () -> Void = {}
 
+    /// Opens (or brings forward) the app this MonadHost lives in, by its
+    /// path: "open -b" let Launch Services pick any copy with the bundle id,
+    /// such as an older Debug build elsewhere, which replaced MonadHost and
+    /// shut its VMs down whenever an agent's call asked the user.
     static func openMonad() {
+        guard let executable = Bundle.main.executableURL, let arguments = openAppArguments(executable: executable) else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-b", Flavor.current.appIdentifier]
+        p.arguments = arguments
         try? p.run()
+    }
+
+    /// `open`'s arguments for the app around MonadHost's `executable`
+    /// (…/X.app/Contents/MacOS/MonadHost); nil when it is not in an app.
+    nonisolated static func openAppArguments(executable: URL) -> [String]? {
+        let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard app.pathExtension == "app", executable.deletingLastPathComponent().lastPathComponent == "MacOS" else { return nil }
+        return [app.path]
     }
     /// Monad's version. MonadHost lives in Monad.app/Contents/MacOS, but its
     /// Bundle.main carries the tool's own embedded plist (no version), and
@@ -280,7 +293,10 @@ final class HostService {
                    firewallProblem: vm.firewallProblem,
                    firewallAsks: vm.firewallAsks.isEmpty ? nil : vm.firewallAsks,
                    profileRuns: vm.profileRuns.isEmpty ? nil : vm.profileRuns,
-                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity)
+                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem,
+                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings, paused: vm.paused ? true : nil,
+                   snapshots: vm.snapshots.isEmpty ? nil : vm.snapshots.map(SnapshotSummary.init),
+                   currentSnapshot: vm.currentSnapshot)
     }
 
     private func instancesChanged(_ list: [VMInstance]) {
@@ -348,6 +364,7 @@ final class HostService {
             }
             if let p = s.pendingRestart { parts.append("after a restart: " + p.joined(separator: ", ")) }
             if let e = s.sharesError { parts.append("shares: " + e) }
+            if let h = s.health { parts.append("health: " + h) }
             if let a = s.firewallAsks { parts.append(DebugLog.count(a.count, "firewall question")) }
             if let r = s.profileRuns { parts.append("profiles: " + r.map { "\($0.profile) \($0.state.rawValue)" }.joined(separator: ", ")) }
             let summary = parts.joined(separator: ", ")
@@ -523,6 +540,32 @@ final class HostConnection {
             Task { @MainActor in if force { await target.forceStop() } else { await target.stop() } }
             return answer(target)
 
+        case .pause:
+            let target = try vm(r.name)
+            try await target.pause()
+            return answer(target)
+
+        case .resume:
+            let target = try vm(r.name)
+            try await target.resume()
+            return answer(target)
+
+        case .takeSnapshot:
+            let target = try vm(r.name)
+            _ = try await target.takeSnapshot(name: r.snapshot!)
+            return answer(target)
+
+        case .restoreSnapshot:
+            let target = try vm(r.name)
+            manager.cancelStart(target)
+            try await target.restoreSnapshot(r.snapshot!)
+            return answer(target)
+
+        case .deleteSnapshot:
+            let target = try vm(r.name)
+            try target.deleteSnapshot(r.snapshot!)
+            return answer(target)
+
         case .restart:
             // Done here so it completes even if the app goes away meanwhile.
             let target = try vm(r.name)
@@ -535,9 +578,18 @@ final class HostConnection {
         case .clone:
             let source = try vm(r.name)
             var config = r.config!
+            if let id = r.snapshot {
+                // A snapshot's copy has the snapshot's settings, less what reaches into the Mac.
+                guard let snap = source.snapshots.first(where: { $0.id == id }) else {
+                    throw MonadError("\(source.name) has no snapshot \(id).")
+                }
+                let parent = config.parent // an orchestrator's copy is its child
+                config = snap.config.copy(named: config.name).config
+                config.parent = parent
+            }
             try SharePolicy.apply(&config, places: service.sharePlaces)
             try config.validate(maxCPUs: service.limits.maxCPUs, maxMemoryGiB: service.limits.maxMemoryGiB)
-            return answer(try await manager.clone(source, as: config.name, settings: config))
+            return answer(try await manager.clone(source, as: config.name, settings: config, snapshot: r.snapshot))
 
         case .openDesktop:
             let target = try vm(r.name)

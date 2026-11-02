@@ -502,6 +502,30 @@ final class HostClientTests: XCTestCase {
         XCTAssertEqual(c.vm(named: "default")?.state, .ready, "running VMs are never interrupted for an update")
     }
 
+    /// Kept while its VMs ran, an outdated host is replaced once the last
+    /// of them stops. Before, it stayed until the user restarted it by hand:
+    /// this app's own connection kept it from ever being idle (seen on the
+    /// Mac: an old MonadHost kept serving a rebuilt Monad, its fixes absent).
+    func testAnOutdatedHostIsReplacedOnceItsVMsStop() async throws {
+        host = try FakeHost(build: "old")
+        host.nextBuild = "new"
+        let other = host.service.connect { _ in }
+        _ = await other.handle(HostRequest(id: 1, op: .hello, version: HostProtocol.version))
+        _ = await other.handle(HostRequest(id: 2, op: .ensureDefault))
+        await assertEventually { self.host.manager.existing("default")?.state == .stopped }
+        _ = await other.handle(HostRequest(id: 3, op: .start, name: "default"))
+        await assertEventually { self.host.manager.existing("default")?.state == .ready }
+        other.close()
+        let c = makeClient(expectedBuild: "new")
+        await assertEventually { c.status == .connected && c.hostIsOutdated }
+        XCTAssertEqual(host.shutdowns, 0, "not while a VM runs")
+
+        try await c.stop("default")
+        await assertEventually("build \(c.hostBuild ?? "none")") { c.status == .connected && c.hostBuild == "new" }
+        XCTAssertFalse(c.hostIsOutdated)
+        XCTAssertEqual(host.shutdowns, 1)
+    }
+
     /// A host from an older Monad (kept while its VMs run) does not know
     /// reorder: the user is told why, and the list stays as it was.
     func testAnOlderHostThatCannotReorderSaysSo() async throws {

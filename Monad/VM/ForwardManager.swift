@@ -180,6 +180,10 @@ final class ForwardManager {
     private var active: [SSHMux.Spec: ForwardStatus.Origin] = [:]
     private var failures: [SSHMux.Spec: String] = [:]
     private var masterPID: Int32?
+    /// How the master is stopped and continued (a test records it).
+    var signal: (Int32, Int32) -> Void = { pid, sig in _ = kill(pid, sig) }
+    /// The master stopped while the VM is paused.
+    private var frozenPID: Int32?
     private var masterStartedAt: Date?
     /// Grows while masters keep dying young, so a broken guest does not
     /// make us spawn ssh in a loop.
@@ -257,6 +261,7 @@ final class ForwardManager {
 
     /// The VM stopped: forget forwards (the master goes with it).
     func stop() {
+        freeze(false) // a stopped master would not hear "exit"
         stopped = true
         heldBack?.cancel()
         heldBack = nil
@@ -415,6 +420,20 @@ final class ForwardManager {
 
     private static func inUse(_ port: Int, by holders: [String]) -> String {
         "Port \(port) on this Mac is already in use by \(holders.joined(separator: ", "))."
+    }
+
+    /// While the VM is paused, the master is stopped (SIGSTOP): its
+    /// keepalive would give up on the silent guest after two minutes, and
+    /// every forward with it. Continued (SIGCONT) when the VM is.
+    func freeze(_ on: Bool) {
+        if on {
+            guard frozenPID == nil, let pid = masterPID else { return }
+            frozenPID = pid
+            signal(pid, SIGSTOP)
+        } else if let pid = frozenPID {
+            frozenPID = nil
+            signal(pid, SIGCONT)
+        }
     }
 
     private func masterExited(_ pid: Int32) {

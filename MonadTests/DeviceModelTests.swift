@@ -46,6 +46,8 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertEqual(m.hardwareModelPath, paths.hardwareModel.path)
         XCTAssertEqual(m.machineIdentifierPath, paths.macMachineID.path)
         XCTAssertNil(m.seedISOPath)
+        XCTAssertNil(m.healthLogPath, "no health port: macOS guests have no health script")
+        XCTAssertEqual(VZMachine.vmConfig(for: defaults, paths: paths).healthLogPath, paths.healthLog.path)
         XCTAssertThrowsError(try build(c)) { error in
             XCTAssertTrue(error.localizedDescription.contains("install"), error.localizedDescription)
         }
@@ -109,7 +111,17 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertTrue(vz.keyboards.isEmpty, "no keyboard")
         XCTAssertTrue(vz.pointingDevices.isEmpty, "no pointing device")
         XCTAssertTrue(vz.audioDevices.isEmpty, "no audio")
-        XCTAssertTrue(vz.consoleDevices.isEmpty, "no spice/clipboard console ports")
+        // One console device: the health port, which the guest only writes
+        // to (no spice, no clipboard, nothing read back into the guest).
+        XCTAssertEqual(vz.consoleDevices.count, 1)
+        let console = try XCTUnwrap(vz.consoleDevices.first as? VZVirtioConsoleDeviceConfiguration)
+        let health = try XCTUnwrap(console.ports[0])
+        XCTAssertEqual(health.name, "dev.monad.health")
+        XCTAssertFalse(health.isConsole)
+        XCTAssertNil(console.ports[1], "one port")
+        let attachment = try XCTUnwrap(health.attachment as? VZFileHandleSerialPortAttachment)
+        XCTAssertNil(attachment.fileHandleForReading, "nothing goes into the guest")
+        XCTAssertNotNil(attachment.fileHandleForWriting)
         XCTAssertTrue(vz.directorySharingDevices.isEmpty, "no filesystem device unless runtime sharing is on")
         if #available(macOS 15.0, *) {
             XCTAssertTrue(vz.usbControllers.isEmpty, "no USB")
@@ -140,6 +152,26 @@ final class DeviceModelTests: XCTestCase {
         let attachments = vz.storageDevices.compactMap { $0.attachment as? VZDiskImageStorageDeviceAttachment }
         XCTAssertEqual(attachments.map(\.isReadOnly), [false, true])
         XCTAssertEqual(attachments.first?.url.path, paths.disk.path)
+    }
+
+    /// Disks added in its settings: after the root disk and the seed,
+    /// writable, each named so Linux shows /dev/disk/by-id/virtio-<name>.
+    func testExtraDisksAreAttachedByName() throws {
+        try Data(count: 2048).write(to: paths.seed)
+        var c = defaults
+        c.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: true), ExtraDisk(name: "scratch", sizeGiB: 1, mount: false)]
+        for d in c.disks {
+            try FileManager.default.createDirectory(at: paths.extraDisk(d.name).deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(count: 4096).write(to: paths.extraDisk(d.name))
+        }
+        let vz = try build(c)
+        XCTAssertEqual(vz.storageDevices.count, 4)
+        let blocks = vz.storageDevices.compactMap { $0 as? VZVirtioBlockDeviceConfiguration }
+        XCTAssertEqual(blocks.suffix(2).map(\.blockDeviceIdentifier), ["data", "scratch"])
+        let files = vz.storageDevices.suffix(2).compactMap { $0.attachment as? VZDiskImageStorageDeviceAttachment }
+        XCTAssertEqual(files.map(\.url.path), [paths.extraDisk("data").path, paths.extraDisk("scratch").path])
+        XCTAssertEqual(files.map(\.isReadOnly), [false, false])
+        XCTAssertEqual(paths.extraDisk("data").path, paths.dir.appendingPathComponent("disks/data.raw").path)
     }
 
     func testNoNetworkMeansNoNIC() throws {

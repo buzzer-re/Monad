@@ -85,9 +85,25 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func closeAllSessions() { terminals.closeAllSessions() }
 
     func fontMetricsChanged() {
-        // Steps of a cell only fit a window holding one terminal.
-        window?.contentResizeIncrements = terminals.isSingleTerminal
+        // Steps of a cell only fit a window holding one terminal, and not a
+        // tab: AppKit snaps a tab's frame to them when it joins or comes to
+        // the front, so the window changed size with each ⌘T.
+        let tabbed = (window?.tabbedWindows?.count ?? 1) > 1
+        window?.contentResizeIncrements = terminals.isSingleTerminal && !tabbed
             ? (focusedSession?.terminalView.cellSize ?? NSSize(width: 1, height: 1)) : NSSize(width: 1, height: 1)
+    }
+
+    /// Joins `host`'s tabs in its place, at the window's size as it is.
+    func join(_ host: NSWindow) {
+        guard let window else { return }
+        let frame = host.frame
+        let none = NSSize(width: 1, height: 1)
+        host.contentResizeIncrements = none
+        window.contentResizeIncrements = none
+        window.setFrame(frame, display: false)
+        host.addTabbedWindow(window, ordered: .above)
+        window.setFrame(frame, display: false)
+        for c in Self.all where c.window?.tabGroup === host.tabGroup { c.fontMetricsChanged() }
     }
 
     // MARK: Panes
@@ -160,12 +176,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         closeAllSessions()
         Self.all.removeAll { $0 === self }
-        // Its group may have lost its tab bar.
-        DispatchQueue.main.async { Self.all.forEach { $0.refreshTabMenu() } }
+        // Its group may have lost its tab bar, and a window left alone gets
+        // its cell steps back.
+        DispatchQueue.main.async {
+            Self.all.forEach {
+                $0.refreshTabMenu()
+                $0.fontMetricsChanged()
+            }
+        }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
         refreshTabMenu()
+        fontMetricsChanged() // a tab dragged out alone gets its cell steps back
         focusTerminal()
     }
 

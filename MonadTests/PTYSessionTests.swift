@@ -36,6 +36,36 @@ final class PTYSessionTests: XCTestCase {
         XCTAssertTrue(text.contains("from-pty"), text)
     }
 
+    /// A tab on a paused VM stops its ssh (and everything in its group)
+    /// until the VM resumes: its keepalive would otherwise give up after two
+    /// minutes and end the shell. Closed while frozen, it still ends.
+    func testAFrozenSessionDoesNothingUntilItContinues() throws {
+        let model = try XCTUnwrap(TerminalModel(cols: 80, rows: 10, scrollback: 0))
+        let session = PTYSession(model: model)
+        let exited = expectation(description: "exit")
+        session.onExit = { _ in exited.fulfill() }
+        let dir = TempDir()
+        let file = dir.url.appendingPathComponent("ticks")
+        try session.start(.init(executable: "/bin/sh",
+                                arguments: ["sh", "-c", "while :; do echo t >> '\(file.path)'; sleep 0.1; done"],
+                                environment: env, directory: "/"),
+                          cols: 80, rows: 10)
+        func ticks() -> Int { ((try? String(contentsOf: file, encoding: .utf8)) ?? "").count }
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertGreaterThan(ticks(), 0)
+        session.freeze(true)
+        Thread.sleep(forTimeInterval: 0.3)
+        let frozen = ticks()
+        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertEqual(ticks(), frozen, "nothing runs while frozen")
+        session.freeze(false)
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertGreaterThan(ticks(), frozen, "it goes on")
+        session.freeze(true)
+        session.terminate()
+        wait(for: [exited], timeout: 10)
+    }
+
     /// Regression: a child that exits before the exit watcher is installed
     /// must still be reported (and reaped).
     func testInstantExitsAreAlwaysReported() throws {

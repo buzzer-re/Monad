@@ -3,8 +3,9 @@
 //  what they do, step by step, to ~/.monad/logs/monad_<date>.log: one file a
 //  day that both append to (each line is one write, so lines never mix),
 //  private to the user, at most `limit` bytes a day, the last 14 days kept.
-//  Off by default, and then a call costs one flag read: the message is not
-//  even formatted.
+//  On until the user turns it off, so the log of a VM gone wrong is already
+//  there when it is asked for; off, a call costs one flag read: the message
+//  is not even formatted.
 //
 //  The switch is a small file both processes read at start, and a Darwin
 //  notification tells a running process at once when the app changes it.
@@ -86,8 +87,9 @@ final class DebugLog: @unchecked Sendable {
 
     private struct Setting: Codable { var enabled: Bool }
 
+    /// The saved switch; on when nothing (readable) was saved.
     static func load(settings: URL = Paths.logSettings) -> Bool {
-        (try? JSONDecoder().decode(Setting.self, from: Data(contentsOf: settings)))?.enabled ?? false
+        (try? JSONDecoder().decode(Setting.self, from: Data(contentsOf: settings)))?.enabled ?? true
     }
 
     /// Saves the switch (Settings › Logs) and tells running processes.

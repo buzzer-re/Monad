@@ -168,18 +168,22 @@ extension VMState {
 
 struct StatusBadge: View {
     let state: VMState
+    /// A running VM that is paused.
+    var paused = false
+
+    private var tint: Color { paused ? .yellow : state.tint }
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(state.tint).frame(width: 7, height: 7)
-            Text(state.badge).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+            Circle().fill(tint).frame(width: 7, height: 7)
+            Text(paused ? "Paused" : state.badge).font(.system(size: 11, weight: .semibold)).lineLimit(1)
         }
         .fixedSize()
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(state.tint.opacity(0.14)))
-        .foregroundStyle(state == .stopped ? Color.secondary : state.tint)
-        .help(state.label)
+        .background(Capsule().fill(tint.opacity(0.14)))
+        .foregroundStyle(state == .stopped ? Color.secondary : tint)
+        .help(paused ? "Paused: nothing in it runs until it resumes" : state.label)
     }
 }
 

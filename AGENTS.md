@@ -77,7 +77,7 @@ Under `~/.monad` (Release) or `~/.monad-debug` (Debug), see `Monad/Support/Paths
 | Path | What |
 |---|---|
 | `_cache/images/` | Downloaded cloud images and the converted bases VMs are cloned from |
-| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log`, `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
+| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `disks/` (the disks added in its settings, `<name>.raw` each), `snapshots/` (a folder per snapshot: clones of the disks, `snapshot.json`, `memory.vzsave` when it was running; `current` names the one the VM is at), `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log` (and the boot before, `serial.log.1`), `health.log` (a Linux guest's health, from its health port, across boots), `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
 | `instances/order.json` | The VMs' order; the default VM is chosen there |
 | `networks/`, `firewall-tags/` | Monad networks and firewall tags, one JSON file each |
 | `distros/`, `profiles/`, `themes/` | What the user added, next to the ones in the app bundle |
@@ -219,7 +219,7 @@ The core (`Monad/Backend/net/mnd_net*.c`) never touches the OS: time and frames 
 ## Rules
 
 1. Tests first. Write the test that shows the bug or the missing behavior, watch it fail, then make it pass. A fix without a test that failed before it is not done.
-2. No third-party code. No Swift packages, CocoaPods, vendored libraries or copied code. Monad uses Apple's frameworks, libSystem, zlib and the system `ssh`, and writes everything else itself. CI fails a change that adds a package.
+2. No third-party code. No Swift packages, CocoaPods, vendored libraries or copied code. Monad uses Apple's frameworks, libSystem, zlib and the system `ssh`, and writes everything else itself. CI fails a change that adds a package. The one third-party file is data: the Nerd Font icons (`Monad/Terminal/Fonts/SymbolsNerdFontMono-Regular.ttf`, with its license and its icon sets' licenses beside it).
 3. Before each commit: the whole `MonadTests` target passes, `make -C CTests` exits 0, the build has zero warnings (C warnings are already errors; CI also treats Swift warnings as errors), and `docs/STATUS.md` still describes where things stand. STATUS is a short summary of the current state, not a log of changes.
 4. Distributions and profiles are data. Never key behavior on a distribution's name; what differs between guests comes from the distro file or from `GuestOS` (Linux or macOS).
 5. The guest is hostile. Anything a VM sends (frames, vsock traffic, agent messages, terminal escapes, file contents in shared folders, console output) is untrusted input: bound it, validate it, and test the hostile case. The Mac dials the guest over vsock and never listens; sshd in the guest never listens on a network; netd stays sandboxed; anything that reaches into the Mac asks the user. A change that moves one of these lines needs tests and an update to `docs/SECURITY.md`.

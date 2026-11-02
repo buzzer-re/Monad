@@ -522,6 +522,72 @@ final class HostServiceTests: XCTestCase {
         XCTAssertEqual(fixture.factory.machine.forceStops, 0)
     }
 
+    /// Pause and Resume, as the VM's window and agents ask: the snapshot
+    /// says paused; a VM that is not running cannot be.
+    func testPauseAndResume() async throws {
+        let (c, log) = await connect()
+        try await provisioned(c, log)
+        let early = await send(c, .pause, name: "default")
+        XCTAssertFalse(early.ok, "not running")
+        await send(c, .start, name: "default")
+        await assertEventually { log.latest("default")?.state == .ready }
+        let r = await send(c, .pause, name: "default")
+        XCTAssertTrue(r.ok, r.error ?? "")
+        XCTAssertEqual(r.instance?.paused, true)
+        await assertEventually { log.latest("default")?.paused == true }
+        let r2 = await send(c, .resume, name: "default")
+        XCTAssertTrue(r2.ok, r2.error ?? "")
+        XCTAssertNil(r2.instance?.paused, "absent when not paused")
+        XCTAssertEqual(fixture.factory.machine.pauseLog, ["pause", "resume"])
+    }
+
+    /// Snapshots through the host, as the VM's window asks: taken, listed
+    /// in the VM's snapshot, restored, deleted.
+    func testSnapshots() async throws {
+        let (c, log) = await connect()
+        try await provisioned(c, log)
+        var take = HostRequest(id: 0, op: .takeSnapshot, name: "default")
+        take.snapshot = "clean"
+        nextID += 1
+        take.id = nextID
+        let r = await c.handle(take)
+        XCTAssertTrue(r.ok, r.error ?? "")
+        let id = try XCTUnwrap(r.instance?.snapshots?.first?.id)
+        XCTAssertEqual(r.instance?.snapshots?.first?.name, "clean")
+        XCTAssertEqual(r.instance?.currentSnapshot, id)
+        // A new VM from it: its settings are the snapshot's, the name the request's.
+        nextID += 1
+        var other = try XCTUnwrap(log.latest("default")).config
+        other.name = "from-clean"
+        other.cpus = 7
+        var clone = HostRequest(id: nextID, op: .clone, name: "default", config: other)
+        clone.snapshot = id
+        let made = await c.handle(clone)
+        XCTAssertTrue(made.ok, made.error ?? "")
+        XCTAssertEqual(made.instance?.name, "from-clean")
+        XCTAssertEqual(made.instance?.config.cpus, try XCTUnwrap(log.latest("default")).config.cpus, "the snapshot's settings")
+        for op in [HostRequest.Op.restoreSnapshot, .deleteSnapshot] {
+            nextID += 1
+            var req = HostRequest(id: nextID, op: op, name: "default")
+            req.snapshot = id
+            let answer = await c.handle(req)
+            XCTAssertTrue(answer.ok, "\(op): \(answer.error ?? "")")
+        }
+        await assertEventually { log.latest("default")?.snapshots == nil }
+    }
+
+    /// To ask the user, MonadHost opens the app it lives in, by its path:
+    /// "open -b" let Launch Services pick any copy with the bundle id (an
+    /// older Debug build elsewhere), which replaced MonadHost and shut its
+    /// VMs down on every MCP approval (seen 2026-11-02).
+    func testTheAppOpenedToAskIsTheOneAroundThisMonadHost() {
+        let host = URL(fileURLWithPath: "/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app/Contents/MacOS/MonadHost")
+        XCTAssertEqual(HostService.openAppArguments(executable: host),
+                       ["/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app"])
+        XCTAssertNil(HostService.openAppArguments(executable: URL(fileURLWithPath: "/usr/local/bin/MonadHost")),
+                     "not inside an app: nothing is opened")
+    }
+
     func testRestartAppliesSavedSettings() async throws {
         let (c, log) = await connect()
         try await provisioned(c, log)

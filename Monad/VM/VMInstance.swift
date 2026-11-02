@@ -25,6 +25,10 @@ final class VMInstance: ObservableObject, Identifiable {
 
     /// How long a first boot may take before we give up.
     static let bootTimeout: TimeInterval = 15 * 60
+    /// How long TCP 22 may be found open during a boot before the VM is
+    /// failed: a first boot's distro sshd is stopped by cloud-init within
+    /// seconds.
+    static let exposedGrace: TimeInterval = 20
 
     nonisolated let name: String
     let paths: InstancePaths
@@ -32,6 +36,8 @@ final class VMInstance: ObservableObject, Identifiable {
     @Published private(set) var state: State = .stopped {
         didSet {
             guard state != oldValue else { return }
+            if !state.isRunning, !healthWarnings.isEmpty { healthWarnings = [] }
+            if state != .ready, paused { paused = false }
             if case .preparing = state {
                 Log.vm.debug("\(self.name, privacy: .public): \(self.state.label, privacy: .public)")
             } else {
@@ -86,6 +92,22 @@ final class VMInstance: ObservableObject, Identifiable {
 
     /// Why shared folders are not all mounted in the guest; nil when they are.
     @Published private(set) var sharesError: String?
+    /// What the guest's health lines say is wrong this boot (its kernel
+    /// crashed, it ran out of memory, its disk is full), with what to do;
+    /// nil when nothing is. Kept after it stops, until the next start.
+    @Published private(set) var healthProblem: String?
+    /// Its snapshots, oldest first, and the one it is at (Snapshots.swift).
+    @Published private(set) var snapshots: [Snapshot] = []
+    @Published private(set) var currentSnapshot: String?
+    /// The memory the next start restores instead of booting (a snapshot's).
+    private var restoreFrom: URL?
+    /// The guest's CPUs are stopped where they were (Pause); it is still
+    /// ready: its sessions, forwards and agent wait for it to resume.
+    @Published private(set) var paused = false
+    /// What the running guest is low on (memory, disk); empty once it stops.
+    @Published private(set) var healthWarnings: [GuestWarning] = []
+    private var guestHealth = GuestHealth()
+    private var healthLines = GuestReport(marker: "MONAD-H| ")
     /// Why the VM's firewall is not in force as saved (netd refused it, a
     /// tag is missing); nil when it is.
     @Published private(set) var firewallProblem: String?
@@ -170,6 +192,9 @@ final class VMInstance: ObservableObject, Identifiable {
         if config.guestOS == .macos {
             macSecurity = MacSecurityReport(sip: recordedSIP.map(\.word), fullDiskAccess: recordedFullDiskAccess)
         }
+        let store = SnapshotStore(paths: paths)
+        snapshots = store.list()
+        currentSnapshot = store.current
     }
 
     /// This VM's own log, always on (its Log page).
@@ -283,6 +308,11 @@ final class VMInstance: ObservableObject, Identifiable {
             throw MonadError("These settings are fixed when the VM is created: \(fixed.joined(separator: ", ")).")
         }
         let old = config
+        let removedDisks = old.disks.filter { d in !newConfig.disks.contains { $0.name == d.name } }
+        if !removedDisks.isEmpty, isRunning {
+            debug("update refused: disks removed while the VM runs")
+            throw MonadError("Shut the VM down to remove a disk: its data is deleted with it.")
+        }
         if newConfig.sharing.shares != old.sharing.shares {
             for share in newConfig.sharing.shares {
                 var isDirectory: ObjCBool = false
@@ -301,6 +331,10 @@ final class VMInstance: ObservableObject, Identifiable {
         }
         config = newConfig
         configProblem = nil // saved through Monad: validated by MonadHost
+        for d in removedDisks {
+            try? FileManager.default.removeItem(at: paths.extraDisk(d.name))
+            debug("disks: removed \(d.name) and its file")
+        }
         if !pendingRestart.isEmpty { debug("applies after a restart: \(pendingRestart.joined(separator: ", "))") }
         if newConfig.effectiveFirewall != old.effectiveFirewall {
             if let nic {
@@ -825,8 +859,46 @@ final class VMInstance: ObservableObject, Identifiable {
     var takesDisks = false
 
     private func makeMachine(nic: FileHandle?) throws -> VirtualMachineControlling {
-        takesDisks ? try env.machines.makeDiskMachine(config: config, paths: paths, nic: nic)
+        try makeExtraDisks()
+        return takesDisks ? try env.machines.makeDiskMachine(config: config, paths: paths, nic: nic)
                    : try env.machines.makeMachine(config: config, paths: paths, nic: nic)
+    }
+
+    /// The disks added in its settings that have no file yet: sparse, so
+    /// they take no room the guest has not written. One that exists keeps
+    /// its data (and its size).
+    private func makeExtraDisks() throws {
+        guard !config.disks.isEmpty else { return }
+        try FileManager.default.createDirectory(at: paths.extraDisks, withIntermediateDirectories: true)
+        for d in config.disks where !FileManager.default.fileExists(atPath: paths.extraDisk(d.name).path) {
+            let file = paths.extraDisk(d.name)
+            guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw MonadError("Cannot make the disk \(d.name) in \(paths.extraDisks.path).")
+            }
+            let h = try FileHandle(forWritingTo: file)
+            defer { try? h.close() }
+            try h.truncate(atOffset: UInt64(d.sizeGiB) << 30)
+            debug("disks: made \(d.name) (\(d.sizeGiB) GB, sparse)")
+        }
+    }
+
+    /// Formats (if blank) and mounts the disks that ask for it, after each
+    /// boot (Guest/monad-disks.sh; it never formats a disk that has a
+    /// filesystem). Linux VMs only.
+    private func mountExtraDisks() {
+        let names = config.disks.filter(\.mount).map(\.name)
+        guard !names.isEmpty, config.guestOS == .linux else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let script = try CloudInit.disksScript()
+                let r = try await self.sshSteadily("sudo -n sh -s -- \(self.config.user) " + names.joined(separator: " "),
+                                                   stdin: Data(script.utf8), timeout: 300)
+                for line in (r.stdoutString + r.stderrString).split(separator: "\n") { self.debug("disks: " + String(line).plain(limit: 200)) }
+            } catch {
+                self.debug("disks: could not be set up: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Another VM's disk, attached while this (Repair Disk's) VM runs.
@@ -883,9 +955,19 @@ final class VMInstance: ObservableObject, Identifiable {
 
     private func boot(_ m: VirtualMachineControlling) async {
         guestReport = .starting(at: paths.serialLog)
-        debug("boot: starting the machine (\(config.cpus) CPUs, \(config.memoryGiB) GiB, folder sharing \(config.sharing.runtimeEnabled ? "on" : "off"))")
+        watchHealth(m)
+        let restoring = restoreFrom
+        restoreFrom = nil
+        debug("boot: starting the machine (\(config.cpus) CPUs, \(config.memoryGiB) GiB, folder sharing \(config.sharing.runtimeEnabled ? "on" : "off"))"
+              + (restoring == nil ? "" : " from a snapshot's memory"))
         do {
-            try await m.start()
+            if let restoring {
+                try await m.restoreState(from: restoring)
+                try await m.resume()
+                restoredMemory = true
+            } else {
+                try await m.start()
+            }
         } catch {
             debug("boot: the machine did not start: \(error.localizedDescription)")
             if state == .starting { state = .failed(startProblem(error)) }
@@ -931,6 +1013,7 @@ final class VMInstance: ObservableObject, Identifiable {
         let deadline = env.clock.now().addingTimeInterval(Self.bootTimeout)
         var unanswered: String?
         var answering: Bool?
+        var exposedSince: Date?
         while env.clock.now() < deadline {
             guard state == .booting, !Task.isCancelled else { return }
             readGuestReport()
@@ -955,6 +1038,15 @@ final class VMInstance: ObservableObject, Identifiable {
                         return
                     case .exposed(let verdict):
                         guard state == .booting else { return }
+                        // On a first boot the distro's sshd can still listen
+                        // while cloud-init masks it (seen with Debian 13): asked
+                        // again for a short while; no shell before it is closed.
+                        let since = exposedSince ?? env.clock.now()
+                        exposedSince = since
+                        if env.clock.now().timeIntervalSince(since) < Self.exposedGrace {
+                            debug("boot: TCP 22 still open, asking again (\(verdict))")
+                            break
+                        }
                         // Fail closed: a guest whose sshd is exposed on the network is not used.
                         Log.vm.error("\(self.sshHost, privacy: .public): isolation check failed: \(verdict, privacy: .public)")
                         await fail(m, "Guest isolation check failed (\(verdict)). The VM was powered off.")
@@ -982,10 +1074,36 @@ final class VMInstance: ObservableObject, Identifiable {
         for line in guestReport.newLines(in: paths.serialLog) { debug("guest: \(line)") }
     }
 
-    /// What the guest said last, for a failure message ("" if nothing).
+    /// The guest's health lines from this boot on, as its machine hands
+    /// them over (its health port: not ssh, which is what stops answering
+    /// when the guest is in trouble). Nothing polls: no lines, no work.
+    private func watchHealth(_ m: VirtualMachineControlling) {
+        guestHealth = GuestHealth()
+        healthProblem = nil
+        healthWarnings = []
+        healthLines = GuestReport(marker: "MONAD-H| ")
+        m.onHealthOutput = { [weak self] data in self?.healthOutput(data) }
+    }
+
+    private func healthOutput(_ data: Data) {
+        let lines = healthLines.read(data)
+        guard !lines.isEmpty else { return }
+        for problem in guestHealth.read(lines) { debug("health: \(problem)") }
+        if healthProblem != guestHealth.summary { healthProblem = guestHealth.summary }
+        let warnings = guestHealth.warnings
+        if warnings.map(\.kind) != healthWarnings.map(\.kind) {
+            debug("health: " + (warnings.isEmpty ? "no longer low on memory or disk" : warnings.map(\.text).joined(separator: ", ")))
+        }
+        if warnings != healthWarnings, state.isRunning { healthWarnings = warnings }
+    }
+
+    /// What the guest said last, for a failure message ("" if nothing):
+    /// what its health lines say is wrong first (a kernel that crashed is
+    /// why ssh never answered), then its setup report.
     private var guestSays: String {
         let last = guestReport.lines.suffix(4)
-        return last.isEmpty ? "" : " The guest says: " + last.joined(separator: "; ") + "."
+        return (healthProblem.map { " \($0)" } ?? "")
+            + (last.isEmpty ? "" : " The guest says: " + last.joined(separator: "; ") + ".")
     }
 
     private enum Isolation {
@@ -1010,8 +1128,20 @@ final class VMInstance: ObservableObject, Identifiable {
         case CloudInit.monadSSHDNotYet: return .unanswered("Monad's ssh service is not set up in the guest yet")
         case "": return .unanswered(r.stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n").last.map(String.init) ?? "")
-        case let verdict: return .exposed(verdict)
+        case let verdict: return .exposed(Self.plainLine(verdict, max: 240))
         }
+    }
+
+    /// The first line of what a guest said, controls and bidirectional marks
+    /// dropped, cut: guest text for a message the user reads.
+    nonisolated static func plainLine(_ s: String, max: Int) -> String {
+        let line = s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let kept = line.unicodeScalars.filter { c in
+            guard c.properties.generalCategory != .control, c.properties.generalCategory != .format else { return false }
+            return true
+        }
+        let text = String(String.UnicodeScalarView(kept))
+        return text.count > max ? String(text.prefix(max)) + "…" : text
     }
 
     private func becomeReady() {
@@ -1025,6 +1155,11 @@ final class VMInstance: ObservableObject, Identifiable {
         let deviceShares = config.deviceShares(paths: paths)
         if !deviceShares.isEmpty || hostShares != deviceShares { applyShares() }
         installGuestComponents()
+        mountExtraDisks()
+        if restoredMemory {
+            restoredMemory = false
+            setGuestClock(because: "restored from a snapshot")
+        }
         runPendingProfiles()
         if config.guestOS == .macos {
             checkSIP()
@@ -1508,10 +1643,179 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     #endif
 
+    // MARK: Snapshots
+
+    /// Set when this run came from a snapshot's memory: once ready, its
+    /// clock is set to the Mac's (it stood still in the snapshot).
+    private var restoredMemory = false
+
+    /// Takes a snapshot named `name`: the disks, added disks, firmware store
+    /// and settings as they are; for a ready VM its memory too, saved while
+    /// it is paused (its disks cloned meanwhile, so both are of one moment).
+    func takeSnapshot(name: String) async throws -> Snapshot {
+        guard Snapshot.isValidName(name) else {
+            throw MonadError("A snapshot's name is plain text, \(Snapshot.maxNameLength) characters at most.")
+        }
+        guard !config.ephemeral else { throw MonadError("\(self.name) is thrown away when its last tab closes: it has no snapshots.") }
+        guard config.attached == nil else { throw MonadError("\(self.name) boots a Lima VM's disk, which Monad does not snapshot.") }
+        guard snapshots.count < Snapshot.maxCount else { throw MonadError("\(self.name) has \(Snapshot.maxCount) snapshots: delete one first.") }
+        guard state == .stopped || state == .ready || state.isFailed else {
+            throw MonadError("\(self.name) is \(state.label.lowercased()): take a snapshot once it is running or shut down.")
+        }
+        let id = Snapshot.newID()
+        let dir = paths.snapshot(id)
+        try Paths.ensurePrivateDirectory(paths.snapshots)
+        try Paths.ensurePrivateDirectory(dir)
+        let running = state == .ready ? machine : nil
+        let wasPaused = paused
+        var memory = false
+        do {
+            if let m = running {
+                if !wasPaused { try await pause() }
+                do {
+                    try await m.saveState(to: paths.snapshotMemory(id))
+                    memory = true
+                } catch {
+                    // Its disks are still worth keeping.
+                    debug("snapshot: could not save the memory (\(error.localizedDescription)): disks only")
+                    try? FileManager.default.removeItem(at: paths.snapshotMemory(id))
+                }
+            }
+            try await Self.cloneFiles(from: paths, to: dir, config: config)
+            if running != nil, !wasPaused { try await resume() }
+        } catch {
+            if running != nil, !wasPaused, paused { try? await resume() }
+            try? FileManager.default.removeItem(at: dir)
+            debug("snapshot: \(name) failed: \(error.localizedDescription)")
+            throw error
+        }
+        let snap = Snapshot(id: id, name: name, createdAt: env.clock.now(), parent: currentSnapshot, memory: memory, config: config)
+        let store = SnapshotStore(paths: paths)
+        try store.save(snap)
+        store.current = id
+        snapshots = store.list()
+        currentSnapshot = id
+        debug("snapshot: took \(id) “\(name)”" + (memory ? " with its memory" : ""))
+        return snap
+    }
+
+    /// Puts the VM back as snapshot `id` was: its disks, added disks,
+    /// firmware store and settings. What it is now is lost (the window
+    /// offers a snapshot of it first). One taken running starts again from
+    /// its memory; one taken shut down leaves the VM shut down.
+    func restoreSnapshot(_ id: String) async throws {
+        guard let snap = snapshots.first(where: { $0.id == id }) else { throw MonadError("\(name) has no snapshot \(id).") }
+        if isRunning {
+            debug("snapshot: powering off to restore \(id)")
+            await forceStop()
+        }
+        guard !isRunning else { throw MonadError("\(name) did not stop: the snapshot was not restored.") }
+        // The files now are replaced by clones of the snapshot's.
+        let fm = FileManager.default
+        try? fm.removeItem(at: paths.extraDisks)
+        for file in [paths.disk, paths.efiVars, paths.auxStorage] {
+            if fm.fileExists(atPath: paths.snapshot(id).appendingPathComponent(file.lastPathComponent).path) {
+                try? fm.removeItem(at: file)
+            }
+        }
+        try await Self.cloneFiles(from: InstancePaths(snapshotDir: paths.snapshot(id)), to: paths.dir, config: snap.config)
+        var restored = snap.config
+        restored.name = name
+        try restored.save(to: paths.config)
+        config = restored
+        discardMachine()
+        let store = SnapshotStore(paths: paths)
+        store.current = id
+        currentSnapshot = id
+        debug("snapshot: restored \(id) “\(snap.name)”" + (snap.memory ? ", starting from its memory" : ""))
+        if snap.memory {
+            restoreFrom = paths.snapshotMemory(id)
+            start()
+        }
+    }
+
+    /// Deletes snapshot `id`; the ones taken after it keep its parent.
+    func deleteSnapshot(_ id: String) throws {
+        guard let snap = snapshots.first(where: { $0.id == id }) else { throw MonadError("\(name) has no snapshot \(id).") }
+        let store = SnapshotStore(paths: paths)
+        for var child in snapshots where child.parent == id {
+            child.parent = snap.parent
+            try store.save(child)
+        }
+        try FileManager.default.removeItem(at: paths.snapshot(id))
+        if currentSnapshot == id {
+            store.current = snap.parent
+            currentSnapshot = snap.parent
+        }
+        snapshots = store.list()
+        debug("snapshot: deleted \(id) “\(snap.name)”")
+    }
+
+    /// The disk, added disks, firmware store and auxiliary storage as APFS
+    /// clones (instant; no room until they differ), from one folder to another.
+    private static func cloneFiles(from: InstancePaths, to dir: URL, config: InstanceConfig) async throws {
+        let target = InstancePaths(snapshotDir: dir)
+        var pairs = [from.disk, from.efiVars, from.auxStorage].map { ($0, target.dir.appendingPathComponent($0.lastPathComponent)) }
+        if !config.disks.isEmpty { try Paths.ensurePrivateDirectory(target.extraDisks) }
+        pairs += config.disks.map { (from.extraDisk($0.name), target.extraDisk($0.name)) }
+        try await Task.detached {
+            for (src, dst) in pairs where FileManager.default.fileExists(atPath: src.path) {
+                let rc = mnd_disk_clone(src.path, dst.path)
+                guard rc == 0 else { throw MonadError("Could not copy \(src.lastPathComponent): \(String(cString: strerror(rc))).") }
+            }
+        }.value
+    }
+
+    // MARK: Pause
+
+    /// Stops the guest where it is, like VMware's Pause: its memory stays,
+    /// nothing in it runs or hears the clock until Resume. The ssh master
+    /// is stopped with it, so its keepalive does not give up meanwhile.
+    func pause() async throws {
+        guard state == .ready, let m = machine else { throw MonadError("\(name) is not running.") }
+        guard !paused else { return }
+        try await m.pause()
+        paused = true
+        forwarding?.freeze(true)
+        debug("paused")
+    }
+
+    func resume() async throws {
+        guard paused, state == .ready, let m = machine else { throw MonadError("\(name) is not paused.") }
+        try await m.resume()
+        paused = false
+        forwarding?.freeze(false)
+        debug("resumed")
+        setGuestClock(because: "resumed")
+    }
+
+    /// Sets the guest's clock to the Mac's: it stood still while the VM was
+    /// paused, or while the Mac slept (and without the internet no NTP
+    /// would ever set it right).
+    func setGuestClock(because why: String) {
+        guard state == .ready, !paused else { return }
+        let command = Self.setClockCommand(epoch: Int(env.clock.now().timeIntervalSince1970))
+        Task { [weak self] in
+            guard let self else { return }
+            let r = try? await self.ssh(command, timeout: 15)
+            self.debug("\(why): " + (r?.status == 0 ? "the guest's clock is set to the Mac's" : "could not set the guest's clock"))
+        }
+    }
+
+    /// Sets the guest's clock to `epoch` (GNU date on Linux, BSD date on macOS).
+    nonisolated static func setClockCommand(epoch: Int) -> String {
+        "sudo -n date -u -s @\(epoch) >/dev/null 2>&1 || sudo -n date -u -f %s \(epoch) >/dev/null"
+    }
+
     // MARK: Stop
 
     /// Graceful shutdown (ACPI power button) with a timeout, then power off.
     func stop(timeout: TimeInterval = 20) async {
+        // A paused guest cannot hear the power button.
+        if paused {
+            debug("stop: resuming the paused VM to shut it down")
+            try? await resume()
+        }
         if macSecurity?.step != nil {
             // A step before macOS (recovery, its disk): nothing to shut down cleanly.
             debug("stop: stopping before macOS started")
@@ -1559,6 +1863,7 @@ final class VMInstance: ObservableObject, Identifiable {
         guard let m = machine else { return }
         debug("stop: powering off")
         lifecycleTask?.cancel()
+        forwarding?.freeze(false)
         stopForwarding()
         await closeSSHMaster()
         await powerOff(m)

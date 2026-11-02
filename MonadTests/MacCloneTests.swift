@@ -117,8 +117,8 @@ final class MacCloneTests: XCTestCase {
         await assertEventually("\(source.state)") { source.state == .ready }
     }
 
-    /// A running VM's disk is being written: it is stopped first. Linux VMs
-    /// (their cloud-init seed names them) are not copied yet.
+    /// A running VM's disk is being written: it is stopped first (or a
+    /// snapshot of it is copied). Linux copies: ProvisioningFlowTests.
     func testOnlyAStoppedMacVMIsCopied() async throws {
         let source = try await macVM()
         source.start()
@@ -133,14 +133,6 @@ final class MacCloneTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: manager.paths(for: "mac-2").dir.path), "nothing left")
         await source.stop()
 
-        let linux = try manager.create(InstanceConfig.defaults(name: "box"))
-        await assertEventually("\(linux.state)") { linux.state == .stopped }
-        do {
-            _ = try await manager.clone(linux, as: "box-2")
-            XCTFail("linux")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("macOS"), error.localizedDescription)
-        }
     }
 
     /// A name in use, or not a name, is refused, and nothing is changed.

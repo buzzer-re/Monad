@@ -37,7 +37,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 ## What Monad does
 
-- **VMs:** Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
+- **VMs:** a new Debian 13 VM boots the first time (its sshd.service is an alias of ssh.service,
+  which one systemctl call masking every unit could not mask, so sshd kept TCP 22); Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
   verified with pinned keys); macOS guests (install from Apple or an IPSW, no Setup Assistant, SIP
   switchable through recovery, copies); Lima VMs booted in place or copied in; ephemeral Linux VMs.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
@@ -47,23 +48,68 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   the next start, that MonadHost ended while the VM ran); a Linux boot that fails says what the VM's
   disk shows (partition table, superblocks and their backups), and Repair Disk runs the distribution's own
   filesystem tools on it in a temporary VM (macOS 15 and later); its kernel console reaches `serial.log`,
-  errors only unless Settings › Virtual Machines › Full boot messages is on.
+  errors only unless Settings › Virtual Machines › Full boot messages is on, and the boot before is
+  kept as `serial.log.1`; a Linux VM writes its health (memory, swap and its pressure, CPU and the
+  processes using it, disks (full as df counts it), the biggest processes, the kernel's OOM kills, crashes, hangs and I/O
+  errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots;
+  MonadHost tells from it that the guest's kernel crashed, it ran out of memory or its disk is full,
+  in the VM's log, `get_vm`, a failed boot's message, the VM's window and list, and its tabs once
+  their session ended. Before that, like VMware, a VM low on memory (90% in use for two snapshots)
+  or disk space (90% of `/`) is warned about, and the app posts a notification for each warning,
+  each health problem and the Mac's own disk below 10 GB free, once until it clears (Settings ›
+  Virtual Machines › Warn when a VM runs low; checked on the Mac through the Debug MCP). The app's
+  and MonadHost's step-by-step log (Settings › Logs) is on unless the user turns it off.
+- **Snapshots:** a VM's window (Snapshots page) and `take_snapshot`/`restore_snapshot`/
+  `delete_snapshot` keep the VM's disks and settings as APFS clones, and a running VM's memory
+  (Virtualization's saved state, while it is paused a moment), as a tree; restoring one taken
+  running brings the VM back running where it was, its clock set to the Mac's. Checked on the Mac:
+  a file in `/dev/shm` and a running process came back after a restore. A new VM is made from a
+  snapshot (its Snapshots page, the New VM sheet's "Start from: a snapshot", `clone_vm`), and a
+  stopped Linux VM is copied too: its disks cloned, with a new seed (host name, host keys), key
+  and machine-id. Checked on the Mac: the copy got its own host name, machine-id and address.
+- **Disks:** a VM takes up to 8 more disks (Resources › Disks, `add_disk`/`remove_disk`), sparse
+  files in its folder attached by name at the next start; in a Linux VM Monad formats a blank one
+  (ext4) and mounts it at `/mnt/<name>` (Guest/monad-disks.sh, never over a filesystem), and its
+  health warns when one is 90% full. Removing a disk deletes it, only while the VM is shut down.
+- **Pause:** a ready VM pauses and resumes (Virtualization's pause; its row, window, the canvas,
+  `pause_vm`/`resume_vm`); its tabs' ssh and its ssh master are stopped with it, so their keepalive
+  does not end the sessions, and its clock is set to the Mac's on resume (every ready VM's too
+  when the Mac wakes: guest clocks stand still while it sleeps). Stop resumes it first.
+  Checked on the Mac: paused 150 s and 60 s, sessions and the clock right after.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
-- **Terminal:** Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
+- **Terminal:** Nerd Font icons come from the bundled Symbols Nerd Font Mono (an icon before a
+  blank cell spreads over both, Powerline separators fill their cell); a session that ends turns off the modes its program left on (mouse reports,
+  bracketed paste, keypad, alternate screen); a picture pasted (⌘V) into a host shell is saved to
+  a private folder on the Mac and its path typed; Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
+- **Windows:** a new tab takes its window's place at the size it is (cell steps, which snapped it
+  a few points each ⌘T, only apply to a window with one tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
+  added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
+  a full-screen terminal's too.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role
   (host commands, or orchestrator of child VMs), with approvals for anything that reaches the Mac
-  and an audit log.
+  and an audit log; a VM's console and health logs are read through it without ssh, and when the
+  VM service cannot be reached every call says why (with launchd's view of it).
+- **The VM service:** one copy of Monad per flavor (a newer copy asks older ones to quit, and MonadHost opens its own app
+  by path to ask the user, never another copy); a copy
+  that cannot reach MonadHost replaces launchd's job only while no VM runs, never ending a host
+  that runs VMs (two Debug copies used to take turns, each turn powering every VM off).
+  An outdated MonadHost kept for its running VMs is replaced once the last of them stops.
+- **Updates:** the Release build checks GitHub's latest release once a day (Settings › Updates ›
+  Check for updates, on by default) and on Monad › Check for Updates, and asks before it installs a
+  newer one with install.sh's checks (SHA-256, bundle id, version, signature); `monad-update.sh`
+  swaps it in once Monad has quit and opens it, while the VMs keep running. The Debug build never
+  updates itself.
 
 ## Tests
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
-| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,115 Swift tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
+| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,200 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
 
@@ -73,9 +119,11 @@ with warnings as errors. `fuzz.yml` runs each fuzzer for about ten minutes every
 publishes a release (`Monad.zip` and its SHA-256) when a `v<version>` tag is pushed, after CI passes
 on that commit.
 
-Known environmental failures on the development Mac: two ICMP tests (no echo reply), and
-`TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle`, which measures the whole test
-process's CPU and fails in the full suite but passes alone.
+Known environmental failures on the development Mac: two ICMP tests (no echo reply).
+`TerminalSessionTests.testFollowingAVMThroughItsLifeStaysIdle` measures the whole test process's
+CPU: it passes in the full suite now that tests stop the VMs they leave running (their agents
+retried in a tight loop on the test clock), and says what is busy when it fails; CI still skips it
+(hosted runners are not quiet).
 
 Before each commit: the whole `MonadTests` target and `make -C CTests` (its exit status), zero
 warnings, this file updated, and no private names or paths in what is committed.
@@ -87,6 +135,10 @@ warnings, this file updated, and no private names or paths in what is committed.
   repository must be public for the install script's address and `releases/latest` to work.
 - **At the first release:** `release.yml` has not run yet, and the zip installed by hand (Open
   Anyway) is untried on a clean Mac, MonadHost starting from it included.
+- **At the next release (1.1, the first that updates itself):** an update installed by Monad
+  itself has not run on the Mac: 1.1 goes in with install.sh, and the release after it is the first
+  one offered; its parts are tested (`AppUpdateTests`, `test_update.sh`). v1.0 was published by
+  hand, so `release.yml` has not run yet.
 - **To check by hand on the Mac** (`docs/SECURITY.md` › Checked on the Mac): an ad hoc tool signed
   with Monad's identifier is refused by MonadHost; macOS's App Management stops other apps changing
   `/Applications/Monad.app`; recovery's reader window never takes focus.
@@ -94,7 +146,8 @@ warnings, this file updated, and no private names or paths in what is committed.
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
-  per-distro first boot of every built-in distribution; the kernel console on hvc0 (`serial.log` from a
+  first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
+  through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a
   VM's second boot), quiet and full, on each of them; Repair Disk end to end (a disk attached to a running VM over USB is
   tested against fakes only).
 - **Later:** Developer ID signing and notarization; growing disks; a Homebrew profile for macOS

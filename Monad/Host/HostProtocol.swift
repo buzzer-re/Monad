@@ -65,6 +65,9 @@ struct HostRequest: Codable, Equatable, Sendable {
         case update          // config → instance (live where possible)
         case start, stop, delete // name (stop: force)
         case restart         // name: clean shutdown, then start (applies saved settings)
+        case pause, resume   // name: the guest's CPUs stop where they are, and go on
+        case takeSnapshot    // name, snapshot (its name): → instance
+        case restoreSnapshot, deleteSnapshot // name, snapshot (its id) → instance
         case attach, detach  // name: a tab starts/stops using the VM
         case stopAll
         case shutdown        // exit so launchd can start a newer host; refused while VMs run
@@ -84,7 +87,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case setDefault      // name: Make Default → defaultVM
         case answerMacSetup  // name, macSetupWork or macSetupError: a macOS VM's setup step done or not (Phase 14)
         case openDesktop     // name: a macOS VM's desktop in a window (shown by the host) → instance
-        case clone           // name, config: a copy of the stopped VM `name` with these settings → instance
+        case clone           // name, config, snapshot?: a copy of the stopped VM `name` (or of its snapshot) → instance
         case repairDisk      // name: Repair Disk on the stopped Linux VM (minutes) → instance, message: what it did
     }
 
@@ -110,6 +113,8 @@ struct HostRequest: Codable, Equatable, Sendable {
     /// answerMacSetup: the root step's work folder, or why it did not run.
     var macSetupWork: String?
     var macSetupError: String?
+    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot, clone: its id.
+    var snapshot: String?
 
     init(id: UInt64, op: Op, name: String? = nil, force: Bool? = nil, config: InstanceConfig? = nil,
          version: Int? = nil, firewallAnswer: FirewallAnswer? = nil, profiles: [String]? = nil, names: [String]? = nil,
@@ -137,9 +142,15 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop, .repairDisk:
+             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
+            }
+            if op == .takeSnapshot, !(snapshot.map(Snapshot.isValidName) ?? false) {
+                throw HostProtocolError.invalid("takeSnapshot needs a name of at most \(Snapshot.maxNameLength) characters.")
+            }
+            if op == .restoreSnapshot || op == .deleteSnapshot, !(snapshot.map(Snapshot.isValidID) ?? false) {
+                throw HostProtocolError.invalid("\(op.rawValue) needs a snapshot's id.")
             }
         case .create, .update:
             guard let config, InstanceConfig.isValidName(config.name) else {
@@ -149,6 +160,7 @@ struct HostRequest: Codable, Equatable, Sendable {
             guard let name, InstanceConfig.isValidName(name), let config, InstanceConfig.isValidName(config.name) else {
                 throw HostProtocolError.invalid("clone needs a VM name and a configuration with a valid name.")
             }
+            if let snapshot, !Snapshot.isValidID(snapshot) { throw HostProtocolError.invalid("clone needs a snapshot's id.") }
         case .answerFirewall:
             guard let name, InstanceConfig.isValidName(name), let a = firewallAnswer else {
                 throw HostProtocolError.invalid("answerFirewall needs a VM name and an answer.")
@@ -267,6 +279,51 @@ struct VMSnapshot: Codable, Equatable, Sendable {
     var macSetup: MacSetupRequest? = nil
     /// A macOS VM's System Integrity Protection as found, and any problem.
     var macSecurity: MacSecurityReport? = nil
+    /// What a Linux guest's health lines say is wrong this boot (its kernel
+    /// crashed, it ran out of memory, its disk is full), with what to do.
+    var health: String? = nil
+    /// What the running VM is low on (memory, disk space); absent when nothing.
+    var warnings: [GuestWarning]? = nil
+    /// The running VM is paused; absent when it is not.
+    var paused: Bool? = nil
+    /// Its snapshots, oldest first (their settings stay on disk); absent when none.
+    var snapshots: [SnapshotSummary]? = nil
+    /// The snapshot it is at.
+    var currentSnapshot: String? = nil
+}
+
+/// A snapshot as the app lists it.
+struct SnapshotSummary: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var createdAt: Date
+    var parent: String?
+    var memory: Bool
+
+    init(id: String, name: String, createdAt: Date, parent: String?, memory: Bool) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.parent = parent
+        self.memory = memory
+    }
+
+    init(_ s: Snapshot) { self.init(id: s.id, name: s.name, createdAt: s.createdAt, parent: s.parent, memory: s.memory) }
+
+    /// Each snapshot under its parent, in the order taken.
+    static func tree(_ all: [SnapshotSummary]) -> [(snapshot: SnapshotSummary, depth: Int)] {
+        let ids = Set(all.map(\.id))
+        var out: [(snapshot: SnapshotSummary, depth: Int)] = []
+        func add(_ parent: String?, _ depth: Int) {
+            for s in all where s.parent == parent || (parent == nil && s.parent.map { !ids.contains($0) } == true) {
+                guard !out.contains(where: { $0.snapshot.id == s.id }) else { continue }
+                out.append((s, depth))
+                add(s.id, depth + 1)
+            }
+        }
+        add(nil, 0)
+        return out
+    }
 }
 
 /// What the app needs to run a macOS VM's setup step (Phase 14).

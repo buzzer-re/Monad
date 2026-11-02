@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 struct mnd_rotlog {
@@ -27,6 +28,25 @@ static int open_fresh(mnd_rotlog *l) {
     return 0;
 }
 
+/* Appends to what is there; a file already at its cap goes to <path>.1. */
+static int open_kept(mnd_rotlog *l) {
+    int fd = open(l->path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return errno;
+    struct stat st;
+    int e = fstat(fd, &st) != 0 ? errno : S_ISREG(st.st_mode) ? 0 : EINVAL;
+    if (e) {
+        close(fd);
+        return e;
+    }
+    l->fd = fd;
+    l->size = (size_t)st.st_size;
+    if (l->size >= l->cap) {
+        if (rename(l->path, l->old_path) != 0) return errno;
+        return open_fresh(l);
+    }
+    return 0;
+}
+
 mnd_rotlog *mnd_rotlog_open(const char *path, size_t cap, int *err) {
     int e = EINVAL;
     mnd_rotlog *l = NULL;
@@ -41,11 +61,12 @@ mnd_rotlog *mnd_rotlog_open(const char *path, size_t cap, int *err) {
     l->old_path = malloc(n);
     if (!l->path || !l->old_path) goto fail;
     snprintf(l->old_path, n, "%s.1", path);
-    e = open_fresh(l);
+    e = open_kept(l);
     if (e) goto fail;
     return l;
 fail:
     if (l) {
+        if (l->fd >= 0) close(l->fd);
         free(l->path);
         free(l->old_path);
         free(l);
@@ -84,10 +105,9 @@ int mnd_rotlog_write(mnd_rotlog *l, const void *data, size_t len) {
     return e;
 }
 
-void mnd_rotlog_reset(mnd_rotlog *l) {
-    if (!l) return;
-    unlink(l->old_path);
-    open_fresh(l);
+void mnd_rotlog_rotate(mnd_rotlog *l) {
+    if (!l || l->size == 0) return;
+    if (rename(l->path, l->old_path) == 0) open_fresh(l);
 }
 
 void mnd_rotlog_close(mnd_rotlog *l) {

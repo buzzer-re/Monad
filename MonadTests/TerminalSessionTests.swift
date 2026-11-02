@@ -15,7 +15,48 @@ final class TerminalSessionTests: XCTestCase {
         let before = processCPUSeconds()
         try await Task.sleep(nanoseconds: 500_000_000)
         let used = processCPUSeconds() - before
-        XCTAssertLessThan(used, 0.2, "\(what): \(used) s of CPU in 0.5 s", file: file, line: line)
+        guard used >= 0.2 else { return }
+        // Busy: say what is (the test process's busiest stacks), not only
+        // that it is. A leak from another test shows up here too.
+        let busy = await sampleOwnProcess()
+        XCTFail("\(what): \(used) s of CPU in 0.5 s. Busiest:\n\(busy)", file: file, line: line)
+    }
+
+    /// One second of /usr/bin/sample on this process, waited for without
+    /// holding the main thread (what spins there must go on spinning).
+    private func sampleOwnProcess() async -> String {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("idle-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: out) }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+        p.arguments = [String(ProcessInfo.processInfo.processIdentifier), "1", "-mayDie", "-file", out.path]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+                p.terminationHandler = { _ in done.resume() }
+                do { try p.run() } catch { done.resume(throwing: error) }
+            }
+        } catch { return "(sample did not run: \(error))" }
+        guard let text = try? String(contentsOf: out, encoding: .utf8) else { return "(no sample)" }
+        // Kept beside the sources too (build/ is ignored), to read in full.
+        let kept = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("build/idle-sample.txt")
+        try? FileManager.default.createDirectory(at: kept.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: kept, atomically: true, encoding: .utf8)
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "sample"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        // Thread headers and the deepest frames with many samples.
+        let lines = text.split(separator: "\n").map(String.init)
+        let threads = lines.filter { $0.contains("Thread_") && !$0.contains("  0 ") }
+        let heavy = lines.filter { l in
+            let t = l.trimmingCharacters(in: .whitespaces)
+            guard let n = Int(t.split(separator: " ").first.map { String($0.filter(\.isNumber)) } ?? "") else { return false }
+            return n >= 300 && !t.contains("start_wqthread") && !t.contains("thread_start")
+        }
+        return (threads.prefix(20) + ["--"] + heavy.suffix(60)).joined(separator: "\n")
     }
 
     /// VM › Restart VM restarts the focused tab's VM, and the tab connects
@@ -137,6 +178,67 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertFalse(TerminalSessionViewController.closesOnExit(status: 255 << 8), "ssh lost the VM")
         XCTAssertFalse(TerminalSessionViewController.closesOnExit(status: SIGKILL), "killed")
         XCTAssertFalse(TerminalSessionViewController.closesOnExit(status: SIGHUP | 0x80), "killed, core dumped")
+    }
+
+    /// A program that dies with its modes on (an OOM kill, a lost VM) left
+    /// the tab sending mouse reports, bracketed pastes and keypad codes to
+    /// whatever came next: the next shell printed them as garbage. When a
+    /// session ends, the tab turns every input mode off and leaves the
+    /// program's screen.
+    func testASessionThatEndsLeavesNoModeOn() throws {
+        let m = try XCTUnwrap(TerminalModel(cols: 40, rows: 6, scrollback: 10))
+        m.feed("\u{1B}[?1049h\u{1B}[?1003h\u{1B}[?1006h\u{1B}[?2004h\u{1B}[?1004h\u{1B}[?1h\u{1B}=\u{1B}[?25l\u{1B}[?1007h\u{1B}[31m")
+        func modes() -> [Bool] {
+            mnd_vt_lock(m.vt)
+            defer { mnd_vt_unlock(m.vt) }
+            return [mnd_vt_mode(m.vt, MND_MODE_ALT_SCREEN), mnd_vt_mode(m.vt, MND_MODE_BRACKETED_PASTE),
+                    mnd_vt_mode(m.vt, MND_MODE_FOCUS_EVENTS), mnd_vt_mode(m.vt, MND_MODE_APP_CURSOR),
+                    mnd_vt_mode(m.vt, MND_MODE_APP_KEYPAD), mnd_vt_mode(m.vt, MND_MODE_ALT_SCROLL),
+                    mnd_vt_mouse_tracking(m.vt) != MND_MOUSE_OFF, !mnd_vt_mode(m.vt, MND_MODE_CURSOR_VISIBLE)]
+        }
+        XCTAssertEqual(modes(), Array(repeating: true, count: 8), "all on, as the program left them")
+        m.feed(TerminalSessionViewController.sessionEndReset)
+        XCTAssertEqual(modes(), Array(repeating: false, count: 8))
+        var buf = [CChar](repeating: 0, count: 32)
+        let n = buf.withUnsafeMutableBufferPointer { mnd_vt_encode_mouse(m.vt, 0, MND_MOUSE_PRESS, 0, 1, 1, $0.baseAddress, $0.count) }
+        XCTAssertEqual(n, 0, "a click sends nothing")
+    }
+
+    /// What the guest's health says is wrong is said in the tab when its
+    /// session has ended (the moment the user sees it fail), once each, and
+    /// never written over a session still running.
+    func testTheTabSaysWhatIsWrongWithTheGuestOnceItsSessionEnded() {
+        typealias T = TerminalSessionViewController
+        let crash = "The VM's kernel crashed: … Restart the VM."
+        XCTAssertNil(T.healthNotice(crash, shown: nil, sessionEnded: false), "not over a running session")
+        XCTAssertEqual(T.healthNotice(crash, shown: nil, sessionEnded: true), crash)
+        XCTAssertNil(T.healthNotice(crash, shown: crash, sessionEnded: true), "once")
+        XCTAssertEqual(T.healthNotice(crash + " Out of memory.", shown: crash, sessionEnded: true), crash + " Out of memory.", "something new")
+        XCTAssertNil(T.healthNotice(nil, shown: crash, sessionEnded: true))
+    }
+
+    /// ⌘V of a picture (a screenshot copied, an image in Finder) in a host
+    /// shell typed nothing: only VM tabs did something with images. It is
+    /// saved to a private folder on the Mac and its path typed, as a VM tab
+    /// types the path it uploaded to; two of one name do not overwrite.
+    func testAPictureIsPastedIntoAHostShellAsAFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = ImagePayload(png: Data([0x89, 0x50, 0x4E, 0x47, 1]), suggestedName: "shot-20261101-120000.png")
+        let b = ImagePayload(png: Data([0x89, 0x50, 0x4E, 0x47, 2]), suggestedName: "shot-20261101-120000.png")
+        let paths = try TerminalSessionViewController.savePastedImages([a, b], in: dir)
+        XCTAssertEqual(paths.count, 2)
+        XCTAssertNotEqual(paths[0], paths[1])
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths[0])), a.png)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths[1])), b.png)
+        XCTAssertTrue(paths.allSatisfy { $0.hasPrefix(dir.path + "/") && $0.hasSuffix(".png") })
+        let mode = try FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o700, "the user's own")
+        // A name cannot leave the folder.
+        let odd = try TerminalSessionViewController.savePastedImages(
+            [ImagePayload(png: Data([1]), suggestedName: "../../evil.png")], in: dir)
+        XCTAssertTrue(odd[0].hasPrefix(dir.path + "/"), odd[0])
+        XCTAssertFalse(odd[0].contains(".."), odd[0])
     }
 
     // MARK: The progress line

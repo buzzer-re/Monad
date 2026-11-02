@@ -122,7 +122,7 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(ud.contains("lock_passwd: true"))
         XCTAssertTrue(ud.contains("ListenStream=vsock::22"))
         XCTAssertTrue(ud.contains("Accept=yes"))
-        XCTAssertTrue(ud.contains("[systemctl, mask, --now, ssh.service, ssh.socket, sshd.service, sshd.socket, sshd-vsock.socket]"))
+        XCTAssertTrue(ud.contains("  - [sh, -c, \"" + CloudInit.maskEachAndStop(["ssh.service", "ssh.socket", "sshd.service", "sshd.socket", "sshd-vsock.socket"], runtime: false) + "\"]\n"))
         XCTAssertFalse(ud.contains("groups:"), "groups are the guest's own (see below)")
         XCTAssertTrue(ud.contains("/usr/sbin/sshd -i\n"))
         XCTAssertTrue(ud.contains("PasswordAuthentication no"))
@@ -187,6 +187,38 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(installer.contains("install_file /usr/local/lib/monad/report 0755 '\(encoded)'"))
         XCTAssertTrue(installer.contains(
             "install_file /etc/systemd/system/monad-report.service 0644 '\(Data(CloudInit.reportServiceUnit.utf8).base64EncodedString())'"))
+    }
+
+    /// The guest's health (memory, disks, the kernel's OOM kills and
+    /// crashes) goes to the health port from its first boot on, started by
+    /// systemd and not by Monad's ssh, which is what stops answering when a
+    /// guest runs out of memory. The OOM killer leaves it alone, and it gets
+    /// nothing but reading the kernel log.
+    func testTheGuestReportsItsHealthWithoutSSH() throws {
+        let ud = CloudInit.userData(config: config, guest: ubuntu, publicKey: "k")
+        let encoded = Data(try CloudInit.healthScript().utf8).base64EncodedString()
+        XCTAssertTrue(ud.contains("path: /usr/local/lib/monad/health"))
+        XCTAssertTrue(ud.contains("content: \(encoded)"), "script shipped byte for byte")
+        XCTAssertTrue(ud.contains("path: /etc/systemd/system/monad-health.service"))
+        XCTAssertTrue(ud.contains("  - [systemctl, enable, --now, --no-block, monad-health.service]\n"))
+        let unit = CloudInit.healthServiceUnit
+        XCTAssertTrue(unit.contains("ExecStart=/bin/sh /usr/local/lib/monad/health run\n"))
+        XCTAssertFalse(unit.contains("sshd"), "nothing waits for ssh")
+        XCTAssertTrue(unit.contains("OOMScoreAdjust=-1000\n"))
+        XCTAssertTrue(unit.contains("CapabilityBoundingSet=CAP_SYSLOG\n"))
+        XCTAssertTrue(unit.contains("NoNewPrivileges=yes\n"))
+        XCTAssertTrue(unit.contains("ProtectSystem=strict\n"))
+        XCTAssertTrue(unit.contains("Restart=on-failure\n"))
+        XCTAssertTrue(unit.contains("RuntimeDirectory=monad-health\n"), "its one writable place (CPU counters)")
+        XCTAssertTrue(unit.contains("WantedBy=multi-user.target"))
+        // VMs made before get it at their next boot, and a new script is
+        // started at once.
+        let installer = try CloudInit.guestInstallScript(guest: ubuntu)
+        XCTAssertTrue(installer.contains("install_file /usr/local/lib/monad/health 0755 '\(encoded)'"))
+        XCTAssertTrue(installer.contains(
+            "install_file /etc/systemd/system/monad-health.service 0644 '\(Data(unit.utf8).base64EncodedString())'"))
+        XCTAssertTrue(installer.contains("systemctl enable monad-health.service >/dev/null 2>&1 || true\n"))
+        XCTAssertTrue(installer.contains("if [ \"$health_changed\" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi\n"))
     }
 
     /// Where SELinux is on, Monad loads its own small policy module (rules
@@ -380,8 +412,8 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(ud.contains("hostname: lima-default\n"))
         XCTAssertTrue(ud.contains("ssh_deletekeys: false\n"))
         XCTAssertTrue(ud.contains("mounts: []\n"))
-        XCTAssertFalse(ud.contains("[systemctl, mask, --now"), "no lasting mask")
-        XCTAssertTrue(ud.contains("bootcmd:\n  - [systemctl, mask, --runtime, --now, ssh.service, ssh.socket, sshd.service, sshd.socket, sshd-vsock.socket, lima-guestagent.service]\n"))
+        XCTAssertFalse(ud.contains(CloudInit.maskEachAndStop(["ssh.service", "ssh.socket", "sshd.service", "sshd.socket", "sshd-vsock.socket"], runtime: false)), "no lasting mask")
+        XCTAssertTrue(ud.contains("bootcmd:\n  - [sh, -c, \"" + CloudInit.maskEachAndStop(["ssh.service", "ssh.socket", "sshd.service", "sshd.socket", "sshd-vsock.socket", "lima-guestagent.service"], runtime: true) + "\"]\n"))
         XCTAssertEqual(ud.components(separatedBy: "bootcmd:").count, 2, "one bootcmd, Lima's")
         XCTAssertFalse(ud.contains("[systemctl, enable, --now, --no-block, monad-report.service]"),
                        "Lima boots it too: no watch for Monad's login there")
@@ -399,9 +431,10 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(ud.contains("\t"))
         XCTAssertEqual(CloudInit.metaData(config: c, instanceID: "iid-1"), "instance-id: iid-1\nlocal-hostname: lima-default\n")
         let s = CloudInit.enforceIsolationScript(guest: ubuntu, lima: true)
-        XCTAssertTrue(s.contains("mask --runtime --now ssh.service ssh.socket sshd.service sshd.socket lima-guestagent.service"))
+        XCTAssertTrue(s.contains("for u in ssh.service ssh.socket sshd.service sshd.socket lima-guestagent.service; do out=$(sudo -n systemctl mask --runtime \"$u\""))
+        XCTAssertTrue(s.contains("sudo -n systemctl stop ssh.service ssh.socket sshd.service sshd.socket lima-guestagent.service"))
         XCTAssertTrue(s.contains("mask --runtime sshd-vsock.socket"))
-        XCTAssertFalse(s.contains("mask --now"), "nothing lasting")
+        XCTAssertFalse(s.contains("systemctl mask \"$u\""), "nothing lasting")
         XCTAssertTrue(s.contains("tcp22-open"))
         XCTAssertTrue(CloudInit.isIsolationCheck(s))
     }
@@ -414,7 +447,7 @@ final class CloudInitTests: XCTestCase {
         c.copiedFrom = AttachedDisk(lima: "default", dir: "/Users/dev/.lima/default", home: "/home/dev.guest")
         let ud = CloudInit.userData(config: c, guest: ubuntu, publicKey: "k")
         XCTAssertTrue(ud.contains("hostname: monad-unit\n"))
-        XCTAssertTrue(ud.contains("[systemctl, mask, --now, ssh.service, ssh.socket, sshd.service, sshd.socket, sshd-vsock.socket, lima-guestagent.service]"))
+        XCTAssertTrue(ud.contains(CloudInit.maskEachAndStop(["ssh.service", "ssh.socket", "sshd.service", "sshd.socket", "sshd-vsock.socket", "lima-guestagent.service"], runtime: false)))
         XCTAssertTrue(ud.contains("  - [rm, -f, /var/lib/cloud/scripts/per-boot/00-lima.boot.sh]\n"))
         XCTAssertTrue(ud.contains("[systemctl, enable, --now, monad-sshd.socket]"))
         XCTAssertTrue(ud.contains("/home/dev.guest/.monad/shots"))
@@ -462,8 +495,34 @@ final class CloudInitTests: XCTestCase {
         try stub("systemctl", "exit 0")
         try stub("sudo", "echo 'sudo: a password is required' >&2; exit 1")
         try stub("ss", "echo 'LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*'")
-        XCTAssertEqual(try check(), "tcp22-open", "sshd still listens, whatever sudo says")
-        XCTAssertEqual(try check(lima: true), "tcp22-open")
+        XCTAssertEqual(try check(), "tcp22-open (sudo: a password is required; sudo needs a password)",
+                       "sshd still listens, whatever sudo says, and it says why")
+        XCTAssertTrue(try check(lima: true).hasPrefix("tcp22-open "))
+        // Sudo works but the masks did not take: what listens is named.
+        try stub("sudo", "[ \"$1\" = -n ] && shift; case \"$1\" in true) exit 0 ;; ss) echo 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=612,fd=3))' ;; *) echo 'Failed to mask unit: Access denied' >&2; exit 1 ;; esac")
+        XCTAssertEqual(try check(), "tcp22-open (Failed to mask unit: Access denied; LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=612,fd=3)))")
+        // Debian 13: sshd.service is an alias of ssh.service, and systemctl
+        // refuses to mask an alias. Masking all the units in one command
+        // failed as a whole and stopped nothing: sshd kept TCP 22 and every
+        // new Debian VM failed its first boot. Each unit is masked on its
+        // own, and all are stopped.
+        let state = tmp.url.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try stub("sudo", "[ \"$1\" = -n ] && shift; exec \"$@\"")
+        try stub("systemctl", """
+            s=\(state.path)
+            case "$1" in
+            is-active) exit 0 ;;
+            mask) for a; do [ "$a" = sshd.service ] && { echo "Failed to mask unit: File '/etc/systemd/system/sshd.service' already exists and is a symlink to /usr/lib/systemd/system/ssh.service." >&2; exit 1; }; done
+                  for a; do [ "$a" = --now ] && [ "$*" != "${*#*ssh.service}" ] && touch "$s/stopped"; done; exit 0 ;;
+            stop) for a; do [ "$a" = ssh.service ] && touch "$s/stopped"; done; exit 0 ;;
+            esac
+            exit 0
+            """)
+        try stub("ss", "[ -e \(state.path)/stopped ] || echo 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*'")
+        XCTAssertEqual(try check(), "ok", "the alias does not keep sshd running")
+        try? FileManager.default.removeItem(at: state.appendingPathComponent("stopped"))
+        XCTAssertEqual(try check(lima: true), "ok")
         try stub("ss", "echo 'LISTEN 0 4096 127.0.0.1:631 0.0.0.0:*'")
         XCTAssertEqual(try check(), "ok")
         try stub("ss", "exit 1")
@@ -510,6 +569,15 @@ final class CloudInitTests: XCTestCase {
     func testUserDataHasNoTabs() {
         // YAML forbids tabs for indentation.
         XCTAssertFalse(CloudInit.userData(config: config, guest: ubuntu, publicKey: "k").contains("\t"))
+    }
+
+    /// A copy (a new VM from a snapshot or another VM) gets a machine-id
+    /// of its own at its first boot; a VM made from an image needs none.
+    func testACopyGetsAMachineIDOfItsOwn() {
+        let c = InstanceConfig.defaults(name: "copy")
+        XCTAssertTrue(CloudInit.userData(config: c, guest: ubuntu, publicKey: "k", newIdentity: true)
+            .contains("  - [sh, -c, \"\(CloudInit.newMachineIDCommand)\"]\n  - [systemd-tmpfiles"))
+        XCTAssertFalse(CloudInit.userData(config: c, guest: ubuntu, publicKey: "k").contains("systemd-machine-id-setup"))
     }
 
     func testMetaData() {
@@ -574,9 +642,15 @@ final class CloudInitTests: XCTestCase {
 
     func testIsolationScriptChecksTCP22() {
         let s = CloudInit.enforceIsolationScript(guest: ubuntu)
-        XCTAssertTrue(s.contains("mask --now ssh.service ssh.socket sshd.service sshd.socket"))
+        XCTAssertTrue(s.contains("for u in ssh.service ssh.socket sshd.service sshd.socket; do out=$(sudo -n systemctl mask \"$u\""))
+        XCTAssertTrue(s.contains("sudo -n systemctl stop ssh.service ssh.socket sshd.service sshd.socket"))
         XCTAssertTrue(s.contains("sshd-vsock.socket"))
         XCTAssertTrue(s.contains("tcp22-open"))
+        // An open port says why it stayed open: whether sudo (the masks)
+        // worked, and what listens there (seen: a Debian 13 first boot that
+        // stayed open for the whole grace, with nothing to say why).
+        XCTAssertTrue(s.contains("sudo -n true"), s)
+        XCTAssertTrue(s.contains("ss -Htlnp"), s)
         XCTAssertTrue(CloudInit.isIsolationCheck(s))
         XCTAssertFalse(CloudInit.isIsolationCheck("true"))
         XCTAssertFalse(CloudInit.isIsolationCheck(nil))

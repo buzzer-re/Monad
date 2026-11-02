@@ -89,6 +89,7 @@ it is saved.
 | `memoryGiB` | number | Settings › Virtual Machines | GB the VM boots with, 1 to what this Mac gives a VM. After a restart. |
 | `memoryTargetGiB` | number | `memoryGiB` | GB the VM is asked to use while it runs (the balloon), at most `memoryGiB`. |
 | `diskGiB` | number | Settings › Virtual Machines | At least 10. The disk grows as it fills, up to this. Fixed. |
+| `disks` | list | none | Disks added after the VM was made (Resources › Disks), at most 8, each `{"name", "sizeGiB", "mount"}`: `name` is lowercase letters, digits and dashes (16 at most), `sizeGiB` 1 to 65536. The file is `disks/<name>.raw` in the VM's folder, attached at the next start; Linux sees `/dev/disk/by-id/virtio-<name>`. `mount` (Linux only): Monad formats it if it has no filesystem (ext4) and mounts it at `/mnt/<name>` after each boot. Removing one deletes its file, only while the VM is shut down. Written only when there is one. |
 | `networks` | list | one card on `default` | Network cards in order (see below). `[]` means no network at all. After a restart. |
 | `firewall` | object | nothing blocked but the Mac and its network | See below. |
 | `sharing` | object | no sharing | See below. |

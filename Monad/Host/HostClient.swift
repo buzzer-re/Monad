@@ -62,6 +62,14 @@ final class RemoteVM: ObservableObject, Identifiable {
     var portsOverLimit: Int { snapshot.portsOverLimit ?? 0 }
     var pendingRestart: [String] { snapshot.pendingRestart ?? [] }
     var sharesError: String? { snapshot.sharesError }
+    /// What the guest's health says is wrong (VMSnapshot.health).
+    var healthProblem: String? { snapshot.health }
+    var snapshots: [SnapshotSummary] { snapshot.snapshots ?? [] }
+    var currentSnapshot: String? { snapshot.currentSnapshot }
+    /// The running VM is paused (VMSnapshot.paused).
+    var paused: Bool { snapshot.paused ?? false }
+    /// What the running VM is low on (VMSnapshot.warnings).
+    var warnings: [GuestWarning] { snapshot.warnings ?? [] }
     var firewallProblem: String? { snapshot.firewallProblem }
     /// macOS: System Integrity Protection as found at the last boot.
     var macSecurity: MacSecurityReport? { snapshot.macSecurity }
@@ -469,6 +477,7 @@ final class HostClient: ObservableObject {
             // a VM changing group changes the list, not only the VM.
             if vm.config.group != snap.config.group { objectWillChange.send() }
             vm.update(snap)
+            replaceOutdatedHostOnceIdle()
         } else {
             failedCreations[snap.name] = nil
             instances.append(RemoteVM(snapshot: snap, root: root))
@@ -529,8 +538,10 @@ final class HostClient: ObservableObject {
     }
 
     /// A copy of the stopped VM `name` with `config` (InstanceConfig.copy).
-    func clone(_ name: String, as config: InstanceConfig) async throws -> RemoteVM {
-        try instance(from: try await request(.clone, name: name, config: config))
+    /// A copy of VM `name` (stopped), or of its snapshot `snapshot` (whose
+    /// settings it takes; only `config`'s name counts then).
+    func clone(_ name: String, as config: InstanceConfig, snapshot: String? = nil) async throws -> RemoteVM {
+        try instance(from: try await request(.clone, name: name, config: config) { $0.snapshot = snapshot })
     }
 
     func update(_ config: InstanceConfig) async throws {
@@ -567,6 +578,29 @@ final class HostClient: ObservableObject {
 
     func stop(_ name: String, force: Bool = false) async throws {
         try await request(.stop, name: name, force: force ? true : nil)
+    }
+
+    /// The VM's CPUs stop where they are, its memory kept, until resume.
+    func pause(_ name: String) async throws {
+        try await request(.pause, name: name)
+    }
+
+    func resume(_ name: String) async throws {
+        try await request(.resume, name: name)
+    }
+
+    /// Snapshots of VM `name` (Snapshots.swift): taken by name, restored
+    /// and deleted by id.
+    func takeSnapshot(_ name: String, named snapshot: String) async throws {
+        try await request(.takeSnapshot, name: name) { $0.snapshot = snapshot }
+    }
+
+    func restoreSnapshot(_ name: String, id: String) async throws {
+        try await request(.restoreSnapshot, name: name) { $0.snapshot = id }
+    }
+
+    func deleteSnapshot(_ name: String, id: String) async throws {
+        try await request(.deleteSnapshot, name: name) { $0.snapshot = id }
     }
 
     /// Clean shutdown, then start: the VM picks up its saved settings.
@@ -718,7 +752,38 @@ final class HostClient: ObservableObject {
     func updateHost() async throws {
         guard hostIsOutdated else { return }
         debug("restarting the VM service on request: every VM stops")
+        // Its VMs stopping would replace the host too: once is enough.
+        replacingHost = true
+        defer { replacingHost = false }
         try await request(.stopAll)
+        try await replaceHost()
+    }
+
+    /// An outdated host kept for its VMs is replaced once none runs: this
+    /// app's own connection keeps it from ever being idle, so it would stay
+    /// until restarted by hand (seen: a rebuilt Monad served by the old
+    /// MonadHost, its fixes absent).
+    private var replacingHost = false
+
+    private func replaceOutdatedHostOnceIdle() {
+        guard hostIsOutdated, !replacingHost, status == .connected,
+              !instances.contains(where: { $0.isRunning || $0.state.isPreparing }) else { return }
+        replacingHost = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.replacingHost = false }
+            do {
+                self.debug("the VM service is outdated and no VM runs: replacing it")
+                try await self.replaceHost()
+            } catch {
+                self.debug("the outdated VM service stays: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Asks the outdated host to make way, then connects to the new one.
+    /// The host refuses while a VM of its runs.
+    private func replaceHost() async throws {
         guard let t = transport else { throw HostClientError.unavailable }
         let r = try await roundTrip(HostRequest(id: takeID(), op: .shutdown), on: t)
         guard r.ok else { throw MonadError(r.error ?? "The VM service could not restart.") }

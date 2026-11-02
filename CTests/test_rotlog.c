@@ -52,25 +52,67 @@ static void test_writes_and_rotates(void) {
     unlink(old);
 }
 
-static void test_reset_starts_a_fresh_file(void) {
-    char log[128], old[140];
-    paths(log, old, sizeof log, "reset");
-    FILE *f = fopen(log, "w");
-    fputs("previous run\n", f);
+static void put(const char *path, const char *text) {
+    FILE *f = fopen(path, "w");
+    fputs(text, f);
     fclose(f);
+}
+
+/* What a crash left is still there after: opening keeps the file (a
+ * MonadHost that starts again, health.log across boots), and a new boot
+ * moves the last one to <path>.1 instead of throwing it away. */
+static void test_reopening_keeps_and_a_new_boot_rotates(void) {
+    char log[128], old[140];
+    paths(log, old, sizeof log, "keep");
+    put(log, "previous run\n");
     int err = 0;
     mnd_rotlog *l = mnd_rotlog_open(log, 1000, &err);
     CHECK(l != NULL);
     if (!l) return;
-    CHECK(fsize(log) == 0); /* opening truncates */
+    CHECK(fsize(log) == 13); /* kept */
     CHECK(mnd_rotlog_write(l, "boot 1\n", 7) == 0);
-    mnd_rotlog_reset(l); /* next boot */
+    CHECK(fsize(log) == 20);
+    mnd_rotlog_rotate(l); /* next boot */
     CHECK(fsize(log) == 0);
-    CHECK(fsize(old) == -1);
+    CHECK(fsize(old) == 20);
     CHECK(mnd_rotlog_write(l, "boot 2\n", 7) == 0);
     CHECK(fsize(log) == 7);
+    mnd_rotlog_rotate(l);
+    CHECK(fsize(old) == 7); /* only the last boot before this one */
+    mnd_rotlog_rotate(l); /* a boot that wrote nothing keeps the one before */
+    CHECK(fsize(old) == 7);
+    CHECK(fsize(log) == 0);
+    mnd_rotlog_close(l);
+
+    /* A file already at its cap is rotated on open, so the cap still holds. */
+    char full[1000];
+    memset(full, 'x', sizeof full - 1);
+    full[sizeof full - 1] = 0;
+    put(log, full);
+    l = mnd_rotlog_open(log, 999, &err);
+    CHECK(l != NULL);
+    if (!l) return;
+    CHECK(fsize(old) == 999);
+    CHECK(fsize(log) == 0);
+    CHECK(mnd_rotlog_write(l, "a", 1) == 0);
+    CHECK(fsize(log) == 1);
     mnd_rotlog_close(l);
     unlink(log);
+    unlink(old);
+}
+
+/* A symlink in the log's place is never followed. */
+static void test_a_link_is_not_followed(void) {
+    char log[128], old[140], target[150];
+    paths(log, old, sizeof log, "link");
+    snprintf(target, sizeof target, "%s.target", log);
+    put(target, "keep me\n");
+    CHECK(symlink(target, log) == 0);
+    int err = 0;
+    CHECK(mnd_rotlog_open(log, 1000, &err) == NULL);
+    CHECK(fsize(target) == 8);
+    unlink(log);
+    unlink(target);
 }
 
 static void test_bad_path(void) {
@@ -83,7 +125,8 @@ static void test_bad_path(void) {
 int main(void) {
     fprintf(stderr, "mnd_rotlog tests\n");
     RUN(test_writes_and_rotates);
-    RUN(test_reset_starts_a_fresh_file);
+    RUN(test_reopening_keeps_and_a_new_boot_rotates);
+    RUN(test_a_link_is_not_followed);
     RUN(test_bad_path);
     TEST_MAIN_END();
 }

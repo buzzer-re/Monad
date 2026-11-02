@@ -44,17 +44,39 @@ struct LaunchctlAgent {
         try await bootstrap()
     }
 
-    /// Replace the job (a new MonadHost build). Only while no host serves.
+    /// Replace the job (a new MonadHost build), never while its MonadHost
+    /// runs VMs: a bootout ends it and powers them off. "This app cannot
+    /// reach it" does not mean "nothing runs there": another copy of Monad's
+    /// host, or one an updated app no longer passes the check of (seen: two
+    /// Debug copies taking turns, every VM shut down at each turn). Running
+    /// alone says nothing: this app's own connections start it on demand.
     /// launchd takes the old job down in the background after a bootout, and
     /// a bootstrap before it is gone fails ("Bootstrap failed: 5: Input/output
     /// error"), which left no job at all.
-    func reload() async throws {
+    func reload(vmsRunning: Bool) async throws {
+        let job = try await runner.run("/bin/launchctl", ["print", target], timeout: 10)
+        if job.status == 0, Self.isRunning(job.stdoutString), vmsRunning {
+            throw MonadError("MonadHost from another copy of Monad is still running, with its VMs. "
+                             + "Quit that copy of Monad (or stop its VMs) and this one connects.")
+        }
         _ = try await runner.run("/bin/launchctl", ["bootout", target], timeout: 20)
         for _ in 0..<Self.goneChecks {
             if try await !loaded() { break }
             await clock.sleep(seconds: 0.25)
         }
         try await bootstrap()
+    }
+
+    /// Whether a VM of this flavor runs: MonadHost keeps a mark in the
+    /// folder of each VM whose machine runs (InstancePaths.runningMark).
+    static func vmsRunning(in instances: URL = Paths.instances) -> Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: instances.path)) ?? []
+        return names.contains { FileManager.default.fileExists(atPath: InstancePaths(name: $0, root: instances).runningMark.path) }
+    }
+
+    /// Whether `launchctl print` says the job's process is up.
+    static func isRunning(_ printed: String) -> Bool {
+        printed.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "state = running" }
     }
 
     private func loaded() async throws -> Bool {

@@ -14,7 +14,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsHasASidebarForEachArea() throws {
         XCTAssertEqual(SettingsPane.allCases.map(\.title),
                        ["Terminal", "Privacy", "Virtual Machines", "Distributions", "Networks", "Firewall", "Profiles", "Agents",
-                        "Logs"])
+                        "Logs", "Updates"])
         for pane in SettingsPane.allCases {
             XCTAssertNotNil(NSImage(systemSymbolName: pane.symbol, accessibilityDescription: nil), pane.title)
         }

@@ -125,12 +125,22 @@ protocol VirtualMachineControlling: AnyObject {
     /// MAC address of the NIC (generated on first build when not configured).
     var macAddress: String? { get }
     var onEvent: ((VMRuntimeEvent) -> Void)? { get set }
+    /// What the guest writes on its health port, as it comes, on the main
+    /// actor (a Linux guest's; none for others).
+    var onHealthOutput: ((Data) -> Void)? { get set }
 
     func start() async throws
     /// ACPI power button.
     func requestStop() async throws
     /// Immediate power off.
     func forceStop() async
+    /// The guest's CPUs stop where they are, and go on from there.
+    func pause() async throws
+    func resume() async throws
+    /// A paused machine's memory and devices to `file` (a snapshot); a
+    /// new, never started one put back as it was, paused.
+    func saveState(to file: URL) async throws
+    func restoreState(from file: URL) async throws
     /// Replace the folders of the running VM's virtio-fs share.
     func setShares(_ shares: [SharedFolder]) async throws
     /// Memory the guest may use, through the balloon (≤ the boot memory).
@@ -152,6 +162,16 @@ protocol VirtualMachineControlling: AnyObject {
 }
 
 extension VirtualMachineControlling {
+    func pause() async throws { throw MonadError("This VM cannot be paused.") }
+    func resume() async throws { throw MonadError("This VM cannot be paused.") }
+    func saveState(to file: URL) async throws { throw MonadError("This VM's memory cannot be saved.") }
+    func restoreState(from file: URL) async throws { throw MonadError("This VM's memory cannot be restored.") }
+
+    var onHealthOutput: ((Data) -> Void)? {
+        get { nil }
+        set {}
+    }
+
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         throw MonadError("This VM has no display to show.")
     }

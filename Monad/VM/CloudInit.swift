@@ -36,6 +36,40 @@ enum CloudInit {
 
     static let reportPath = "/usr/local/lib/monad/report"
 
+    /// What the guest says about its own health (memory, disks, the
+    /// kernel's OOM kills and crashes) on its health port, which Monad logs
+    /// in health.log: not over ssh, which is what stops answering then
+    /// (Guest/monad-health.sh).
+    static func healthScript() throws -> String { try bundled("monad-health", "sh") }
+    /// Formats and mounts a Linux VM's extra disks (Guest/monad-disks.sh).
+    static func disksScript() throws -> String { try bundled("monad-disks", "sh") }
+    static let healthPath = "/usr/local/lib/monad/health"
+
+    /// Started by systemd at every boot, ssh or not. The OOM killer passes
+    /// it over (it is what says the OOM killer ran), and it may do no more
+    /// than read: CAP_SYSLOG for the kernel log, everything else read-only.
+    static let healthServiceUnit = """
+        [Unit]
+        Description=Monad: the VM's health, for the Mac (on its own port, not over ssh)
+        [Service]
+        Type=simple
+        ExecStart=/bin/sh \(healthPath) run
+        Restart=on-failure
+        RestartSec=10
+        OOMScoreAdjust=-1000
+        Nice=-5
+        CapabilityBoundingSet=CAP_SYSLOG
+        AmbientCapabilities=
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=read-only
+        PrivateTmp=yes
+        RuntimeDirectory=monad-health
+        [Install]
+        WantedBy=multi-user.target
+
+        """
+
     /// Monad's SELinux module (Guest/monad.cil) and its loader, which loads
     /// it only where SELinux is on (Guest/monad-selinux.sh).
     static func selinuxModule() throws -> String { try bundled("monad", "cil") }
@@ -198,6 +232,7 @@ enum CloudInit {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         let agent = try agentScript()
         let report = try reportScript()
+        let health = try healthScript()
         let cil = try selinuxModule()
         let selinux = try selinuxScript()
         let consoleText = try consoleScript()
@@ -232,12 +267,20 @@ enum CloudInit {
             fi
             install_file \(reportPath) 0755 '\(b64(report))'
             install_file /etc/systemd/system/monad-report.service 0644 '\(b64(reportServiceUnit))'
+            before=$changed
+            changed=0
+            install_file \(healthPath) 0755 '\(b64(health))'
+            install_file /etc/systemd/system/monad-health.service 0644 '\(b64(healthServiceUnit))'
+            health_changed=$changed
+            [ "$before" -eq 0 ] || changed=1
             install_file \(selinuxModulePath) 0644 '\(b64(cil))'
             install_file \(selinuxScriptPath) 0755 '\(b64(selinux))'
             install_file /etc/profile.d/monad.sh 0644 '\(b64(GuestDiscovery.profileScript))'
             \(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
+            systemctl enable monad-health.service >/dev/null 2>&1 || true
+            if [ "$health_changed" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi
             \(console)\(clock)echo agent-ok
 
             """
@@ -265,6 +308,18 @@ enum CloudInit {
     /// yet (a first boot: systemd's sshd-vsock.socket answered first).
     static let monadSSHDNotYet = "monad-sshd-not-yet"
 
+    /// Masks each unit on its own, then stops them all. One systemctl call
+    /// for every unit failed as a whole where a name is an alias (Debian
+    /// 13's sshd.service, of ssh.service: systemctl will not mask an alias),
+    /// and its --now stopped nothing: sshd kept TCP 22, and every new Debian
+    /// VM failed its first boot. For a YAML double-quoted scalar or sh -c.
+    static func maskEachAndStop(_ units: [String], runtime: Bool, sudo: Bool = false) -> String {
+        let run = sudo ? "sudo -n systemctl" : "systemctl"
+        let list = units.joined(separator: " ")
+        return "for u in \(list); do \(run) mask \(runtime ? "--runtime " : "")\\\"$u\\\" >/dev/null 2>&1 || true; done; "
+            + "\(run) stop \(list) >/dev/null 2>&1 || true"
+    }
+
     static func enforceIsolationScript(guest: DistroConfig.GuestProfile, lima: Bool = false) -> String {
         let units = (networkSSHUnits + (lima ? ["lima-guestagent.service"] : [])).joined(separator: " ")
         let mask = lima ? "mask --runtime" : "mask"
@@ -274,11 +329,20 @@ enum CloudInit {
         // systemd's sshd-vsock.socket first would close the only way in.
         return isolationMarker
             + "if ! systemctl is-active --quiet monad-sshd.socket; then echo \(monadSSHDNotYet); exit 0; fi; "
-            + "sudo -n systemctl \(mask) --now \(units) >/dev/null 2>&1; "
+            // Each on its own (an alias must not stop the others), then all
+            // stopped; the last refusal is kept to say why a port stayed open.
+            + "masked=; for u in \(units); do out=$(sudo -n systemctl \(mask) \"$u\" 2>&1) || masked=$(printf '%s' \"$out\" | tail -1); done; "
+            + "sudo -n systemctl stop \(units) >/dev/null 2>&1; "
             + "sudo -n systemctl \(mask) sshd-vsock.socket >/dev/null 2>&1; "
             + "sudo -n systemctl reset-failed sshd-vsock.socket >/dev/null 2>&1; "
             + "if ! listening=$(ss -Htln 2>/dev/null); then echo listening-ports-unreadable; "
-            + "elif printf '%s\\n' \"$listening\" | grep -q ':22 '; then echo tcp22-open; else echo ok; fi"
+            + "elif printf '%s\\n' \"$listening\" | grep -q ':22 '; then "
+            // Why it stayed open, plain and short: the masks' last word,
+            // whether sudo works, and what listens there.
+            + "if sudo -n true 2>/dev/null; then who=$(sudo -n ss -Htlnp 'sport = :22' 2>/dev/null | head -2); "
+            + "else who='sudo needs a password'; fi; "
+            + "why=$(printf '%s; %s' \"$masked\" \"$who\" | tr -cd '[:print:]' | cut -c1-200); "
+            + "echo \"tcp22-open ($why)\"; else echo ok; fi"
     }
 
     static func isIsolationCheck(_ remoteCommand: String?) -> Bool {
@@ -314,14 +378,21 @@ enum CloudInit {
     /// have vsock port 22. A copy of a Lima VM ("Copy to Monad") is Monad's
     /// own: lasting masks, Lima's guest agent included, and Lima's per-boot
     /// script removed (it would look for Lima's seed at every boot).
+    /// A copy's first boot (a new VM from a snapshot or another VM): the
+    /// disk's machine-id is the original's, and with it its DHCP client id,
+    /// so both would get one lease. A new one, and networkd asks again.
+    static let newMachineIDCommand =
+        "rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup; systemctl restart systemd-networkd 2>/dev/null || true"
+
     static func userData(config: InstanceConfig, guest: DistroConfig.GuestProfile, publicKey: String,
-                         bootMessages: BootMessages = .quiet) -> String {
+                         bootMessages: BootMessages = .quiet, newIdentity: Bool = false) -> String {
         let user = config.user
         let lima = config.attached != nil
         let key = publicKey.trimmingCharacters(in: .whitespacesAndNewlines)
         // provision() checks that the script exists before rendering.
         let agentBase64 = Data(((try? agentScript()) ?? "").utf8).base64EncodedString()
         let reportBase64 = Data(((try? reportScript()) ?? "").utf8).base64EncodedString()
+        let healthBase64 = Data(((try? healthScript()) ?? "").utf8).base64EncodedString()
         let cilBase64 = Data(((try? selinuxModule()) ?? "").utf8).base64EncodedString()
         let selinuxBase64 = Data(((try? selinuxScript()) ?? "").utf8).base64EncodedString()
         let account = lima ? "" : """
@@ -341,7 +412,7 @@ enum CloudInit {
             ssh_deletekeys: false
             mounts: []
             bootcmd:
-              - [systemctl, mask, --runtime, --now, \((networkSSHUnits + ["sshd-vsock.socket", "lima-guestagent.service"]).joined(separator: ", "))]
+              - [sh, -c, "\(maskEachAndStop(networkSSHUnits + ["sshd-vsock.socket", "lima-guestagent.service"], runtime: true))"]
               - [sh, -c, "! [ -e /etc/systemd/system/monad-sshd.socket ] || systemctl enable --runtime --now --no-block monad-sshd.socket"]
 
             """
@@ -353,7 +424,7 @@ enum CloudInit {
         // The user joins whichever admin groups this guest has (sudo itself
         // comes from the sudoers rule above). User names are plain.
         let lastingMask = lima ? "" : """
-              - [systemctl, mask, --now, \(masked.joined(separator: ", "))]
+              - [sh, -c, "\(maskEachAndStop(masked, runtime: false))"]
               - [sh, -c, "for g in wheel sudo adm; do getent group $g >/dev/null && usermod -aG $g \(user); done; true"]
 
             """ + (!copy ? "" : """
@@ -426,6 +497,10 @@ enum CloudInit {
             permissions: "0755"
             encoding: b64
             content: \(reportBase64)
+          - path: \(healthPath)
+            permissions: "0755"
+            encoding: b64
+            content: \(healthBase64)
           - path: \(sshdReapPath)
             permissions: "0644"
             encoding: b64
@@ -442,6 +517,10 @@ enum CloudInit {
             permissions: "0644"
             content: |
         \(yamlBlock(reportServiceUnit, indent: 6))
+          - path: /etc/systemd/system/monad-health.service
+            permissions: "0644"
+            content: |
+        \(yamlBlock(healthServiceUnit, indent: 6))
           - path: /etc/systemd/system/monad-agent.socket
             permissions: "0644"
             content: |
@@ -455,12 +534,13 @@ enum CloudInit {
             content: |
         \(yamlBlock(GuestDiscovery.profileScript, indent: 6))
         \(consoleFile)runcmd:
-          - [systemd-tmpfiles, --create, /etc/tmpfiles.d/monad-sshd.conf]
+        \(newIdentity ? "  - [sh, -c, \"\(newMachineIDCommand)\"]\n" : "")  - [systemd-tmpfiles, --create, /etc/tmpfiles.d/monad-sshd.conf]
         \(lastingMask)  - [sh, -c, "[ -e /sys/fs/selinux/enforce ] || install -D -m 0644 \(sshdReapPath) \(sshdReapDropIn)"]
           - [systemctl, daemon-reload]
           - [sh, \(selinuxScriptPath)]
           - [systemctl, enable, \(lima ? "--runtime, " : "")--now, monad-sshd.socket]
           - [systemctl, enable, --now, monad-agent.socket]
+          - [systemctl, enable, --now, --no-block, monad-health.service]
         \(report)  - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/shots"))]
           - [install, -d, -o, \(yamlQuote(user)), -g, \(yamlQuote(user)), -m, "0755", \(yamlQuote("\(home)/.monad/uploads"))]
@@ -535,11 +615,11 @@ enum CloudInit {
     /// Write key, seed ISO and ssh config for a new instance.
     static func provision(config: InstanceConfig, guest: DistroConfig.GuestProfile, paths: InstancePaths,
                           runner: CommandRunning = LoggingCommandRunner(SystemCommandRunner()),
-                          bootMessages: BootMessages = .quiet) async throws {
+                          bootMessages: BootMessages = .quiet, newIdentity: Bool = false) async throws {
         _ = try agentScript()
         try await prepareSSH(config: config, paths: paths, runner: runner)
         let pub = try String(contentsOf: paths.publicKey, encoding: .utf8)
-        let ud = Data(userData(config: config, guest: guest, publicKey: pub, bootMessages: bootMessages).utf8)
+        let ud = Data(userData(config: config, guest: guest, publicKey: pub, bootMessages: bootMessages, newIdentity: newIdentity).utf8)
         let md = Data(metaData(config: config, instanceID: "monad-\(config.name)-\(UUID().uuidString.lowercased())").utf8)
 
         let rc: Int32 = ud.withUnsafeBytes { udp in

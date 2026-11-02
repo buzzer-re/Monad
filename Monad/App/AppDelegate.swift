@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     private var firewallPrompts: FirewallPromptController?
     private var approvalPrompts: ApprovalPromptController?
     private var macSetupPrompts: MacSetupPromptController?
+    private var vmAlerts: VMAlertCenter?
     private var vmTabMenu = NSMenu(title: "Open VM")
     private var themeMenu = NSMenu(title: "Theme")
 
@@ -43,7 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             return
         }
         // VMs live in MonadHost (a launchd agent) and keep running when
-        // Monad quits; tabs reconnect to them on the next launch.
+        // Monad quits; tabs reconnect to them on the next launch. One copy
+        // of the app at a time looks after it.
+        OtherCopies.quitOlder()
         HostAgent.start()
         // "Start VM at boot": the marked VMs start, without opening tabs.
         Task { @MainActor in
@@ -56,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         firewallPrompts = FirewallPromptController(host: HostAgent.client)
         approvalPrompts = ApprovalPromptController(host: HostAgent.client)
         macSetupPrompts = MacSetupPromptController(host: HostAgent.client)
+        AppUpdater.shared.start()
+        vmAlerts = VMAlertCenter(host: HostAgent.client) { [weak self] name in
+            if let vm = HostAgent.client.instances.first(where: { $0.name == name }) { self?.showDetails(of: vm) }
+        }
         newWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -124,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
                                                frontToBack: windows.map(\.windowNumber)) : nil
         if let host = windows.first(where: { $0.windowNumber == number }) {
             DebugLog.shared.log("tabs", "\(target) opens as a tab in window \(host.windowNumber)")
-            host.addTabbedWindow(window, ordered: .above)
+            controller.join(host)
         } else {
             DebugLog.shared.log("tabs", "\(target) opens a window\(asTab ? " (no terminal window open)" : "")")
             if let last = TerminalWindowController.all.dropLast().last?.window {
@@ -173,6 +180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// "Version 1.0 (release, built …, FA2769A0)".
     @objc func showAbout(_ sender: Any?) {
         NSApp.orderFrontStandardAboutPanel(options: [.version: Flavor.currentAboutVersion])
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        AppUpdater.shared.check(byUser: true)
     }
 
     @objc func newWindow(_ sender: Any?) {
@@ -265,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.tabbingMode = .disallowed
+            w.joinsFullScreenSpaces()
             w.center()
             managerWindow = w
         }
@@ -296,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
         w.isReleasedWhenClosed = false
         w.tabbingMode = .disallowed
+        w.joinsFullScreenSpaces()
         w.center()
         detailWindows[vm.name] = w
         w.makeKeyAndOrderFront(nil)
@@ -316,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.tabbingMode = .disallowed
+            w.joinsFullScreenSpaces()
             w.center()
             themeEditorWindow = w
         }
@@ -348,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         w.setContentSize(SettingsView.size)
         w.isReleasedWhenClosed = false
         w.tabbingMode = .disallowed
+        w.joinsFullScreenSpaces()
         return w
     }
 
@@ -457,6 +472,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // Application
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Monad", action: #selector(showAbout(_:)), keyEquivalent: "")
+        if AppUpdater.shared.isAvailable {
+            appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
+        }
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())

@@ -142,6 +142,9 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then bash test_macsetup.sh $(BUILD)/macsetup-bash; fi
 	@REPORT_SHELL=sh sh test_report.sh $(BUILD)/report-sh
 	@if command -v bash >/dev/null; then REPORT_SHELL=bash sh test_report.sh $(BUILD)/report-bash; fi
+	@HEALTH_SHELL=sh sh test_health.sh $(BUILD)/health-sh
+	@if command -v bash >/dev/null; then HEALTH_SHELL=bash sh test_health.sh $(BUILD)/health-bash; fi
+	@if command -v mawk >/dev/null; then mkdir -p $(BUILD)/mawk && ln -sf "$$(command -v mawk)" $(BUILD)/mawk/awk && PATH="$(CURDIR)/$(BUILD)/mawk:$$PATH" HEALTH_SHELL=sh sh test_health.sh $(BUILD)/health-mawk; fi
 	@SELINUX_SHELL=sh sh test_selinux.sh $(BUILD)/selinux-sh
 	@if command -v bash >/dev/null; then SELINUX_SHELL=bash sh test_selinux.sh $(BUILD)/selinux-bash; fi
 	@CONSOLE_SHELL=sh sh test_console.sh $(BUILD)/console-sh
@@ -150,6 +153,10 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then IMG_SHELL=bash sh test_img.sh $(BUILD)/img-bash; fi
 	@INSTALL_SHELL=sh sh test_install.sh $(BUILD)/install-sh
 	@if command -v bash >/dev/null; then INSTALL_SHELL=bash sh test_install.sh $(BUILD)/install-bash; fi
+	@DISKS_SHELL=sh sh test_disks.sh $(BUILD)/disks-sh
+	@if command -v bash >/dev/null; then DISKS_SHELL=bash sh test_disks.sh $(BUILD)/disks-bash; fi
+	@UPDATE_SHELL=sh sh test_update.sh $(BUILD)/update-sh
+	@if command -v bash >/dev/null; then UPDATE_SHELL=bash sh test_update.sh $(BUILD)/update-bash; fi
 	@HYGIENE_SHELL=sh sh test_hygiene.sh $(BUILD)/hygiene-sh
 	@if command -v bash >/dev/null; then HYGIENE_SHELL=bash sh test_hygiene.sh $(BUILD)/hygiene-bash; fi
 	@sh test_agent_live.sh

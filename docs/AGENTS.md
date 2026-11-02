@@ -29,12 +29,15 @@ answers are kept in `~/.monad/agents/grants.json` and taken back in Settings ›
 
 | Tool | What it does |
 |---|---|
-| `list_vms`, `get_vm` | The VMs, or one in full |
-| `read_vm_log` | A VM's log (what Monad did with it: boots, recovery steps, errors), its last lines |
+| `list_vms`, `get_vm` | The VMs, or one in full; `health` says what a Linux guest's health lines show is wrong this boot (its kernel crashed, it ran out of memory, its disk is full), and `warnings` what a running one is low on (90% of its memory or of its disk in use) |
+| `read_vm_log` | A VM's logs, their last lines: `monad` (what Monad did with it: boots, recovery steps, errors), `console` (the guest's console, the boot before first) or `health` (a Linux guest's memory, disks and processes every 15 s, its kernel's OOM kills, crashes, hangs and I/O errors); `console` and `health` are read on the Mac, so they work when the guest no longer answers ssh |
 | `read_recovery_screens` | A macOS VM's screen as each of recovery's waits ended (its last SIP change), as pictures (Debug builds only) |
 | `create_vm` | A VM from an installed distribution, started once made unless `start` is false |
 | `start_vm`, `stop_vm`, `restart_vm`, `delete_vm` | |
-| `clone_vm` | A copy of a stopped macOS VM (`new_name`, `start`): same system and account, its own machine identity, the disk cloned. Shared folders, bridges, host commands, forwards into the Mac and an agent role are not copied |
+| `add_disk`, `remove_disk` | A disk for a VM, attached at its next start; with `mount` (the default on Linux) Monad formats it if blank and mounts it at `/mnt/<disk>`, otherwise it is left at `/dev/disk/by-id/virtio-<disk>`. Removing one (shut-down VMs only) deletes its data and asks first |
+| `take_snapshot`, `restore_snapshot`, `delete_snapshot` | A VM's snapshots: its disks and settings, and its memory when it was running (restoring brings it back running where it was). `get_vm` lists them by id. Restoring loses what the VM is now and deleting loses the snapshot, so both ask |
+| `pause_vm`, `resume_vm` | The guest's CPUs stop where they are, its memory kept, until it resumes; `get_vm` says `Paused` |
+| `clone_vm` | A copy of a stopped VM, or of one of its snapshots (`snapshot`, its id; the VM may run then), as `new_name` (`start`): the same system and files with an identity of its own (Linux: host name, ssh keys, machine-id and so its DHCP lease; macOS: machine identifier), its disks cloned. Shared folders, bridges, host commands, forwards into the Mac and an agent role are not copied |
 | `set_macos_security` | A macOS VM's Security page: `sip`, `full_disk_access`, `auto_login`, `boot_to_recovery` (once); only what is given changes, at the next start (asks) |
 | `exec` | A shell command in a running VM, as its user: status, stdout, stderr (1 MB each), 600 s at most |
 | `read_file`, `write_file` | A text file in a running VM, up to 1 MB |

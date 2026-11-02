@@ -17,18 +17,27 @@ enum SettingsKey {
     static let defaultCPUs = VMDefaults.cpusKey
     static let defaultMemoryGiB = VMDefaults.memoryKey
     static let defaultDiskGiB = VMDefaults.diskKey
+    /// Monad › Check for Updates by itself, once a day (Release only).
+    static let checkForUpdates = "checkForUpdates"
+    static let lastUpdateCheck = "lastUpdateCheck"
+    /// Notifications when a VM runs low on memory or disk (VMAlerts).
+    static let vmAlerts = "vmAlerts"
 }
 
 enum Settings {
+    static let defaults: [String: Any] = [
+        SettingsKey.fontSize: 13.0,
+        SettingsKey.optionAsMeta: true,
+        SettingsKey.allowOSC52: true,
+        SettingsKey.scrollbackLines: 10_000,
+        SettingsKey.cursorBlink: false,
+        SettingsKey.checkForUpdates: true,
+        SettingsKey.vmAlerts: true,
+    ]
+
     static func registerDefaults() {
         VMDefaults.register()
-        UserDefaults.standard.register(defaults: [
-            SettingsKey.fontSize: 13.0,
-            SettingsKey.optionAsMeta: true,
-            SettingsKey.allowOSC52: true,
-            SettingsKey.scrollbackLines: 10_000,
-            SettingsKey.cursorBlink: false,
-        ])
+        UserDefaults.standard.register(defaults: defaults)
     }
 
     static var fontSize: CGFloat {
@@ -44,6 +53,8 @@ enum Settings {
     static var optionAsMeta: Bool { UserDefaults.standard.bool(forKey: SettingsKey.optionAsMeta) }
     static var allowOSC52: Bool { UserDefaults.standard.bool(forKey: SettingsKey.allowOSC52) }
     static var cursorBlink: Bool { UserDefaults.standard.bool(forKey: SettingsKey.cursorBlink) }
+    static var checkForUpdates: Bool { UserDefaults.standard.bool(forKey: SettingsKey.checkForUpdates) }
+    static var vmAlerts: Bool { UserDefaults.standard.bool(forKey: SettingsKey.vmAlerts) }
     static var scrollbackLines: Int {
         min(max(UserDefaults.standard.integer(forKey: SettingsKey.scrollbackLines), 0), 200_000)
     }
