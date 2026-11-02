@@ -232,7 +232,15 @@ cp "$WORK/kmsg" "$WORK/kmsg.run"
 PATH="$BIN:$PATH" FAKE_DF="$WORK" MONAD_PROC="$PROC" MONAD_SYS="$SYS" MONAD_HEALTH_OUT="$WORK/port" \
     MONAD_KMSG="$WORK/kmsg.run" MONAD_HEALTH_INTERVAL=1 $SH "$HEALTH" run >/dev/null 2>&1 &
 pid=$!
-sleep 2
+# Until the first snapshot and all 9 kernel lines are there (a fixed wait
+# fell short on a busy machine), at most 15 s.
+i=0
+while [ $i -lt 75 ]; do
+    if grep -q '^MONAD-H| snap ' "$WORK/port" 2>/dev/null &&
+        [ "$(grep -c '^MONAD-H| kern ' "$WORK/port" 2>/dev/null)" -ge 9 ]; then break; fi
+    sleep 0.2
+    i=$((i + 1))
+done
 kill "$pid" 2>/dev/null
 wait "$pid" 2>/dev/null
 port=$(cat "$WORK/port")
