@@ -442,7 +442,10 @@ final class MonadTerminalView: NSView, @preconcurrency NSTextInputClient, NSMenu
                                 scale: scale, context: ctx)
                 continue
             }
-            guard let g = fonts.glyph(for: cp, bold: bold, italic: italic) else { continue }
+            guard var g = fonts.glyph(for: cp, bold: bold, italic: italic) else { continue }
+            if cellsWide == 1, x + 1 < count, cells[x + 1].cp == 0 || cells[x + 1].cp == 0x20 {
+                g = fonts.roomy(g, scalar: cp)
+            }
             if g.font !== batchFont || r.fg != batchColor {
                 flushGlyphs()
                 batchFont = g.font
