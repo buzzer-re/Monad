@@ -112,8 +112,10 @@ warnings, this file updated, and no private names or paths in what is committed.
   repository must be public for the install script's address and `releases/latest` to work.
 - **At the first release:** `release.yml` has not run yet, and the zip installed by hand (Open
   Anyway) is untried on a clean Mac, MonadHost starting from it included.
-- **At the next release:** an update installed by Monad itself has not run on the Mac (it needs a
-  release newer than the one installed); its parts are tested (`AppUpdateTests`, `test_update.sh`).
+- **At the next release (1.1, the first that updates itself):** an update installed by Monad
+  itself has not run on the Mac: 1.1 goes in with install.sh, and the release after it is the first
+  one offered; its parts are tested (`AppUpdateTests`, `test_update.sh`). v1.0 was published by
+  hand, so `release.yml` has not run yet.
 - **To check by hand on the Mac** (`docs/SECURITY.md` › Checked on the Mac): an ad hoc tool signed
   with Monad's identifier is refused by MonadHost; macOS's App Management stops other apps changing
   `/Applications/Monad.app`; recovery's reader window never takes focus.
