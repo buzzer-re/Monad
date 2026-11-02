@@ -141,6 +141,15 @@ final class HostProtocolTests: XCTestCase {
         try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"health":"The VM ran out of memory: Linux stopped node to free some.","name":"dev","ports":[],"sessions":0,"state":{"phase":"ready"}}"#)
     }
 
+    func testPauseRequestsAndAPausedSnapshot() throws {
+        try assertGolden(HostRequest(id: 4, op: .pause, name: "dev"), #"{"id":4,"name":"dev","op":"pause"}"#)
+        try assertGolden(HostRequest(id: 5, op: .resume, name: "dev"), #"{"id":5,"name":"dev","op":"resume"}"#)
+        XCTAssertThrowsError(try HostRequest(id: 6, op: .pause).validate(), "a VM to pause")
+        var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)
+        snap.paused = true
+        try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"name":"dev","paused":true,"ports":[],"sessions":0,"state":{"phase":"ready"}}"#)
+    }
+
     /// What a running VM is low on; absent when nothing.
     func testSnapshotWithWarnings() throws {
         var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)

@@ -134,6 +134,10 @@ NS_SWIFT_SENDABLE
 - (void)requestStopWithCompletion:(void (^)(NSError *_Nullable error))completion;
 /// Immediate power off.
 - (void)forceStopWithCompletion:(void (^)(NSError *_Nullable error))completion;
+/// Stops the guest's CPUs where they are (its memory stays); resume goes on
+/// from there. The state stays Running: paused is the caller's to track.
+- (void)pauseWithCompletion:(void (^)(NSError *_Nullable error))completion;
+- (void)resumeWithCompletion:(void (^)(NSError *_Nullable error))completion;
 
 /// Blocking check whether the guest accepts connections on a vsock port.
 /// Must not be called on the main thread.

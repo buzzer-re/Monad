@@ -182,6 +182,21 @@ final class ForwardManagerTests: XCTestCase {
         XCTAssertEqual(watcher.watched, [100], "the master is supervised")
     }
 
+    /// While its VM is paused the ssh master is stopped too: its keepalive
+    /// would give up on the silent guest after two minutes and take every
+    /// forward with it. It continues when the VM does.
+    func testTheMasterOfAPausedVMIsFrozenUntilItResumes() async {
+        var signals: [String] = []
+        manager.signal = { pid, sig in signals.append("\(pid) \(sig == SIGSTOP ? "STOP" : sig == SIGCONT ? "CONT" : "\(sig)")") }
+        manager.freeze(true)
+        XCTAssertEqual(signals, [], "no master yet")
+        await manager.apply(configured: [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)],
+                            autoForward: AutoForwardSettings(), ports: [])
+        manager.freeze(true)
+        manager.freeze(false)
+        XCTAssertEqual(signals, ["100 STOP", "100 CONT"])
+    }
+
     func testRemovedAndClosedForwardsAreCancelled() async {
         let rule = ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)
         await manager.apply(configured: [rule], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 3000)])

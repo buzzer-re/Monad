@@ -26,7 +26,7 @@ enum MCPAccess {
     }
 
     /// The tools an orchestrator uses on its children (and itself) freely.
-    static let childTools: Set<String> = ["get_vm", "start_vm", "stop_vm", "restart_vm", "delete_vm", "exec",
+    static let childTools: Set<String> = ["get_vm", "start_vm", "stop_vm", "pause_vm", "resume_vm", "restart_vm", "delete_vm", "exec",
                                           "read_file", "write_file", "list_connections"]
     /// Reading Monad's lists, free for an orchestrator.
     static let orchestratorReads: Set<String> = ["list_vms", "list_distros", "list_networks"]

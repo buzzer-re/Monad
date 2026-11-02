@@ -685,6 +685,25 @@ final class ProvisioningFlowTests: XCTestCase {
         XCTAssertTrue(sent.first?.arguments.contains(vm.sshHost) == true)
     }
 
+    /// A guest's clock stands still while the Mac sleeps (seen: a VM hours
+    /// behind the next morning, and no NTP without the internet). When the
+    /// Mac wakes, every ready VM's clock is set to the Mac's; a paused one
+    /// gets it when it resumes.
+    func testTheGuestsClocksAreSetWhenTheMacWakes() async throws {
+        let vm = try await createdVM("unit")
+        let paused = try await createdVM("held")
+        _ = try await createdVM("idle")
+        manager.start(vm)
+        manager.start(paused)
+        await assertEventually { vm.state == .ready && paused.state == .ready }
+        try await paused.pause()
+        manager.macDidWake()
+        await assertEventually { self.runner.calls.contains { $0.arguments.last?.hasPrefix("sudo -n date -u -s @") == true } }
+        let sent = runner.calls.filter { $0.arguments.last?.hasPrefix("sudo -n date -u -s @") == true }
+        XCTAssertEqual(sent.count, 1, "only the ready VM that is not paused")
+        XCTAssertTrue(sent.first?.arguments.contains(vm.sshHost) == true)
+    }
+
     func testAFailedEphemeralVMLeavesNothing() async throws {
         images.error = TestError("offline")
         let vm = manager.createEphemeral()

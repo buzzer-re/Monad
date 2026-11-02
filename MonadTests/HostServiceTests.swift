@@ -522,6 +522,25 @@ final class HostServiceTests: XCTestCase {
         XCTAssertEqual(fixture.factory.machine.forceStops, 0)
     }
 
+    /// Pause and Resume, as the VM's window and agents ask: the snapshot
+    /// says paused; a VM that is not running cannot be.
+    func testPauseAndResume() async throws {
+        let (c, log) = await connect()
+        try await provisioned(c, log)
+        let early = await send(c, .pause, name: "default")
+        XCTAssertFalse(early.ok, "not running")
+        await send(c, .start, name: "default")
+        await assertEventually { log.latest("default")?.state == .ready }
+        let r = await send(c, .pause, name: "default")
+        XCTAssertTrue(r.ok, r.error ?? "")
+        XCTAssertEqual(r.instance?.paused, true)
+        await assertEventually { log.latest("default")?.paused == true }
+        let r2 = await send(c, .resume, name: "default")
+        XCTAssertTrue(r2.ok, r2.error ?? "")
+        XCTAssertNil(r2.instance?.paused, "absent when not paused")
+        XCTAssertEqual(fixture.factory.machine.pauseLog, ["pause", "resume"])
+    }
+
     func testRestartAppliesSavedSettings() async throws {
         let (c, log) = await connect()
         try await provisioned(c, log)

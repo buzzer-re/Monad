@@ -59,6 +59,11 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   each health problem and the Mac's own disk below 10 GB free, once until it clears (Settings ›
   Virtual Machines › Warn when a VM runs low; checked on the Mac through the Debug MCP). The app's
   and MonadHost's step-by-step log (Settings › Logs) is on unless the user turns it off.
+- **Pause:** a ready VM pauses and resumes (Virtualization's pause; its row, window, the canvas,
+  `pause_vm`/`resume_vm`); its tabs' ssh and its ssh master are stopped with it, so their keepalive
+  does not end the sessions, and its clock is set to the Mac's on resume (every ready VM's too
+  when the Mac wakes: guest clocks stand still while it sleeps). Stop resumes it first.
+  Checked on the Mac: paused 150 s and 60 s, sessions and the clock right after.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Nerd Font icons come from the bundled Symbols Nerd Font Mono (an icon before a

@@ -151,7 +151,7 @@ struct VMDetailView: View {
             .safeAreaInset(edge: .top) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(vm.name).font(.system(size: 17, weight: .bold))
-                    StatusBadge(state: exists ? vm.state : .stopped)
+                    StatusBadge(state: exists ? vm.state : .stopped, paused: exists && vm.paused)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.vertical, 10)
@@ -279,6 +279,13 @@ struct VMDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     if vm.isRunning {
+                        if vm.paused {
+                            Button { run { try await host.resume(vm.name) } } label: { Label("Resume", systemImage: "playpause.fill") }
+                        } else {
+                            Button { run { try await host.pause(vm.name) } } label: { Label("Pause", systemImage: "pause.fill") }
+                                .disabled(vm.state != .ready)
+                                .help("Its programs stop where they are, its memory kept, until you resume it.")
+                        }
                         Button { run { try await host.stop(vm.name) } } label: { Label("Shut Down", systemImage: "stop.fill") }
                             .disabled(vm.state == .stopping)
                         Button { restart() } label: { Label("Restart", systemImage: "arrow.clockwise") }
@@ -388,7 +395,7 @@ struct VMDetailView: View {
                 }
             }
             Section("Details") {
-                LabeledContent("State", value: exists ? vm.state.label : "Deleted")
+                LabeledContent("State", value: exists ? (vm.paused ? "Paused" : vm.state.label) : "Deleted")
                 LabeledContent("Processors", value: "\(vm.config.cpus)")
                 LabeledContent("Memory", value: "\(vm.config.memoryGiB) GB")
                 LabeledContent("Disk", value: "\(vm.config.diskGiB) GB" + (vm.config.attached == nil ? "" : ", Lima's"))

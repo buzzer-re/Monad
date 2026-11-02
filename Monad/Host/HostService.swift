@@ -281,7 +281,7 @@ final class HostService {
                    firewallAsks: vm.firewallAsks.isEmpty ? nil : vm.firewallAsks,
                    profileRuns: vm.profileRuns.isEmpty ? nil : vm.profileRuns,
                    macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem,
-                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings)
+                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings, paused: vm.paused ? true : nil)
     }
 
     private func instancesChanged(_ list: [VMInstance]) {
@@ -523,6 +523,16 @@ final class HostConnection {
             manager.cancelStart(target)
             let force = r.isForced
             Task { @MainActor in if force { await target.forceStop() } else { await target.stop() } }
+            return answer(target)
+
+        case .pause:
+            let target = try vm(r.name)
+            try await target.pause()
+            return answer(target)
+
+        case .resume:
+            let target = try vm(r.name)
+            try await target.resume()
             return answer(target)
 
         case .restart:

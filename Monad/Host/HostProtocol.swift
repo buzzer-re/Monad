@@ -65,6 +65,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case update          // config → instance (live where possible)
         case start, stop, delete // name (stop: force)
         case restart         // name: clean shutdown, then start (applies saved settings)
+        case pause, resume   // name: the guest's CPUs stop where they are, and go on
         case attach, detach  // name: a tab starts/stops using the VM
         case stopAll
         case shutdown        // exit so launchd can start a newer host; refused while VMs run
@@ -137,7 +138,7 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop, .repairDisk:
+             .openDesktop, .repairDisk, .pause, .resume:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
             }
@@ -272,6 +273,8 @@ struct VMSnapshot: Codable, Equatable, Sendable {
     var health: String? = nil
     /// What the running VM is low on (memory, disk space); absent when nothing.
     var warnings: [GuestWarning]? = nil
+    /// The running VM is paused; absent when it is not.
+    var paused: Bool? = nil
 }
 
 /// What the app needs to run a macOS VM's setup step (Phase 14).

@@ -678,7 +678,7 @@ private struct VMRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Flow(spacing: 8) {
                     Text(vm.name).font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                    StatusBadge(state: vm.state)
+                    StatusBadge(state: vm.state, paused: vm.paused)
                     if vm.config.guestOS == .macos, let sip = VMSettingsDraft.sipTag(vm.macSecurity) {
                         TagLabel(text: sip, color: vm.macSecurity?.sip == "disabled" ? .orange : .green)
                             .help("System Integrity Protection, as macOS said when the VM last started. "
@@ -832,6 +832,14 @@ private struct VMControls: View {
         Button("Open Tab") { (NSApp.delegate as? AppDelegate)?.openTab(in: vm) }
             .disabled(vm.state.isPreparing)
         if vm.isRunning {
+            if vm.paused {
+                Button { run { try await host.resume(vm.name) } } label: { Image(systemName: "playpause.fill") }
+                    .help("Resume")
+            } else {
+                Button { run { try await host.pause(vm.name) } } label: { Image(systemName: "pause.fill") }
+                    .help("Pause: its programs stop where they are until you resume it")
+                    .disabled(vm.state != .ready)
+            }
             Button { run { try await host.restart(vm.name) } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Restart")
                 .disabled(vm.state == .stopping)
@@ -947,7 +955,7 @@ private struct LimaTab: View {
             }
             Spacer(minLength: 12)
             if let name = row.monadVM, let vm = host.instances.first(where: { $0.name == name }) {
-                StatusBadge(state: vm.state)
+                StatusBadge(state: vm.state, paused: vm.paused)
                 VMControls(vm: vm, host: host, onError: onError)
             } else {
                 Button(adding == row.id ? "Adding…" : "Use in Monad") { ask(row.id, .inPlace) }

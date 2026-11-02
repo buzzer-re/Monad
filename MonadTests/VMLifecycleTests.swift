@@ -265,6 +265,58 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertNil(vm.healthProblem, "a new start begins clean")
     }
 
+    /// Pause, like VMware's: the guest's CPUs stop where they are and
+    /// resume there; the VM stays ready (its sessions, forwards and agent
+    /// stay), only paused.
+    func testAReadyVMPausesAndResumes() async throws {
+        let vm = try makeInstance()
+        do { try await vm.pause(); XCTFail("a stopped VM has nothing to pause") } catch {}
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        XCTAssertTrue(vm.paused)
+        XCTAssertEqual(vm.state, .ready)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause"])
+        try await vm.pause()
+        XCTAssertEqual(factory.machine.pauseLog, ["pause"], "already paused")
+        try await vm.resume()
+        XCTAssertFalse(vm.paused)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "resume"])
+        // Its clock stood still too: it is set to the Mac's again.
+        let epoch = Int(clock.now().timeIntervalSince1970)
+        await assertEventually { self.runner.calls.contains { $0.arguments.last == VMInstance.setClockCommand(epoch: epoch) } }
+        XCTAssertEqual(VMInstance.setClockCommand(epoch: 1_793_631_933),
+                       "sudo -n date -u -s @1793631933 >/dev/null 2>&1 || sudo -n date -u -f %s 1793631933 >/dev/null")
+        vm.log.flush()
+        let log = VMLog.read(vm.paths.vmLog)
+        XCTAssertTrue(log.contains("paused") && log.contains("resumed"), log)
+    }
+
+    /// A paused guest cannot hear the power button: Stop resumes it first,
+    /// then shuts it down cleanly.
+    func testStoppingAPausedVMResumesItFirst() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        await vm.stop()
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "resume"])
+        XCTAssertEqual(factory.machine.stopRequests, 1)
+        XCTAssertEqual(vm.state, .stopped)
+        XCTAssertFalse(vm.paused)
+    }
+
+    /// A paused VM that goes away (forced off, an error) is no longer paused.
+    func testAPausedVMThatEndsIsNoLongerPaused() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        try await vm.pause()
+        await vm.forceStop()
+        XCTAssertFalse(vm.paused)
+        do { try await vm.resume(); XCTFail("nothing to resume") } catch {}
+    }
+
     /// A VM running low on memory or disk is warned about while it runs
     /// (the app makes notifications of it), not once it has stopped.
     func testAVMRunningLowIsWarnedWhileItRuns() async throws {

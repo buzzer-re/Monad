@@ -134,6 +134,9 @@ protocol VirtualMachineControlling: AnyObject {
     func requestStop() async throws
     /// Immediate power off.
     func forceStop() async
+    /// The guest's CPUs stop where they are, and go on from there.
+    func pause() async throws
+    func resume() async throws
     /// Replace the folders of the running VM's virtio-fs share.
     func setShares(_ shares: [SharedFolder]) async throws
     /// Memory the guest may use, through the balloon (≤ the boot memory).
@@ -155,6 +158,9 @@ protocol VirtualMachineControlling: AnyObject {
 }
 
 extension VirtualMachineControlling {
+    func pause() async throws { throw MonadError("This VM cannot be paused.") }
+    func resume() async throws { throw MonadError("This VM cannot be paused.") }
+
     var onHealthOutput: ((Data) -> Void)? {
         get { nil }
         set {}

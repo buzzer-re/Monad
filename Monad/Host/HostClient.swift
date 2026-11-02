@@ -64,6 +64,8 @@ final class RemoteVM: ObservableObject, Identifiable {
     var sharesError: String? { snapshot.sharesError }
     /// What the guest's health says is wrong (VMSnapshot.health).
     var healthProblem: String? { snapshot.health }
+    /// The running VM is paused (VMSnapshot.paused).
+    var paused: Bool { snapshot.paused ?? false }
     /// What the running VM is low on (VMSnapshot.warnings).
     var warnings: [GuestWarning] { snapshot.warnings ?? [] }
     var firewallProblem: String? { snapshot.firewallProblem }
@@ -572,6 +574,15 @@ final class HostClient: ObservableObject {
 
     func stop(_ name: String, force: Bool = false) async throws {
         try await request(.stop, name: name, force: force ? true : nil)
+    }
+
+    /// The VM's CPUs stop where they are, its memory kept, until resume.
+    func pause(_ name: String) async throws {
+        try await request(.pause, name: name)
+    }
+
+    func resume(_ name: String) async throws {
+        try await request(.resume, name: name)
     }
 
     /// Clean shutdown, then start: the VM picks up its saved settings.

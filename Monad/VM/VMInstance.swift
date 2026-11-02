@@ -37,6 +37,7 @@ final class VMInstance: ObservableObject, Identifiable {
         didSet {
             guard state != oldValue else { return }
             if !state.isRunning, !healthWarnings.isEmpty { healthWarnings = [] }
+            if state != .ready, paused { paused = false }
             if case .preparing = state {
                 Log.vm.debug("\(self.name, privacy: .public): \(self.state.label, privacy: .public)")
             } else {
@@ -95,6 +96,9 @@ final class VMInstance: ObservableObject, Identifiable {
     /// crashed, it ran out of memory, its disk is full), with what to do;
     /// nil when nothing is. Kept after it stops, until the next start.
     @Published private(set) var healthProblem: String?
+    /// The guest's CPUs are stopped where they were (Pause); it is still
+    /// ready: its sessions, forwards and agent wait for it to resume.
+    @Published private(set) var paused = false
     /// What the running guest is low on (memory, disk); empty once it stops.
     @Published private(set) var healthWarnings: [GuestWarning] = []
     private var guestHealth = GuestHealth()
@@ -1570,10 +1574,56 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     #endif
 
+    // MARK: Pause
+
+    /// Stops the guest where it is, like VMware's Pause: its memory stays,
+    /// nothing in it runs or hears the clock until Resume. The ssh master
+    /// is stopped with it, so its keepalive does not give up meanwhile.
+    func pause() async throws {
+        guard state == .ready, let m = machine else { throw MonadError("\(name) is not running.") }
+        guard !paused else { return }
+        try await m.pause()
+        paused = true
+        forwarding?.freeze(true)
+        debug("paused")
+    }
+
+    func resume() async throws {
+        guard paused, state == .ready, let m = machine else { throw MonadError("\(name) is not paused.") }
+        try await m.resume()
+        paused = false
+        forwarding?.freeze(false)
+        debug("resumed")
+        setGuestClock(because: "resumed")
+    }
+
+    /// Sets the guest's clock to the Mac's: it stood still while the VM was
+    /// paused, or while the Mac slept (and without the internet no NTP
+    /// would ever set it right).
+    func setGuestClock(because why: String) {
+        guard state == .ready, !paused else { return }
+        let command = Self.setClockCommand(epoch: Int(env.clock.now().timeIntervalSince1970))
+        Task { [weak self] in
+            guard let self else { return }
+            let r = try? await self.ssh(command, timeout: 15)
+            self.debug("\(why): " + (r?.status == 0 ? "the guest's clock is set to the Mac's" : "could not set the guest's clock"))
+        }
+    }
+
+    /// Sets the guest's clock to `epoch` (GNU date on Linux, BSD date on macOS).
+    nonisolated static func setClockCommand(epoch: Int) -> String {
+        "sudo -n date -u -s @\(epoch) >/dev/null 2>&1 || sudo -n date -u -f %s \(epoch) >/dev/null"
+    }
+
     // MARK: Stop
 
     /// Graceful shutdown (ACPI power button) with a timeout, then power off.
     func stop(timeout: TimeInterval = 20) async {
+        // A paused guest cannot hear the power button.
+        if paused {
+            debug("stop: resuming the paused VM to shut it down")
+            try? await resume()
+        }
         if macSecurity?.step != nil {
             // A step before macOS (recovery, its disk): nothing to shut down cleanly.
             debug("stop: stopping before macOS started")
@@ -1621,6 +1671,7 @@ final class VMInstance: ObservableObject, Identifiable {
         guard let m = machine else { return }
         debug("stop: powering off")
         lifecycleTask?.cancel()
+        forwarding?.freeze(false)
         stopForwarding()
         await closeSSHMaster()
         await powerOff(m)

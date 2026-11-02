@@ -687,6 +687,11 @@ final class VMManager: ObservableObject {
         for vm in instances { vm.applyBootMessages(messages) }
     }
 
+    /// The Mac woke from sleep: the guests' clocks stood still meanwhile.
+    func macDidWake() {
+        for vm in instances { vm.setGuestClock(because: "the Mac woke") }
+    }
+
     // MARK: Shutdown
 
     var hasRunningVMs: Bool { instances.contains { $0.isRunning } }

@@ -82,7 +82,7 @@ final class MonadTools {
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
-        VMSummary(name: s.name, state: s.state.label, distro: s.config.distro, release: s.config.release,
+        VMSummary(name: s.name, state: s.paused == true ? "Paused" : s.state.label, distro: s.config.distro, release: s.config.release,
                   cpus: s.config.cpus, memoryGiB: s.config.memoryGiB, diskGiB: s.config.diskGiB,
                   network: s.config.networks.first?.network, group: s.config.group, ephemeral: s.config.ephemeral,
                   listening: s.ports.isEmpty ? nil : s.ports.map { "\($0.address):\($0.port)" },
@@ -175,6 +175,14 @@ final class MonadTools {
                                         required: ["name"]), risk: .normal) { [unowned self] call in
                 .json(self.summary(try await self.request(.stop, name: try call.string("name"),
                                                           force: try call.optionalBool("force")).instance!))
+            },
+            MCPTool(name: "pause_vm", description: "Pause a running VM: its CPUs stop where they are, its memory stays, until resume_vm.",
+                    schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.pause, name: try call.string("name")).instance!))
+            },
+            MCPTool(name: "resume_vm", description: "Resume a paused VM where it stopped.",
+                    schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.resume, name: try call.string("name")).instance!))
             },
             MCPTool(name: "restart_vm", description: "Restart a VM (picks up settings that wait for a restart).",
                     schema: Self.schema(["name": Self.vmName], required: ["name"]), risk: .normal) { [unowned self] call in

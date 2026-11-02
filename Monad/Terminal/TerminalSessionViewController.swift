@@ -189,6 +189,11 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                 vm.$snapshot.map(\.config.theme).removeDuplicates()
                     .sink { [weak self] _ in DispatchQueue.main.async { self?.refreshTheme() } }
                     .store(in: &self.cancellables)
+                // A paused VM: its ssh stops with it, so it does not give
+                // up on the silent guest, and goes on when it resumes.
+                vm.$snapshot.map { $0.paused ?? false }.removeDuplicates()
+                    .sink { [weak self] paused in DispatchQueue.main.async { self?.session?.freeze(paused) } }
+                    .store(in: &self.cancellables)
                 // What the guest's health says is wrong, once the session ended.
                 vm.$snapshot.map(\.health).removeDuplicates()
                     .sink { [weak self] _ in DispatchQueue.main.async { self?.sayHealth() } }

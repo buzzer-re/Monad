@@ -40,6 +40,20 @@ final class MonadToolsTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(r.text.utf8)) as? [String: Any], r.text)
     }
 
+    /// Agents pause and resume a VM like its window does, and see it paused.
+    func testPauseAndResume() async throws {
+        let vm = try await made("web")
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let paused = try object(try await call("pause_vm", ["name": .string("web")]))
+        XCTAssertEqual(paused["state"] as? String, "Paused")
+        XCTAssertTrue(vm.paused)
+        let resumed = try object(try await call("resume_vm", ["name": .string("web")]))
+        XCTAssertEqual(resumed["state"] as? String, "Running")
+        XCTAssertFalse(vm.paused)
+        XCTAssertTrue(MCPAccess.childTools.isSuperset(of: ["pause_vm", "resume_vm"]), "an orchestrator pauses its children")
+    }
+
     /// Agents see what a VM is low on, in words.
     func testAVMsWarningsAreInItsSummary() {
         let config = InstanceConfig(

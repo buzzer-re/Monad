@@ -89,6 +89,11 @@ MainActor.assumeIsolated {
         }
     }
     term.resume()
+    // Guests' clocks stand still while the Mac sleeps.
+    let wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                                  queue: .main) { _ in
+        MainActor.assumeIsolated { manager.macDidWake() }
+    }
 
     listener.resume()
     lifetime.start()
@@ -97,7 +102,7 @@ MainActor.assumeIsolated {
     // window here (MacDesktop). Nothing shows until one is opened.
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
-    withExtendedLifetime((listener, lifetime, term)) {
+    withExtendedLifetime((listener, lifetime, term, wake)) {
         app.run()
     }
 }

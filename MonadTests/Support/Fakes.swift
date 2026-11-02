@@ -132,6 +132,11 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
         if let startError { throw startError }
     }
 
+    /// "pause" and "resume", in order.
+    private(set) var pauseLog: [String] = []
+    func pause() async throws { pauseLog.append("pause") }
+    func resume() async throws { pauseLog.append("resume") }
+
     /// Desktops opened, by window title, and the buttons they were given.
     private(set) var desktops: [String] = []
     private(set) var desktopActions: [DesktopAction] = []

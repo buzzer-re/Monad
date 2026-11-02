@@ -584,6 +584,34 @@ static NSError *MNDNoInput(NSString *what) {
     });
 }
 
+- (void)pauseWithCompletion:(void (^)(NSError *_Nullable))completion {
+    dispatch_async(_queue, ^{
+        if (!self->_vm.canPause) {
+            NSError *e = MNDError(8, @"The virtual machine cannot be paused in its current state.");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(e); });
+            return;
+        }
+        [self->_vm pauseWithCompletionHandler:^(NSError *_Nullable err) {
+            if (err) os_log_error(MNDLog(), "pause failed: %{public}@", err);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+        }];
+    });
+}
+
+- (void)resumeWithCompletion:(void (^)(NSError *_Nullable))completion {
+    dispatch_async(_queue, ^{
+        if (!self->_vm.canResume) {
+            NSError *e = MNDError(8, @"The virtual machine is not paused.");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(e); });
+            return;
+        }
+        [self->_vm resumeWithCompletionHandler:^(NSError *_Nullable err) {
+            if (err) os_log_error(MNDLog(), "resume failed: %{public}@", err);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+        }];
+    });
+}
+
 - (void)guestDidStopVirtualMachine:(VZVirtualMachine *)virtualMachine {
     os_log_info(MNDLog(), "guest stopped");
     [self setState:MNDVirtualMachineStateStopped error:nil];
