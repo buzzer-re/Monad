@@ -36,6 +36,7 @@ final class VMInstance: ObservableObject, Identifiable {
     @Published private(set) var state: State = .stopped {
         didSet {
             guard state != oldValue else { return }
+            if !state.isRunning, !healthWarnings.isEmpty { healthWarnings = [] }
             if case .preparing = state {
                 Log.vm.debug("\(self.name, privacy: .public): \(self.state.label, privacy: .public)")
             } else {
@@ -94,6 +95,8 @@ final class VMInstance: ObservableObject, Identifiable {
     /// crashed, it ran out of memory, its disk is full), with what to do;
     /// nil when nothing is. Kept after it stops, until the next start.
     @Published private(set) var healthProblem: String?
+    /// What the running guest is low on (memory, disk); empty once it stops.
+    @Published private(set) var healthWarnings: [GuestWarning] = []
     private var guestHealth = GuestHealth()
     private var healthLines = GuestReport(marker: "MONAD-H| ")
     /// Why the VM's firewall is not in force as saved (netd refused it, a
@@ -1009,6 +1012,7 @@ final class VMInstance: ObservableObject, Identifiable {
     private func watchHealth(_ m: VirtualMachineControlling) {
         guestHealth = GuestHealth()
         healthProblem = nil
+        healthWarnings = []
         healthLines = GuestReport(marker: "MONAD-H| ")
         m.onHealthOutput = { [weak self] data in self?.healthOutput(data) }
     }
@@ -1018,6 +1022,11 @@ final class VMInstance: ObservableObject, Identifiable {
         guard !lines.isEmpty else { return }
         for problem in guestHealth.read(lines) { debug("health: \(problem)") }
         if healthProblem != guestHealth.summary { healthProblem = guestHealth.summary }
+        let warnings = guestHealth.warnings
+        if warnings.map(\.kind) != healthWarnings.map(\.kind) {
+            debug("health: " + (warnings.isEmpty ? "no longer low on memory or disk" : warnings.map(\.text).joined(separator: ", ")))
+        }
+        if warnings != healthWarnings, state.isRunning { healthWarnings = warnings }
     }
 
     /// What the guest said last, for a failure message ("" if nothing):

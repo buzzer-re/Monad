@@ -53,12 +53,43 @@ final class GuestHealthTests: XCTestCase {
         XCTAssertNil(h.summary, "freed")
     }
 
+    /// Like VMware's: a VM that stays low on memory is warned about before
+    /// Linux starts stopping programs. One snapshot can be a spike; the
+    /// warning holds until use falls below 85%, so it does not flicker.
+    func testAVMThatStaysLowOnMemoryIsWarned() {
+        var h = GuestHealth()
+        _ = h.read(["snap up=1 mem=150000/2000000 swap=0/0 top= disk=/:1/10"])
+        XCTAssertEqual(h.warnings, [], "one snapshot can be a spike")
+        _ = h.read(["snap up=16 mem=140000/2000000 swap=0/0 top= disk=/:1/10"])
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowMemory, percent: 93)])
+        _ = h.read(["snap up=31 mem=260000/2000000 swap=0/0 top= disk=/:1/10"])
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowMemory, percent: 87)], "still above 85%")
+        _ = h.read(["snap up=46 mem=400000/2000000 swap=0/0 top= disk=/:1/10"])
+        XCTAssertEqual(h.warnings, [], "cleared")
+        XCTAssertNil(h.summary, "a warning is not a problem")
+    }
+
+    func testADiskAlmostFullIsWarnedBeforeItIsFull() {
+        var h = GuestHealth()
+        XCTAssertEqual(h.read(["snap up=1 mem=1/2 top= disk=/:18000000/20000000"]), [], "not full yet")
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowDisk, percent: 90, mount: "/")])
+        _ = h.read(["snap up=16 mem=1/2 top= disk=/:17600000/20000000"])
+        XCTAssertEqual(h.warnings, [GuestWarning(kind: .lowDisk, percent: 88, mount: "/")], "still above 85%")
+        _ = h.read(["snap up=31 mem=1/2 top= disk=/:16000000/20000000"])
+        XCTAssertEqual(h.warnings, [])
+        _ = h.read(["snap up=46 mem=1/2 top= disk=/:19000000/20000000",
+                    "boot id=2 kernel=7 cpus=2 mem=2"])
+        XCTAssertEqual(h.warnings, [], "a new boot starts clean")
+    }
+
     /// The guest writes these lines: names are cut and plain, and nonsense
     /// makes no problem.
     func testHostileLinesChangeNothingElse() {
         var h = GuestHealth()
         XCTAssertEqual(h.read(["", "kern", "kern x", "snap disk=/:a/b", "snap disk=/:5/0", "boot",
                                String(repeating: "kern 3 x", count: 10_000)]), [])
+        for _ in 0..<3 { _ = h.read(["snap mem=5/0 disk=/:1/2", "snap mem=9/5 disk=/:1/2", "snap mem=-1/5 disk=/:1/2"]) }
+        XCTAssertEqual(h.warnings, [], "impossible memory numbers warn of nothing")
         _ = h.read(["kern 3 Out of memory: Killed process 1 (\u{202E}evil\u{1B}[31m" + String(repeating: "a", count: 200) + ") x"])
         let s = h.summary ?? ""
         XCTAssertFalse(s.contains("\u{202E}") || s.contains("\u{1B}"), s)

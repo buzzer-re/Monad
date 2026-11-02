@@ -270,6 +270,8 @@ struct VMSnapshot: Codable, Equatable, Sendable {
     /// What a Linux guest's health lines say is wrong this boot (its kernel
     /// crashed, it ran out of memory, its disk is full), with what to do.
     var health: String? = nil
+    /// What the running VM is low on (memory, disk space); absent when nothing.
+    var warnings: [GuestWarning]? = nil
 }
 
 /// What the app needs to run a macOS VM's setup step (Phase 14).

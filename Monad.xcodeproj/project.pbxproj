@@ -88,6 +88,7 @@
 				App/SettingsView.swift,
 				App/TabRouting.swift,
 				App/ThemeEditorView.swift,
+				App/VMAlerts.swift,
 				App/VMConfigFile.swift,
 				App/VMDetailView.swift,
 				App/VMManagerView.swift,

@@ -265,6 +265,23 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertNil(vm.healthProblem, "a new start begins clean")
     }
 
+    /// A VM running low on memory or disk is warned about while it runs
+    /// (the app makes notifications of it), not once it has stopped.
+    func testAVMRunningLowIsWarnedWhileItRuns() async throws {
+        let vm = try makeInstance()
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(vm.healthWarnings, [])
+        factory.machine.writeHealth("MONAD-H| snap up=1 mem=140000/2000000 swap=0/0 top= disk=/:18200000/20000000\n"
+                                    + "MONAD-H| snap up=16 mem=140000/2000000 swap=0/0 top= disk=/:18200000/20000000\n")
+        XCTAssertEqual(vm.healthWarnings, [GuestWarning(kind: .lowMemory, percent: 93),
+                                           GuestWarning(kind: .lowDisk, percent: 91, mount: "/")])
+        vm.log.flush()
+        XCTAssertTrue(VMLog.read(vm.paths.vmLog).contains("health: low memory (93% in use)"), VMLog.read(vm.paths.vmLog))
+        await vm.stop()
+        XCTAssertEqual(vm.healthWarnings, [], "only while it runs")
+    }
+
     /// A guest whose kernel crashed (seen: on every exec, so ssh never got a
     /// shell) fails its boot saying so, not only "not reachable over SSH".
     func testABootThatFailsSaysTheGuestsKernelCrashed() async throws {

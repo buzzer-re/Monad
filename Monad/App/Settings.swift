@@ -20,6 +20,8 @@ enum SettingsKey {
     /// Monad › Check for Updates by itself, once a day (Release only).
     static let checkForUpdates = "checkForUpdates"
     static let lastUpdateCheck = "lastUpdateCheck"
+    /// Notifications when a VM runs low on memory or disk (VMAlerts).
+    static let vmAlerts = "vmAlerts"
 }
 
 enum Settings {
@@ -30,6 +32,7 @@ enum Settings {
         SettingsKey.scrollbackLines: 10_000,
         SettingsKey.cursorBlink: false,
         SettingsKey.checkForUpdates: true,
+        SettingsKey.vmAlerts: true,
     ]
 
     static func registerDefaults() {
@@ -51,6 +54,7 @@ enum Settings {
     static var allowOSC52: Bool { UserDefaults.standard.bool(forKey: SettingsKey.allowOSC52) }
     static var cursorBlink: Bool { UserDefaults.standard.bool(forKey: SettingsKey.cursorBlink) }
     static var checkForUpdates: Bool { UserDefaults.standard.bool(forKey: SettingsKey.checkForUpdates) }
+    static var vmAlerts: Bool { UserDefaults.standard.bool(forKey: SettingsKey.vmAlerts) }
     static var scrollbackLines: Int {
         min(max(UserDefaults.standard.integer(forKey: SettingsKey.scrollbackLines), 0), 200_000)
     }

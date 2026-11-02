@@ -7,11 +7,33 @@
 //  (every command "segfaulted", ssh timed out) with nothing in Monad saying
 //  so (2026-11-01).
 //
+//  Before trouble, warnings (like VMware's): a VM that stays low on memory,
+//  or whose disk is almost full. The app turns them into notifications
+//  (VMAlerts).
+//
 //  The lines are the guest's: names taken from them are cut and plain, and
 //  a line that does not parse changes nothing.
 //
 
 import Foundation
+
+/// A VM running low on something, while it still works.
+struct GuestWarning: Codable, Equatable, Hashable, Sendable {
+    enum Kind: String, Codable, Sendable { case lowMemory, lowDisk }
+    var kind: Kind
+    /// How much is in use.
+    var percent: Int
+    /// The disk's mount point (lowDisk).
+    var mount: String? = nil
+
+    /// In a few words, as logs and agents see it.
+    var text: String {
+        switch kind {
+        case .lowMemory: return "low memory (\(percent)% in use)"
+        case .lowDisk: return "low disk space on \(mount ?? "/") (\(percent)% in use)"
+        }
+    }
+}
 
 struct GuestHealth: Sendable {
     enum Problem: Int, Comparable, CaseIterable, Sendable {
@@ -21,12 +43,22 @@ struct GuestHealth: Sendable {
 
     /// A disk this full is said (percent used).
     static let fullDisk = 95
+    /// Memory or a disk this much in use is warned about, until it falls
+    /// below `warningClears` (percent).
+    static let warnAt = 90
+    static let warningClears = 85
+    /// Snapshots in a row memory must be low for (a moment can be a spike).
+    static let lowMemorySnapshots = 2
     /// Most programs named as stopped for memory.
     private static let maxStopped = 3
 
     private var crash: (seen: Bool, function: String?, program: String?) = (false, nil, nil)
     private var stopped: [String] = []
     private var diskPercent: Int?
+    private var memoryPercent: Int?
+    private var memoryLowFor = 0
+    private var memoryWarned = false
+    private var diskWarned = false
     private var said: Set<Problem> = []
 
     init() {}
@@ -56,6 +88,14 @@ struct GuestHealth: Sendable {
     var summary: String? {
         let all = current.compactMap(message)
         return all.isEmpty ? nil : all.joined(separator: " ")
+    }
+
+    /// What is running low now.
+    var warnings: [GuestWarning] {
+        var w: [GuestWarning] = []
+        if memoryWarned, let p = memoryPercent { w.append(GuestWarning(kind: .lowMemory, percent: p)) }
+        if diskWarned, let p = diskPercent { w.append(GuestWarning(kind: .lowDisk, percent: p, mount: "/")) }
+        return w
     }
 
     private var current: [Problem] {
@@ -101,13 +141,30 @@ struct GuestHealth: Sendable {
         }
     }
 
-    /// The root disk's use, from "disk=/:USED/SIZE,…".
+    /// The root disk's use, from "disk=/:USED/SIZE,…", and memory's, from
+    /// "mem=AVAILABLE/TOTAL".
     private mutating func snapshot(_ line: String) {
-        guard let r = line.range(of: " disk=/:") else { return }
-        let pair = line[r.upperBound...].prefix { $0 != "," && $0 != " " }.split(separator: "/")
-        guard pair.count == 2, let used = Int64(pair[0]), let size = Int64(pair[1]), size > 0, used >= 0, used <= size
-        else { return }
-        diskPercent = Int(used * 100 / size)
+        if let r = line.range(of: " mem="), let (available, total) = Self.pair(line[r.upperBound...]) {
+            let p = Int((total - available) * 100 / total)
+            memoryPercent = p
+            memoryLowFor = p >= Self.warnAt ? memoryLowFor + 1 : 0
+            if memoryLowFor >= Self.lowMemorySnapshots { memoryWarned = true }
+            if p < Self.warningClears { memoryWarned = false }
+        }
+        if let r = line.range(of: " disk=/:"), let (used, size) = Self.pair(line[r.upperBound...]) {
+            let p = Int(used * 100 / size)
+            diskPercent = p
+            if p >= Self.warnAt { diskWarned = true }
+            if p < Self.warningClears { diskWarned = false }
+        }
+    }
+
+    /// "A/B" up to the next comma or space: A of B, both whole and A ≤ B.
+    private static func pair(_ s: Substring) -> (Int64, Int64)? {
+        let pair = s.prefix { $0 != "," && $0 != " " }.split(separator: "/")
+        guard pair.count == 2, let a = Int64(pair[0]), let b = Int64(pair[1]), b > 0, a >= 0, a <= b,
+              b < Int64.max / 100 else { return nil }
+        return (a, b)
     }
 
     /// A process or function name from the guest: plain characters only, cut.

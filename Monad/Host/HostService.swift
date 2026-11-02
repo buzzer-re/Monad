@@ -280,7 +280,8 @@ final class HostService {
                    firewallProblem: vm.firewallProblem,
                    firewallAsks: vm.firewallAsks.isEmpty ? nil : vm.firewallAsks,
                    profileRuns: vm.profileRuns.isEmpty ? nil : vm.profileRuns,
-                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem)
+                   macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem,
+                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings)
     }
 
     private func instancesChanged(_ list: [VMInstance]) {

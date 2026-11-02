@@ -54,8 +54,11 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   errors, as they happen) to its own port every 15 s, not over ssh, kept in `health.log` across boots;
   MonadHost tells from it that the guest's kernel crashed, it ran out of memory or its disk is full,
   in the VM's log, `get_vm`, a failed boot's message, the VM's window and list, and its tabs once
-  their session ended. The app's and MonadHost's step-by-step log (Settings › Logs) is on unless the
-  user turns it off.
+  their session ended. Before that, like VMware, a VM low on memory (90% in use for two snapshots)
+  or disk space (90% of `/`) is warned about, and the app posts a notification for each warning,
+  each health problem and the Mac's own disk below 10 GB free, once until it clears (Settings ›
+  Virtual Machines › Warn when a VM runs low; checked on the Mac through the Debug MCP). The app's
+  and MonadHost's step-by-step log (Settings › Logs) is on unless the user turns it off.
 - **Network:** NAT, host-only and internal networks; a firewall per VM (rules by name or address,
   allowlist, monitor mode with live questions), a connection log, VM-to-VM traffic.
 - **Terminal:** Nerd Font icons come from the bundled Symbols Nerd Font Mono (an icon before a

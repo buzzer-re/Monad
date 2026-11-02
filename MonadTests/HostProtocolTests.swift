@@ -141,6 +141,13 @@ final class HostProtocolTests: XCTestCase {
         try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"health":"The VM ran out of memory: Linux stopped node to free some.","name":"dev","ports":[],"sessions":0,"state":{"phase":"ready"}}"#)
     }
 
+    /// What a running VM is low on; absent when nothing.
+    func testSnapshotWithWarnings() throws {
+        var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)
+        snap.warnings = [GuestWarning(kind: .lowMemory, percent: 93), GuestWarning(kind: .lowDisk, percent: 91, mount: "/")]
+        try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"name":"dev","ports":[],"sessions":0,"state":{"phase":"ready"},"warnings":[{"kind":"lowMemory","percent":93},{"kind":"lowDisk","mount":"/","percent":91}]}"#)
+    }
+
     func testSnapshotWithFirewallQuestions() throws {
         var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)
         snap.firewallAsks = [FirewallAsk(id: 4, proto: .tcp, address: "1.2.3.4", port: 443, names: ["example.com"])]

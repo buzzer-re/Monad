@@ -40,6 +40,18 @@ final class MonadToolsTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(r.text.utf8)) as? [String: Any], r.text)
     }
 
+    /// Agents see what a VM is low on, in words.
+    func testAVMsWarningsAreInItsSummary() {
+        let config = InstanceConfig(
+            name: "web", distro: "ubuntu", image: "Ubuntu 26.04", user: "dev", cpus: 2, memoryGiB: 4,
+            memoryTargetGiB: nil, diskGiB: 20, networks: [], sharing: SharingSettings(), forwards: [],
+            autoForward: AutoForwardSettings(), profiles: [], theme: nil, ephemeral: false, createdAt: Date())
+        var snap = VMSnapshot(name: "web", config: config, state: .ready, agent: true, ports: [], sessions: 0)
+        XCTAssertNil(tools.summary(snap).warnings)
+        snap.warnings = [GuestWarning(kind: .lowMemory, percent: 93), GuestWarning(kind: .lowDisk, percent: 91, mount: "/")]
+        XCTAssertEqual(tools.summary(snap).warnings, ["low memory: 93% in use", "low disk space on /: 91% in use"])
+    }
+
     private func made(_ name: String) async throws -> VMInstance {
         try await call("create_vm", ["name": .string(name), "cpus": .number(2), "memory_gib": .number(2),
                                      "disk_gib": .number(10), "start": .bool(false)])

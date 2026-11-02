@@ -64,6 +64,8 @@ final class RemoteVM: ObservableObject, Identifiable {
     var sharesError: String? { snapshot.sharesError }
     /// What the guest's health says is wrong (VMSnapshot.health).
     var healthProblem: String? { snapshot.health }
+    /// What the running VM is low on (VMSnapshot.warnings).
+    var warnings: [GuestWarning] { snapshot.warnings ?? [] }
     var firewallProblem: String? { snapshot.firewallProblem }
     /// macOS: System Integrity Protection as found at the last boot.
     var macSecurity: MacSecurityReport? { snapshot.macSecurity }

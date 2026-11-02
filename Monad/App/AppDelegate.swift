@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     private var firewallPrompts: FirewallPromptController?
     private var approvalPrompts: ApprovalPromptController?
     private var macSetupPrompts: MacSetupPromptController?
+    private var vmAlerts: VMAlertCenter?
     private var vmTabMenu = NSMenu(title: "Open VM")
     private var themeMenu = NSMenu(title: "Theme")
 
@@ -59,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         approvalPrompts = ApprovalPromptController(host: HostAgent.client)
         macSetupPrompts = MacSetupPromptController(host: HostAgent.client)
         AppUpdater.shared.start()
+        vmAlerts = VMAlertCenter(host: HostAgent.client) { [weak self] name in
+            if let vm = HostAgent.client.instances.first(where: { $0.name == name }) { self?.showDetails(of: vm) }
+        }
         newWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

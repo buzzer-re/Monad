@@ -77,6 +77,8 @@ final class MonadTools {
         /// What the guest's health says is wrong (its kernel crashed, it
         /// ran out of memory, its disk is full).
         let health: String?
+        /// What the running VM is low on ("low memory: 93% in use").
+        let warnings: [String]?
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
@@ -85,7 +87,10 @@ final class MonadTools {
                   network: s.config.networks.first?.network, group: s.config.group, ephemeral: s.config.ephemeral,
                   listening: s.ports.isEmpty ? nil : s.ports.map { "\($0.address):\($0.port)" },
                   forwards: s.forwards.map { $0.map { "\($0.flag) \($0.spec)" } },
-                  pendingRestart: s.pendingRestart, health: s.health)
+                  pendingRestart: s.pendingRestart, health: s.health,
+                  warnings: s.warnings.map { $0.map { w in
+                      w.kind == .lowMemory ? "low memory: \(w.percent)% in use"
+                          : "low disk space on \(w.mount ?? "/"): \(w.percent)% in use" } })
     }
 
     // MARK: Schemas

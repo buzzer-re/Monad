@@ -342,6 +342,7 @@ private struct MachineSettingsPane: View {
     @AppStorage(SettingsKey.defaultDiskGiB) private var disk = 50
     @State private var fullBootMessages = BootMessages.load() == .full
     @State private var errorMessage: String?
+    @AppStorage(SettingsKey.vmAlerts) private var vmAlerts = true
 
     private let capacity = HostCapacity.current
 
@@ -368,6 +369,14 @@ private struct MachineSettingsPane: View {
                 }
             } header: {
                 Text("Starting")
+            }
+            Section {
+                SettingRow(symbol: "bell.badge", color: .red, title: "Warn when a VM runs low",
+                           detail: "A notification when a running VM has used 90% of its memory or of its disk, when Linux in it stops programs for memory or its kernel crashes, and when this Mac has less than 10 GB free.") {
+                    Toggle("", isOn: $vmAlerts).labelsHidden().toggleStyle(.switch)
+                }
+            } header: {
+                Text("Notifications")
             }
         }
         .formStyle(.grouped)
