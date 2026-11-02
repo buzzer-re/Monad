@@ -131,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
                                                frontToBack: windows.map(\.windowNumber)) : nil
         if let host = windows.first(where: { $0.windowNumber == number }) {
             DebugLog.shared.log("tabs", "\(target) opens as a tab in window \(host.windowNumber)")
-            host.addTabbedWindow(window, ordered: .above)
+            controller.join(host)
         } else {
             DebugLog.shared.log("tabs", "\(target) opens a window\(asTab ? " (no terminal window open)" : "")")
             if let last = TerminalWindowController.all.dropLast().last?.window {
