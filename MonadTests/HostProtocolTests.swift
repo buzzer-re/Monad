@@ -150,6 +150,43 @@ final class HostProtocolTests: XCTestCase {
         try assertGolden(snap, #"{"agent":true,"config":\#(configJSON),"name":"dev","paused":true,"ports":[],"sessions":0,"state":{"phase":"ready"}}"#)
     }
 
+    /// Snapshots: taken by name, restored and deleted by id; a VM's list
+    /// rides in its snapshot without their settings (they stay on disk).
+    func testSnapshotRequestsAndTheListInAVMsSnapshot() throws {
+        var take = HostRequest(id: 7, op: .takeSnapshot, name: "dev")
+        take.snapshot = "Before the upgrade"
+        try assertGolden(take, #"{"id":7,"name":"dev","op":"takeSnapshot","snapshot":"Before the upgrade"}"#)
+        XCTAssertNoThrow(try take.validate())
+        for op in [HostRequest.Op.restoreSnapshot, .deleteSnapshot] {
+            var r = HostRequest(id: 8, op: op, name: "dev")
+            XCTAssertThrowsError(try r.validate(), "\(op): which snapshot")
+            r.snapshot = "../../etc"
+            XCTAssertThrowsError(try r.validate(), "\(op): an id, not a path")
+            r.snapshot = "0a1b2c3d"
+            XCTAssertNoThrow(try r.validate())
+        }
+        take.snapshot = String(repeating: "x", count: 65)
+        XCTAssertThrowsError(try take.validate())
+        var snap = VMSnapshot(name: "dev", config: config, state: .stopped, agent: false, ports: [], sessions: 0)
+        snap.snapshots = [SnapshotSummary(id: "0a1b2c3d", name: "v1", createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+                                          parent: nil, memory: true)]
+        snap.currentSnapshot = "0a1b2c3d"
+        try assertGolden(snap, #"{"agent":false,"config":\#(configJSON),"currentSnapshot":"0a1b2c3d","name":"dev","ports":[],"sessions":0,"snapshots":[{"createdAt":"2026-09-21T14:13:20Z","id":"0a1b2c3d","memory":true,"name":"v1"}],"state":{"phase":"stopped"}}"#)
+    }
+
+    /// The Snapshots page's tree: each snapshot under the one it was taken
+    /// after, in the order taken; one whose parent is gone is at the top,
+    /// and a loop (a hand-edited file) shows each once.
+    func testSnapshotsFormATree() {
+        func s(_ id: String, _ parent: String?, _ t: Double) -> SnapshotSummary {
+            SnapshotSummary(id: id, name: id, createdAt: Date(timeIntervalSince1970: t), parent: parent, memory: false)
+        }
+        let all = [s("a", nil, 1), s("b", "a", 2), s("c", "a", 3), s("d", "b", 4), s("e", "gone", 5)]
+        XCTAssertEqual(SnapshotSummary.tree(all).map { "\($0.depth)\($0.snapshot.id)" }, ["0a", "1b", "2d", "1c", "0e"])
+        let loop = [s("x", "y", 1), s("y", "x", 2)]
+        XCTAssertLessThanOrEqual(SnapshotSummary.tree(loop).count, 2)
+    }
+
     /// What a running VM is low on; absent when nothing.
     func testSnapshotWithWarnings() throws {
         var snap = VMSnapshot(name: "dev", config: config, state: .ready, agent: true, ports: [], sessions: 0)

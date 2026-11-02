@@ -294,7 +294,9 @@ final class HostService {
                    firewallAsks: vm.firewallAsks.isEmpty ? nil : vm.firewallAsks,
                    profileRuns: vm.profileRuns.isEmpty ? nil : vm.profileRuns,
                    macSetup: macSetups[vm.name]?.request, macSecurity: vm.macSecurity, health: vm.healthProblem,
-                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings, paused: vm.paused ? true : nil)
+                   warnings: vm.healthWarnings.isEmpty ? nil : vm.healthWarnings, paused: vm.paused ? true : nil,
+                   snapshots: vm.snapshots.isEmpty ? nil : vm.snapshots.map(SnapshotSummary.init),
+                   currentSnapshot: vm.currentSnapshot)
     }
 
     private func instancesChanged(_ list: [VMInstance]) {
@@ -546,6 +548,22 @@ final class HostConnection {
         case .resume:
             let target = try vm(r.name)
             try await target.resume()
+            return answer(target)
+
+        case .takeSnapshot:
+            let target = try vm(r.name)
+            _ = try await target.takeSnapshot(name: r.snapshot!)
+            return answer(target)
+
+        case .restoreSnapshot:
+            let target = try vm(r.name)
+            manager.cancelStart(target)
+            try await target.restoreSnapshot(r.snapshot!)
+            return answer(target)
+
+        case .deleteSnapshot:
+            let target = try vm(r.name)
+            try target.deleteSnapshot(r.snapshot!)
             return answer(target)
 
         case .restart:

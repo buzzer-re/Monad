@@ -636,6 +636,36 @@ static NSError *MNDNoInput(NSString *what) {
     });
 }
 
+- (void)saveStateToPath:(NSString *)path completion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 14, *)) {
+        dispatch_async(_queue, ^{
+            [self->_vm saveMachineStateToURL:[NSURL fileURLWithPath:path]
+                           completionHandler:^(NSError *_Nullable err) {
+                if (err) os_log_error(MNDLog(), "save failed: %{public}@", err);
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+            }];
+        });
+    } else {
+        completion(MNDError(9, @"Saving a VM's memory needs macOS 14 or later."));
+    }
+}
+
+- (void)restoreStateFromPath:(NSString *)path completion:(void (^)(NSError *_Nullable))completion {
+    if (@available(macOS 14, *)) {
+        dispatch_async(_queue, ^{
+            [self setState:MNDVirtualMachineStateStarting error:nil];
+            [self->_vm restoreMachineStateFromURL:[NSURL fileURLWithPath:path]
+                                completionHandler:^(NSError *_Nullable err) {
+                if (err) os_log_error(MNDLog(), "restore failed: %{public}@", err);
+                [self setState:err ? MNDVirtualMachineStateError : MNDVirtualMachineStateRunning error:err];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(err); });
+            }];
+        });
+    } else {
+        completion(MNDError(9, @"Restoring a VM's memory needs macOS 14 or later."));
+    }
+}
+
 - (void)guestDidStopVirtualMachine:(VZVirtualMachine *)virtualMachine {
     os_log_info(MNDLog(), "guest stopped");
     [self setState:MNDVirtualMachineStateStopped error:nil];

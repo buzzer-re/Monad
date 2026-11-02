@@ -77,7 +77,7 @@ Under `~/.monad` (Release) or `~/.monad-debug` (Debug), see `Monad/Support/Paths
 | Path | What |
 |---|---|
 | `_cache/images/` | Downloaded cloud images and the converted bases VMs are cloned from |
-| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `disks/` (the disks added in its settings, `<name>.raw` each), `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log` (and the boot before, `serial.log.1`), `health.log` (a Linux guest's health, from its health port, across boots), `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
+| `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `disks/` (the disks added in its settings, `<name>.raw` each), `snapshots/` (a folder per snapshot: clones of the disks, `snapshot.json`, `memory.vzsave` when it was running; `current` names the one the VM is at), `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log` (and the boot before, `serial.log.1`), `health.log` (a Linux guest's health, from its health port, across boots), `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
 | `instances/order.json` | The VMs' order; the default VM is chosen there |
 | `networks/`, `firewall-tags/` | Monad networks and firewall tags, one JSON file each |
 | `distros/`, `profiles/`, `themes/` | What the user added, next to the ones in the app bundle |

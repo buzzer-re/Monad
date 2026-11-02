@@ -148,6 +148,10 @@ NS_SWIFT_SENDABLE
 /// from there. The state stays Running: paused is the caller's to track.
 - (void)pauseWithCompletion:(void (^)(NSError *_Nullable error))completion;
 - (void)resumeWithCompletion:(void (^)(NSError *_Nullable error))completion;
+/// A paused machine's state (memory, devices) to `path` (macOS 14 and
+/// later); a machine that never started put back as saved, paused.
+- (void)saveStateToPath:(NSString *)path completion:(void (^)(NSError *_Nullable error))completion;
+- (void)restoreStateFromPath:(NSString *)path completion:(void (^)(NSError *_Nullable error))completion;
 
 /// Blocking check whether the guest accepts connections on a vsock port.
 /// Must not be called on the main thread.

@@ -173,6 +173,11 @@ processes).
   (`ExtraDisk.isValidName`, checked again by `monad-disks.sh`; `ConfigV2Tests`, `test_disks.sh`). The
   script never formats a disk that has a filesystem. Removing a disk deletes its file, only while
   the VM is shut down; over MCP it is a risky tool.
+- **A snapshot of a running VM holds its memory** (2026-11-02): `snapshots/<id>/memory.vzsave` in the
+  VM's private folder has whatever the guest had in memory (keys, passwords typed in it). It is
+  deleted with the snapshot. Snapshot ids are 8 hex digits made by Monad, never the user's text;
+  names are plain text, 64 characters at most (`Snapshot.isValidName`, `HostProtocolTests`).
+  Restoring or deleting one over MCP is a risky tool.
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
   with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
   copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it

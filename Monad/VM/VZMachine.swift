@@ -110,6 +110,10 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 
     func resume() async throws { try await vm.resume() }
 
+    func saveState(to file: URL) async throws { try await vm.saveState(toPath: file.path) }
+
+    func restoreState(from file: URL) async throws { try await vm.restoreState(fromPath: file.path) }
+
     func setMemoryTarget(bytes: UInt64) { vm.setMemoryTarget(bytes: bytes) }
 
     func attachDisk(_ url: URL) async throws { try await vm.attachDisk(atPath: url.path) }

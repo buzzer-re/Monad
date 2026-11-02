@@ -64,6 +64,8 @@ final class RemoteVM: ObservableObject, Identifiable {
     var sharesError: String? { snapshot.sharesError }
     /// What the guest's health says is wrong (VMSnapshot.health).
     var healthProblem: String? { snapshot.health }
+    var snapshots: [SnapshotSummary] { snapshot.snapshots ?? [] }
+    var currentSnapshot: String? { snapshot.currentSnapshot }
     /// The running VM is paused (VMSnapshot.paused).
     var paused: Bool { snapshot.paused ?? false }
     /// What the running VM is low on (VMSnapshot.warnings).
@@ -583,6 +585,20 @@ final class HostClient: ObservableObject {
 
     func resume(_ name: String) async throws {
         try await request(.resume, name: name)
+    }
+
+    /// Snapshots of VM `name` (Snapshots.swift): taken by name, restored
+    /// and deleted by id.
+    func takeSnapshot(_ name: String, named snapshot: String) async throws {
+        try await request(.takeSnapshot, name: name) { $0.snapshot = snapshot }
+    }
+
+    func restoreSnapshot(_ name: String, id: String) async throws {
+        try await request(.restoreSnapshot, name: name) { $0.snapshot = id }
+    }
+
+    func deleteSnapshot(_ name: String, id: String) async throws {
+        try await request(.deleteSnapshot, name: name) { $0.snapshot = id }
     }
 
     /// Clean shutdown, then start: the VM picks up its saved settings.

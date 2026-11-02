@@ -541,6 +541,30 @@ final class HostServiceTests: XCTestCase {
         XCTAssertEqual(fixture.factory.machine.pauseLog, ["pause", "resume"])
     }
 
+    /// Snapshots through the host, as the VM's window asks: taken, listed
+    /// in the VM's snapshot, restored, deleted.
+    func testSnapshots() async throws {
+        let (c, log) = await connect()
+        try await provisioned(c, log)
+        var take = HostRequest(id: 0, op: .takeSnapshot, name: "default")
+        take.snapshot = "clean"
+        nextID += 1
+        take.id = nextID
+        let r = await c.handle(take)
+        XCTAssertTrue(r.ok, r.error ?? "")
+        let id = try XCTUnwrap(r.instance?.snapshots?.first?.id)
+        XCTAssertEqual(r.instance?.snapshots?.first?.name, "clean")
+        XCTAssertEqual(r.instance?.currentSnapshot, id)
+        for op in [HostRequest.Op.restoreSnapshot, .deleteSnapshot] {
+            nextID += 1
+            var req = HostRequest(id: nextID, op: op, name: "default")
+            req.snapshot = id
+            let answer = await c.handle(req)
+            XCTAssertTrue(answer.ok, "\(op): \(answer.error ?? "")")
+        }
+        await assertEventually { log.latest("default")?.snapshots == nil }
+    }
+
     /// To ask the user, MonadHost opens the app it lives in, by its path:
     /// "open -b" let Launch Services pick any copy with the bundle id (an
     /// older Debug build elsewhere), which replaced MonadHost and shut its

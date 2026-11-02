@@ -33,13 +33,16 @@ final class MonadTools {
 
     // MARK: Requests through HostService
 
-    private func request(_ op: HostRequest.Op, name: String? = nil, config: InstanceConfig? = nil, force: Bool? = nil) async throws -> HostResponse {
+    private func request(_ op: HostRequest.Op, name: String? = nil, config: InstanceConfig? = nil, force: Bool? = nil,
+                         edit: (inout HostRequest) throws -> Void = { _ in }) async throws -> HostResponse {
         if nextID == 0 {
             nextID = 1
             _ = await connection.handle(HostRequest(id: 0, op: .hello, version: HostProtocol.version))
         }
         nextID += 1
-        let r = await connection.handle(HostRequest(id: nextID, op: op, name: name, force: force, config: config))
+        var request = HostRequest(id: nextID, op: op, name: name, force: force, config: config)
+        try edit(&request)
+        let r = await connection.handle(request)
         guard r.ok else { throw MonadError(r.error ?? "Monad could not do that.") }
         return r
     }
@@ -81,6 +84,8 @@ final class MonadTools {
         let warnings: [String]?
         /// Disks added to it ("data: 50 GB at /mnt/data").
         let disks: [String]?
+        /// Its snapshots, oldest first ("0a1b2c3d: clean, running, current").
+        let snapshots: [String]?
     }
 
     func summary(_ s: VMSnapshot) -> VMSummary {
@@ -95,7 +100,11 @@ final class MonadTools {
                           : "low disk space on \(w.mount ?? "/"): \(w.percent)% in use" } },
                   disks: s.config.disks.isEmpty ? nil : s.config.disks.map {
                       "\($0.name): \($0.sizeGiB) GB " + ($0.mount ? "at \($0.mountPoint)" : "blank")
-                  })
+                  },
+                  snapshots: s.snapshots.map { $0.map { snap in
+                      "\(snap.id): \(snap.name.plain(limit: 64)), " + (snap.memory ? "running" : "shut down")
+                          + (snap.id == s.currentSnapshot ? ", current" : "")
+                  } })
     }
 
     // MARK: Schemas
@@ -378,6 +387,35 @@ final class MonadTools {
                     guard $0.firewall.rules.indices.contains(i) else { throw MonadError("There is no rule \(i).") }
                     $0.firewall.rules.remove(at: i)
                 }))
+            },
+            MCPTool(name: "take_snapshot",
+                    description: "Take a snapshot of a VM: its disks and settings, and its memory too when it is running "
+                        + "(it pauses for a moment), so restore_snapshot brings it back as it is now.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("A name for the snapshot.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .normal) { [unowned self] call in
+                .json(self.summary(try await self.request(.takeSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
+            },
+            MCPTool(name: "restore_snapshot",
+                    description: "Put a VM back as one of its snapshots was (by id, from get_vm). What it is now is lost; "
+                        + "a snapshot taken running starts again where it was.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("The snapshot's id.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .risky) { [unowned self] call in
+                .json(self.summary(try await self.request(.restoreSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
+            },
+            MCPTool(name: "delete_snapshot",
+                    description: "Delete one of a VM's snapshots (by id). The ones taken after it are kept.",
+                    schema: Self.schema(["name": Self.vmName, "snapshot": Self.string("The snapshot's id.")],
+                                        required: ["name", "snapshot"]),
+                    risk: .risky) { [unowned self] call in
+                .json(self.summary(try await self.request(.deleteSnapshot, name: try call.string("name")) {
+                    $0.snapshot = try call.string("snapshot")
+                }.instance!))
             },
             MCPTool(name: "add_disk",
                     description: "Add a disk to a VM, attached at its next start. With mount (default true, Linux), Monad "

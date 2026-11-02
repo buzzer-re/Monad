@@ -15,13 +15,14 @@ struct VMDetailView: View {
     static let size = NSSize(width: 860, height: 640)
 
     enum Page: String, CaseIterable, Identifiable {
-        case overview, resources, network, security, connections, profiles, folders, forwarding, configuration, log
+        case overview, resources, snapshots, network, security, connections, profiles, folders, forwarding, configuration, log
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .overview: return "Overview"
             case .resources: return "Resources"
+            case .snapshots: return "Snapshots"
             case .network: return "Network"
             case .security: return "Security"
             case .connections: return "Connections"
@@ -37,6 +38,7 @@ struct VMDetailView: View {
             switch self {
             case .overview: return "info.circle.fill"
             case .resources: return "cpu.fill"
+            case .snapshots: return "clock.arrow.circlepath"
             case .network: return "network"
             case .security: return "lock.shield.fill"
             case .connections: return "point.3.connected.trianglepath.dotted"
@@ -52,6 +54,7 @@ struct VMDetailView: View {
             switch self {
             case .overview: return .gray
             case .resources: return .blue
+            case .snapshots: return .green
             case .network: return .indigo
             case .security: return .red
             case .connections: return .orange
@@ -101,7 +104,9 @@ struct VMDetailView: View {
 
     /// The pages this VM has (Security: macOS only).
     private var pages: [Page] {
-        Page.allCases.filter { $0 != .security || vm.config.guestOS == .macos }
+        Page.allCases.filter {
+            ($0 != .security || vm.config.guestOS == .macos) && ($0 != .snapshots || !vm.config.ephemeral)
+        }
     }
 
     private var networkDetail: String {
@@ -164,6 +169,7 @@ struct VMDetailView: View {
                     switch page {
                     case .overview: overview
                     case .resources: resources
+                    case .snapshots: SnapshotsPage(vm: vm, host: host)
                     case .network: network
                     case .security: security
                     case .connections:
@@ -1417,6 +1423,154 @@ private struct ForwardEditor: View {
 /// Adds a stdio bridge: a name, the program (by name or full path) and its
 /// arguments, and where the VM reaches it. What the VM can then do is
 /// asked before it is added.
+/// A VM's snapshots, like VMware's Snapshot Manager: the tree (each under
+/// the one it was taken after), where the VM is, and Take, Restore, Delete.
+private struct SnapshotsPage: View {
+    @ObservedObject var vm: RemoteVM
+    let host: HostClient
+
+    @State private var naming = false
+    @State private var newName = ""
+    @State private var restoring: SnapshotSummary?
+    @State private var deleting: SnapshotSummary?
+    @State private var busy: String?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Form {
+            Section {
+                if vm.snapshots.isEmpty {
+                    Text("No snapshots yet.").foregroundStyle(.secondary)
+                }
+                ForEach(SnapshotSummary.tree(vm.snapshots), id: \.snapshot.id) { item in
+                    row(item.snapshot, depth: item.depth)
+                }
+            } header: {
+                HStack {
+                    Text("Snapshots")
+                    Spacer()
+                    if let busy {
+                        ProgressView().controlSize(.small)
+                        Text(busy).font(Design.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Take Snapshot…") {
+                        newName = Self.defaultName()
+                        naming = true
+                    }
+                    .disabled(busy != nil || !(vm.state == .ready || vm.state == .stopped))
+                }
+            } footer: {
+                Text("A snapshot keeps the VM's disks and settings as they are, and its memory when it is running: restoring it brings the VM back running, where it was. Disks are copied as APFS clones, which take room only as they differ; saved memory takes as much room as the VM's memory.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $naming) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Take a Snapshot of “\(vm.name)”").font(.headline)
+                TextField("Name", text: $newName)
+                Text(vm.state == .ready ? "It pauses for a moment while its memory is saved." : "It is shut down: its disks and settings are kept.")
+                    .font(Design.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { naming = false }.keyboardShortcut(.cancelAction)
+                    Button("Take Snapshot") {
+                        naming = false
+                        take(newName)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!Snapshot.isValidName(newName))
+                }
+            }
+            .padding(20)
+            .frame(width: 420)
+        }
+        .confirmationDialog("Restore “\(restoring?.name ?? "")”?",
+                            isPresented: Binding(get: { restoring != nil }, set: { if !$0 { restoring = nil } })) {
+            if let snap = restoring {
+                Button("Take a Snapshot First, Then Restore") { restore(snap, savingFirst: true) }
+                Button("Restore", role: .destructive) { restore(snap, savingFirst: false) }
+            }
+        } message: {
+            Text(restoreMessage)
+        }
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            if let snap = deleting {
+                Button("Delete Snapshot", role: .destructive) {
+                    let id = snap.id
+                    run("Deleting…") { try await host.deleteSnapshot(vm.name, id: id) }
+                }
+            }
+        } message: {
+            Text("The VM stays as it is; the snapshots taken after it are kept.")
+        }
+        .alert("Snapshot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var restoreMessage: String {
+        let lost: String = vm.isRunning ? ", and what it is now is lost: it is powered off first." : "; what it is now is lost."
+        let after: String = restoring?.memory == true ? " It starts again where it was." : ""
+        return "“\(vm.name)” goes back to how it was then" + lost + after
+    }
+
+    private func row(_ s: SnapshotSummary, depth: Int) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: s.memory ? "play.circle.fill" : "stop.circle")
+                .foregroundStyle(s.memory ? .green : .secondary)
+                .help(s.memory ? "Taken running: restores running" : "Taken shut down")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(s.name).font(Design.rowTitle)
+                    if s.id == vm.currentSnapshot {
+                        Text("You are here").font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                    }
+                }
+                Text(s.createdAt.formatted(date: .abbreviated, time: .shortened)).font(Design.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Restore…") { restoring = s }.disabled(busy != nil)
+            Button { deleting = s } label: { Image(systemName: "trash") }
+                .help("Delete this snapshot")
+                .disabled(busy != nil)
+        }
+        .padding(.leading, CGFloat(min(depth, 8)) * 18)
+    }
+
+    private func take(_ name: String) {
+        run("Taking a snapshot…") { try await host.takeSnapshot(vm.name, named: name) }
+    }
+
+    private func restore(_ snap: SnapshotSummary, savingFirst: Bool) {
+        let name = vm.name, id = snap.id
+        run("Restoring…") {
+            if savingFirst { try await host.takeSnapshot(name, named: Self.defaultName(before: snap.name)) }
+            try await host.restoreSnapshot(name, id: id)
+        }
+    }
+
+    private func run(_ what: String, _ action: @escaping @MainActor () async throws -> Void) {
+        busy = what
+        Task { @MainActor in
+            defer { busy = nil }
+            do { try await action() } catch { errorMessage = HostAgent.describe(error) }
+        }
+    }
+
+    /// "Snapshot Nov 2, 3:41 PM" (or before restoring one: "Before restoring …").
+    static func defaultName(before restoring: String? = nil) -> String {
+        let when = Date().formatted(date: .abbreviated, time: .shortened)
+        guard let restoring else { return "Snapshot \(when)" }
+        return String("Before restoring \(restoring) (\(when))".prefix(Snapshot.maxNameLength))
+    }
+}
+
 /// Add Disk: a name, a size and, in a Linux VM, whether Monad formats and
 /// mounts it.
 private struct DiskEditor: View {

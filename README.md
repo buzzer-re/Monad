@@ -136,6 +136,7 @@ Host commands give a VM's agents the Mac commands you defined for it as tools: a
 
 - Paste an image or drop files into a tab and they are copied into the VM (`~/.monad/shots/` and `~/.monad/uploads/`), with the path typed at the prompt. That's how coding agents like Claude Code take screenshots.
 - Once you have more than a handful of VMs, put them in groups, like VirtualBox does: "coding", "analysis", "agents". A group also works as a firewall tag, so a rule you give the group applies to every VM in it ([docs/GROUPS.md](docs/GROUPS.md)).
+- Snapshots, like VMware's: a VM's Snapshots page keeps its disks and settings, and its memory when it is running, so restoring one brings it back running where it was. Disks are APFS clones, which take room only as they change.
 - Add disks to a VM (its Resources page, or `add_disk`): each is a file that takes only the room written to it. In a Linux VM Monad formats a new one and mounts it at `/mnt/<name>`, or leaves it blank for you to set up.
 - Pause a VM (its row, its window, the canvas, or `pause_vm`): its programs stop where they are and go on when you resume it, with the tabs on it waiting meanwhile and its clock set right again. VMs' clocks are also set right when your Mac wakes from sleep.
 - Like VMware, Monad tells you when a VM is running low: a notification when one has used 90% of its memory or its disk, when Linux in it had to stop a program for memory, and when your Mac's disk has less than 10 GB free.

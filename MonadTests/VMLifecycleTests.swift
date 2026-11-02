@@ -358,6 +358,121 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "its file goes with it")
     }
 
+    // MARK: Snapshots
+
+    /// The disks and settings of a snapshot as they were, read back.
+    private func snapshotFile(_ vm: VMInstance, _ snap: Snapshot, _ name: String) throws -> String {
+        String(decoding: try Data(contentsOf: vm.paths.snapshot(snap.id).appendingPathComponent(name)), as: UTF8.self)
+    }
+
+    /// A shut-down VM's snapshot: its disks (APFS clones), its added disks
+    /// and its settings as they are, no memory. It is the VM's current one.
+    func testASnapshotOfAStoppedVMKeepsItsDisksAndSettings() async throws {
+        let vm = try makeInstance { $0.disks = [ExtraDisk(name: "data", sizeGiB: 1, mount: false)] }
+        try Data("system v1".utf8).write(to: vm.paths.disk)
+        try FileManager.default.createDirectory(at: vm.paths.extraDisks, withIntermediateDirectories: true)
+        try Data("data v1".utf8).write(to: vm.paths.extraDisk("data"))
+        let snap = try await vm.takeSnapshot(name: "Before the upgrade")
+        XCTAssertEqual(snap.name, "Before the upgrade")
+        XCTAssertFalse(snap.memory)
+        XCTAssertNil(snap.parent)
+        XCTAssertEqual(snap.config.disks.map(\.name), ["data"])
+        XCTAssertEqual(try snapshotFile(vm, snap, "disk.raw"), "system v1")
+        XCTAssertEqual(try snapshotFile(vm, snap, "disks/data.raw"), "data v1")
+        XCTAssertEqual(vm.snapshots.map(\.id), [snap.id])
+        XCTAssertEqual(vm.currentSnapshot, snap.id)
+        XCTAssertEqual(factory.machine.pauseLog, [], "nothing ran")
+        // Read back from disk by a new instance of the VM.
+        XCTAssertEqual(SnapshotStore(paths: vm.paths).list(), [snap])
+    }
+
+    /// A running VM's snapshot also keeps its memory, saved while it is
+    /// paused (with its disks cloned meanwhile, so both are of one moment);
+    /// it goes on running after.
+    func testASnapshotOfARunningVMSavesItsMemoryWhilePaused() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let snap = try await vm.takeSnapshot(name: "running")
+        XCTAssertTrue(snap.memory)
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "save", "resume"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vm.paths.snapshotMemory(snap.id).path))
+        XCTAssertEqual(vm.state, .ready)
+        XCTAssertFalse(vm.paused)
+        // A paused VM stays paused.
+        try await vm.pause()
+        _ = try await vm.takeSnapshot(name: "paused")
+        XCTAssertEqual(factory.machine.pauseLog, ["pause", "save", "resume", "pause", "save"])
+        XCTAssertTrue(vm.paused)
+        XCTAssertEqual(vm.snapshots.map(\.name), ["running", "paused"])
+        XCTAssertEqual(vm.snapshots.last?.parent, snap.id, "taken after the first: its child")
+    }
+
+    /// Restore: the disks, added disks and settings go back to the
+    /// snapshot's; a shut-down snapshot leaves the VM shut down.
+    func testRestoringPutsTheDisksAndSettingsBack() async throws {
+        let vm = try makeInstance { $0.cpus = 2 }
+        try Data("system v1".utf8).write(to: vm.paths.disk)
+        let snap = try await vm.takeSnapshot(name: "v1")
+        try Data("system v2, broken".utf8).write(to: vm.paths.disk)
+        var changed = vm.config
+        changed.cpus = 3
+        try vm.update(changed)
+        try await vm.restoreSnapshot(snap.id)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: vm.paths.disk), as: UTF8.self), "system v1")
+        XCTAssertEqual(vm.config.cpus, 2)
+        XCTAssertEqual(try InstanceConfig.load(from: vm.paths.config).cpus, 2, "saved")
+        XCTAssertEqual(vm.state, .stopped)
+        XCTAssertEqual(vm.currentSnapshot, snap.id)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: vm.paths.snapshot(snap.id).appendingPathComponent("disk.raw")),
+                              as: UTF8.self), "system v1", "the snapshot itself is kept, for another restore")
+    }
+
+    /// A running snapshot comes back running, where it was: its memory is
+    /// restored instead of a boot, and its clock set to the Mac's.
+    func testRestoringAMemorySnapshotResumesWhereItWas() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        vm.start()
+        await assertEventually { vm.state == .ready }
+        let snap = try await vm.takeSnapshot(name: "mid-work")
+        let starts = factory.machine.started
+        try await vm.restoreSnapshot(snap.id)
+        await assertEventually { vm.state == .ready }
+        XCTAssertEqual(factory.machine.started, starts, "no boot")
+        XCTAssertEqual(Array(factory.machine.pauseLog.suffix(2)), ["restore", "resume"])
+        await assertEventually { self.runner.calls.contains { $0.arguments.last?.hasPrefix("sudo -n date -u -s @") == true } }
+    }
+
+    /// Deleting a snapshot keeps the ones taken after it (their parent is
+    /// its parent now) and removes its files.
+    func testDeletingASnapshotKeepsTheOnesAfterIt() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        let a = try await vm.takeSnapshot(name: "a")
+        let b = try await vm.takeSnapshot(name: "b")
+        XCTAssertEqual(b.parent, a.id)
+        try vm.deleteSnapshot(a.id)
+        XCTAssertEqual(vm.snapshots.map(\.name), ["b"])
+        XCTAssertNil(vm.snapshots.first?.parent)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vm.paths.snapshot(a.id).path))
+        XCTAssertEqual(vm.currentSnapshot, b.id)
+        try vm.deleteSnapshot(b.id)
+        XCTAssertNil(vm.currentSnapshot)
+    }
+
+    func testWhatCannotBeSnapshotted() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        for bad in ["", String(repeating: "a", count: 65), "a\nb", "\u{202E}x"] {
+            do { _ = try await vm.takeSnapshot(name: bad); XCTFail(bad) } catch {}
+        }
+        let tmp = try makeInstance(name: "tmp-1") { $0.ephemeral = true }
+        do { _ = try await tmp.takeSnapshot(name: "x"); XCTFail("an ephemeral VM is thrown away") } catch {}
+        XCTAssertTrue(vm.snapshots.isEmpty)
+    }
+
     /// A VM running low on memory or disk is warned about while it runs
     /// (the app makes notifications of it), not once it has stopped.
     func testAVMRunningLowIsWarnedWhileItRuns() async throws {

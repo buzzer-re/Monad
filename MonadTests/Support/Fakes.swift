@@ -136,6 +136,12 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
     private(set) var pauseLog: [String] = []
     func pause() async throws { pauseLog.append("pause") }
     func resume() async throws { pauseLog.append("resume") }
+    /// Snapshots: the memory file is written; a restore is logged.
+    func saveState(to file: URL) async throws {
+        pauseLog.append("save")
+        try Data("memory".utf8).write(to: file)
+    }
+    func restoreState(from file: URL) async throws { pauseLog.append("restore") }
 
     /// Desktops opened, by window title, and the buttons they were given.
     private(set) var desktops: [String] = []

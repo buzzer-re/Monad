@@ -66,6 +66,8 @@ struct HostRequest: Codable, Equatable, Sendable {
         case start, stop, delete // name (stop: force)
         case restart         // name: clean shutdown, then start (applies saved settings)
         case pause, resume   // name: the guest's CPUs stop where they are, and go on
+        case takeSnapshot    // name, snapshot (its name): → instance
+        case restoreSnapshot, deleteSnapshot // name, snapshot (its id) → instance
         case attach, detach  // name: a tab starts/stops using the VM
         case stopAll
         case shutdown        // exit so launchd can start a newer host; refused while VMs run
@@ -111,6 +113,8 @@ struct HostRequest: Codable, Equatable, Sendable {
     /// answerMacSetup: the root step's work folder, or why it did not run.
     var macSetupWork: String?
     var macSetupError: String?
+    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot: its id.
+    var snapshot: String?
 
     init(id: UInt64, op: Op, name: String? = nil, force: Bool? = nil, config: InstanceConfig? = nil,
          version: Int? = nil, firewallAnswer: FirewallAnswer? = nil, profiles: [String]? = nil, names: [String]? = nil,
@@ -138,9 +142,15 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop, .repairDisk, .pause, .resume:
+             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
+            }
+            if op == .takeSnapshot, !(snapshot.map(Snapshot.isValidName) ?? false) {
+                throw HostProtocolError.invalid("takeSnapshot needs a name of at most \(Snapshot.maxNameLength) characters.")
+            }
+            if op == .restoreSnapshot || op == .deleteSnapshot, !(snapshot.map(Snapshot.isValidID) ?? false) {
+                throw HostProtocolError.invalid("\(op.rawValue) needs a snapshot's id.")
             }
         case .create, .update:
             guard let config, InstanceConfig.isValidName(config.name) else {
@@ -275,6 +285,44 @@ struct VMSnapshot: Codable, Equatable, Sendable {
     var warnings: [GuestWarning]? = nil
     /// The running VM is paused; absent when it is not.
     var paused: Bool? = nil
+    /// Its snapshots, oldest first (their settings stay on disk); absent when none.
+    var snapshots: [SnapshotSummary]? = nil
+    /// The snapshot it is at.
+    var currentSnapshot: String? = nil
+}
+
+/// A snapshot as the app lists it.
+struct SnapshotSummary: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var createdAt: Date
+    var parent: String?
+    var memory: Bool
+
+    init(id: String, name: String, createdAt: Date, parent: String?, memory: Bool) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.parent = parent
+        self.memory = memory
+    }
+
+    init(_ s: Snapshot) { self.init(id: s.id, name: s.name, createdAt: s.createdAt, parent: s.parent, memory: s.memory) }
+
+    /// Each snapshot under its parent, in the order taken.
+    static func tree(_ all: [SnapshotSummary]) -> [(snapshot: SnapshotSummary, depth: Int)] {
+        let ids = Set(all.map(\.id))
+        var out: [(snapshot: SnapshotSummary, depth: Int)] = []
+        func add(_ parent: String?, _ depth: Int) {
+            for s in all where s.parent == parent || (parent == nil && s.parent.map { !ids.contains($0) } == true) {
+                guard !out.contains(where: { $0.snapshot.id == s.id }) else { continue }
+                out.append((s, depth))
+                add(s.id, depth + 1)
+            }
+        }
+        add(nil, 0)
+        return out
+    }
 }
 
 /// What the app needs to run a macOS VM's setup step (Phase 14).

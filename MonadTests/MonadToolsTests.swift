@@ -74,6 +74,24 @@ final class MonadToolsTests: XCTestCase {
         XCTAssertEqual(try tool("add_disk").risk, .normal)
     }
 
+    /// Agents take, restore and delete snapshots; restoring and deleting
+    /// lose something, so they ask.
+    func testSnapshots() async throws {
+        let vm = try await made("web")
+        try Data("system".utf8).write(to: vm.paths.disk)
+        let taken = try object(try await call("take_snapshot", ["name": .string("web"), "snapshot": .string("clean")]))
+        let line = try XCTUnwrap((taken["snapshots"] as? [String])?.first)
+        let id = try XCTUnwrap(vm.snapshots.first?.id)
+        XCTAssertEqual(line, "\(id): clean, shut down, current")
+        try await call("restore_snapshot", ["name": .string("web"), "snapshot": .string(id)])
+        XCTAssertEqual(vm.currentSnapshot, id)
+        try await call("delete_snapshot", ["name": .string("web"), "snapshot": .string(id)])
+        XCTAssertTrue(vm.snapshots.isEmpty)
+        XCTAssertEqual(try tool("take_snapshot").risk, .normal)
+        XCTAssertEqual(try tool("restore_snapshot").risk, .risky)
+        XCTAssertEqual(try tool("delete_snapshot").risk, .risky)
+    }
+
     /// Agents see what a VM is low on, in words.
     func testAVMsWarningsAreInItsSummary() {
         let config = InstanceConfig(
@@ -105,7 +123,7 @@ final class MonadToolsTests: XCTestCase {
             XCTAssertNotNil(t.name.range(of: "^[a-z][a-z_]*$", options: .regularExpression), t.name)
         }
         let risky = Set(all.filter { $0.risk == .risky }.map(\.name))
-        XCTAssertEqual(risky, ["delete_vm", "remove_disk", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
+        XCTAssertEqual(risky, ["delete_vm", "remove_disk", "restore_snapshot", "delete_snapshot", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
                                "add_share", "add_bridge", "add_host_command", "set_agent_role", "set_firewall", "set_group",
                                "set_macos_security"])
         XCTAssertEqual(Set(all.filter { $0.risk == .read }.map(\.name)),

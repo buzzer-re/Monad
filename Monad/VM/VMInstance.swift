@@ -96,6 +96,11 @@ final class VMInstance: ObservableObject, Identifiable {
     /// crashed, it ran out of memory, its disk is full), with what to do;
     /// nil when nothing is. Kept after it stops, until the next start.
     @Published private(set) var healthProblem: String?
+    /// Its snapshots, oldest first, and the one it is at (Snapshots.swift).
+    @Published private(set) var snapshots: [Snapshot] = []
+    @Published private(set) var currentSnapshot: String?
+    /// The memory the next start restores instead of booting (a snapshot's).
+    private var restoreFrom: URL?
     /// The guest's CPUs are stopped where they were (Pause); it is still
     /// ready: its sessions, forwards and agent wait for it to resume.
     @Published private(set) var paused = false
@@ -187,6 +192,9 @@ final class VMInstance: ObservableObject, Identifiable {
         if config.guestOS == .macos {
             macSecurity = MacSecurityReport(sip: recordedSIP.map(\.word), fullDiskAccess: recordedFullDiskAccess)
         }
+        let store = SnapshotStore(paths: paths)
+        snapshots = store.list()
+        currentSnapshot = store.current
     }
 
     /// This VM's own log, always on (its Log page).
@@ -948,9 +956,18 @@ final class VMInstance: ObservableObject, Identifiable {
     private func boot(_ m: VirtualMachineControlling) async {
         guestReport = .starting(at: paths.serialLog)
         watchHealth(m)
-        debug("boot: starting the machine (\(config.cpus) CPUs, \(config.memoryGiB) GiB, folder sharing \(config.sharing.runtimeEnabled ? "on" : "off"))")
+        let restoring = restoreFrom
+        restoreFrom = nil
+        debug("boot: starting the machine (\(config.cpus) CPUs, \(config.memoryGiB) GiB, folder sharing \(config.sharing.runtimeEnabled ? "on" : "off"))"
+              + (restoring == nil ? "" : " from a snapshot's memory"))
         do {
-            try await m.start()
+            if let restoring {
+                try await m.restoreState(from: restoring)
+                try await m.resume()
+                restoredMemory = true
+            } else {
+                try await m.start()
+            }
         } catch {
             debug("boot: the machine did not start: \(error.localizedDescription)")
             if state == .starting { state = .failed(startProblem(error)) }
@@ -1139,6 +1156,10 @@ final class VMInstance: ObservableObject, Identifiable {
         if !deviceShares.isEmpty || hostShares != deviceShares { applyShares() }
         installGuestComponents()
         mountExtraDisks()
+        if restoredMemory {
+            restoredMemory = false
+            setGuestClock(because: "restored from a snapshot")
+        }
         runPendingProfiles()
         if config.guestOS == .macos {
             checkSIP()
@@ -1621,6 +1642,129 @@ final class VMInstance: ObservableObject, Identifiable {
             }
         }
     #endif
+
+    // MARK: Snapshots
+
+    /// Set when this run came from a snapshot's memory: once ready, its
+    /// clock is set to the Mac's (it stood still in the snapshot).
+    private var restoredMemory = false
+
+    /// Takes a snapshot named `name`: the disks, added disks, firmware store
+    /// and settings as they are; for a ready VM its memory too, saved while
+    /// it is paused (its disks cloned meanwhile, so both are of one moment).
+    func takeSnapshot(name: String) async throws -> Snapshot {
+        guard Snapshot.isValidName(name) else {
+            throw MonadError("A snapshot's name is plain text, \(Snapshot.maxNameLength) characters at most.")
+        }
+        guard !config.ephemeral else { throw MonadError("\(self.name) is thrown away when its last tab closes: it has no snapshots.") }
+        guard config.attached == nil else { throw MonadError("\(self.name) boots a Lima VM's disk, which Monad does not snapshot.") }
+        guard snapshots.count < Snapshot.maxCount else { throw MonadError("\(self.name) has \(Snapshot.maxCount) snapshots: delete one first.") }
+        guard state == .stopped || state == .ready || state.isFailed else {
+            throw MonadError("\(self.name) is \(state.label.lowercased()): take a snapshot once it is running or shut down.")
+        }
+        let id = Snapshot.newID()
+        let dir = paths.snapshot(id)
+        try Paths.ensurePrivateDirectory(paths.snapshots)
+        try Paths.ensurePrivateDirectory(dir)
+        let running = state == .ready ? machine : nil
+        let wasPaused = paused
+        var memory = false
+        do {
+            if let m = running {
+                if !wasPaused { try await pause() }
+                do {
+                    try await m.saveState(to: paths.snapshotMemory(id))
+                    memory = true
+                } catch {
+                    // Its disks are still worth keeping.
+                    debug("snapshot: could not save the memory (\(error.localizedDescription)): disks only")
+                    try? FileManager.default.removeItem(at: paths.snapshotMemory(id))
+                }
+            }
+            try await Self.cloneFiles(from: paths, to: dir, config: config)
+            if running != nil, !wasPaused { try await resume() }
+        } catch {
+            if running != nil, !wasPaused, paused { try? await resume() }
+            try? FileManager.default.removeItem(at: dir)
+            debug("snapshot: \(name) failed: \(error.localizedDescription)")
+            throw error
+        }
+        let snap = Snapshot(id: id, name: name, createdAt: env.clock.now(), parent: currentSnapshot, memory: memory, config: config)
+        let store = SnapshotStore(paths: paths)
+        try store.save(snap)
+        store.current = id
+        snapshots = store.list()
+        currentSnapshot = id
+        debug("snapshot: took \(id) “\(name)”" + (memory ? " with its memory" : ""))
+        return snap
+    }
+
+    /// Puts the VM back as snapshot `id` was: its disks, added disks,
+    /// firmware store and settings. What it is now is lost (the window
+    /// offers a snapshot of it first). One taken running starts again from
+    /// its memory; one taken shut down leaves the VM shut down.
+    func restoreSnapshot(_ id: String) async throws {
+        guard let snap = snapshots.first(where: { $0.id == id }) else { throw MonadError("\(name) has no snapshot \(id).") }
+        if isRunning {
+            debug("snapshot: powering off to restore \(id)")
+            await forceStop()
+        }
+        guard !isRunning else { throw MonadError("\(name) did not stop: the snapshot was not restored.") }
+        // The files now are replaced by clones of the snapshot's.
+        let fm = FileManager.default
+        try? fm.removeItem(at: paths.extraDisks)
+        for file in [paths.disk, paths.efiVars, paths.auxStorage] {
+            if fm.fileExists(atPath: paths.snapshot(id).appendingPathComponent(file.lastPathComponent).path) {
+                try? fm.removeItem(at: file)
+            }
+        }
+        try await Self.cloneFiles(from: InstancePaths(snapshotDir: paths.snapshot(id)), to: paths.dir, config: snap.config)
+        var restored = snap.config
+        restored.name = name
+        try restored.save(to: paths.config)
+        config = restored
+        discardMachine()
+        let store = SnapshotStore(paths: paths)
+        store.current = id
+        currentSnapshot = id
+        debug("snapshot: restored \(id) “\(snap.name)”" + (snap.memory ? ", starting from its memory" : ""))
+        if snap.memory {
+            restoreFrom = paths.snapshotMemory(id)
+            start()
+        }
+    }
+
+    /// Deletes snapshot `id`; the ones taken after it keep its parent.
+    func deleteSnapshot(_ id: String) throws {
+        guard let snap = snapshots.first(where: { $0.id == id }) else { throw MonadError("\(name) has no snapshot \(id).") }
+        let store = SnapshotStore(paths: paths)
+        for var child in snapshots where child.parent == id {
+            child.parent = snap.parent
+            try store.save(child)
+        }
+        try FileManager.default.removeItem(at: paths.snapshot(id))
+        if currentSnapshot == id {
+            store.current = snap.parent
+            currentSnapshot = snap.parent
+        }
+        snapshots = store.list()
+        debug("snapshot: deleted \(id) “\(snap.name)”")
+    }
+
+    /// The disk, added disks, firmware store and auxiliary storage as APFS
+    /// clones (instant; no room until they differ), from one folder to another.
+    private static func cloneFiles(from: InstancePaths, to dir: URL, config: InstanceConfig) async throws {
+        let target = InstancePaths(snapshotDir: dir)
+        var pairs = [from.disk, from.efiVars, from.auxStorage].map { ($0, target.dir.appendingPathComponent($0.lastPathComponent)) }
+        if !config.disks.isEmpty { try Paths.ensurePrivateDirectory(target.extraDisks) }
+        pairs += config.disks.map { (from.extraDisk($0.name), target.extraDisk($0.name)) }
+        try await Task.detached {
+            for (src, dst) in pairs where FileManager.default.fileExists(atPath: src.path) {
+                let rc = mnd_disk_clone(src.path, dst.path)
+                guard rc == 0 else { throw MonadError("Could not copy \(src.lastPathComponent): \(String(cString: strerror(rc))).") }
+            }
+        }.value
+    }
 
     // MARK: Pause
 

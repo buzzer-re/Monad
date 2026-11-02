@@ -59,6 +59,12 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   each health problem and the Mac's own disk below 10 GB free, once until it clears (Settings ›
   Virtual Machines › Warn when a VM runs low; checked on the Mac through the Debug MCP). The app's
   and MonadHost's step-by-step log (Settings › Logs) is on unless the user turns it off.
+- **Snapshots:** a VM's window (Snapshots page) and `take_snapshot`/`restore_snapshot`/
+  `delete_snapshot` keep the VM's disks and settings as APFS clones, and a running VM's memory
+  (Virtualization's saved state, while it is paused a moment), as a tree; restoring one taken
+  running brings the VM back running where it was, its clock set to the Mac's. Checked on the Mac:
+  a file in `/dev/shm` and a running process came back after a restore. Not yet: a new VM from a
+  snapshot (clone), which needs the guest to get a new identity (machine-id).
 - **Disks:** a VM takes up to 8 more disks (Resources › Disks, `add_disk`/`remove_disk`), sparse
   files in its folder attached by name at the next start; in a Linux VM Monad formats a blank one
   (ext4) and mounts it at `/mnt/<name>` (Guest/monad-disks.sh, never over a filesystem), and its
