@@ -155,7 +155,8 @@ warnings, this file updated, and no private names or paths in what is committed.
   selects, a tab dragged onto a grouped tab joins its group, a label collapses and drags its group,
   a name typed under the label, the layout under a see-through theme and in full screen, a session
   of grouped tabs opened again after a relaunch, bash in a Debian VM reporting its directory).
-  Still to see by eye: the strip over a blurred theme, and a drag with a real mouse.
+  The strip over a see-through theme was looked at in a capture of the real window. Still to try:
+  a drag with a real mouse (the events sent took the same path).
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
   first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
   through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a

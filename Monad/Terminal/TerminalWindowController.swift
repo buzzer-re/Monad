@@ -167,6 +167,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// The tabs, in the strip's order.
     var orderedTabs: [TerminalTab] { strip.tabs.compactMap { tabs[$0.id] } }
 
+    /// Whether the titlebar's own "…" shows (the strip has one once it shows).
+    var showsTitlebarMenu: Bool { !titlebarMenu.isHidden && !titlebarMenu.view.isHidden }
+
     /// Whether the tab strip shows: two tabs or more, or a group.
     var showsTabStrip: Bool { strip.tabs.count > 1 || !strip.groups.isEmpty }
 
@@ -594,6 +597,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let hidden = TabRouting.hidesTitlebarMenu(tabBarVisible: showsTabStrip,
                                                   fullScreen: inFullScreen || window?.styleMask.contains(.fullScreen) == true)
         if titlebarMenu.isHidden != hidden { titlebarMenu.isHidden = hidden }
+        // The button itself too: a hidden accessory was still drawn (seen
+        // on macOS 27, beside the strip's own "…").
+        if titlebarMenu.view.isHidden != hidden { titlebarMenu.view.isHidden = hidden }
     }
 
     // MARK: NSWindowDelegate

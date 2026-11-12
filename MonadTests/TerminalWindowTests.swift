@@ -41,6 +41,7 @@ final class TerminalWindowTests: XCTestCase {
         let window = try XCTUnwrap(c.window)
         window.makeKeyAndOrderFront(nil)
         XCTAssertFalse(c.showsTabStrip, "one tab: no strip")
+        XCTAssertTrue(c.showsTitlebarMenu, "the … is in the titlebar while there is no strip")
         XCTAssertTrue(c.stripView.isHidden)
         // Where the user left it: not the size a new window starts at.
         window.setFrame(NSRect(x: 100, y: 100, width: 913, height: 577), display: true)
@@ -52,6 +53,7 @@ final class TerminalWindowTests: XCTestCase {
         }
         XCTAssertTrue(c.showsTabStrip)
         XCTAssertFalse(c.stripView.isHidden)
+        XCTAssertFalse(c.showsTitlebarMenu, "one … at a time: the strip's")
         XCTAssertEqual(c.stripView.frame.height, TabStripLayout.height)
         XCTAssertEqual(window.contentResizeIncrements, NSSize(width: 1, height: 1), "no cell steps under a tab strip")
         XCTAssertEqual(c.stripView.layout.slots.count, 4)
