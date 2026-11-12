@@ -54,6 +54,30 @@ struct PaneTree: Equatable, Codable {
 
     func contains(_ pane: PaneID) -> Bool { panes.contains(pane) }
 
+    /// Whether the tree holds together, as one read from a file may not:
+    /// every pane once, the focus on one of them, each split with two
+    /// children or more and a share for each, and no more panes or levels
+    /// than a window ever has.
+    var isSound: Bool {
+        let all = panes
+        guard all.count <= Self.maximumPanes, Set(all).count == all.count, all.contains(focused) else { return false }
+        return Self.isSound(root, depth: 0)
+    }
+
+    static let maximumPanes = 64
+
+    private static func isSound(_ node: Node, depth: Int) -> Bool {
+        guard depth <= maximumPanes else { return false }
+        switch node {
+        case .pane(let id):
+            return !id.value.isEmpty && id.value.count <= 64
+        case .split(let s):
+            return s.children.count >= 2 && s.fractions.count == s.children.count
+                && s.fractions.allSatisfy { $0.isFinite && $0 > 0 && $0 <= 1 }
+                && s.children.allSatisfy { isSound($0, depth: depth + 1) }
+        }
+    }
+
     // MARK: Changes
 
     /// A new pane beside `pane` (after it), which takes the focus.

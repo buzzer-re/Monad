@@ -68,6 +68,49 @@ final class GuestDiscoveryTests: XCTestCase {
         }
     }
 
+    /// An interactive bash or zsh tells the terminal its directory at each
+    /// prompt (OSC 7): a split, and a tab opened again when Monad starts,
+    /// begin there. Other shells read the file and do nothing with it.
+    func testAnInteractiveShellSaysWhereItIs() throws {
+        let file = tmp.url.appendingPathComponent("monad.sh")
+        try GuestDiscovery.profileScript.write(to: file, atomically: true, encoding: .utf8)
+        let dir = tmp.url.appendingPathComponent("my work 100%")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func shell(_ path: String, _ arguments: [String]) throws -> (out: String, status: Int32) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: path)
+            p.arguments = arguments + [file.path, dir.path]
+            p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            p.standardInput = FileHandle.nullDevice
+            try p.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return (String(decoding: data, as: UTF8.self), p.terminationStatus)
+        }
+        func reported(_ out: String) -> String? {
+            guard let start = out.range(of: "\u{1B}]7;", options: .backwards),
+                  let end = out[start.upperBound...].firstIndex(of: "\u{07}") else { return nil }
+            return TerminalSessionViewController.directory(fromURL: String(out[start.upperBound..<end]))
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        }
+        let real = dir.resolvingSymlinksInPath().path
+        let bash = try shell("/bin/bash", ["--noprofile", "--norc", "-i", "-c",
+                                           "PROMPT_COMMAND='true'; . \"$0\"; . \"$0\"; cd -P \"$1\"; eval \"$PROMPT_COMMAND\"; echo \"[$PROMPT_COMMAND]\""])
+        XCTAssertEqual(reported(bash.out), real, bash.out)
+        XCTAssertTrue(bash.out.contains("[__monad_cwd;true]"), "added once, what was there kept: \(bash.out)")
+        let zsh = try shell("/bin/zsh", ["-f", "-i", "-c", ". \"$0\"; cd -P \"$1\"; for f in $precmd_functions; do $f; done"])
+        XCTAssertEqual(reported(zsh.out), real, zsh.out)
+        // Not interactive, or another shell: nothing printed, nothing wrong.
+        let script = try shell("/bin/bash", ["--noprofile", "--norc", "-c", ". \"$0\"; echo \"[${PROMPT_COMMAND-}]\""])
+        XCTAssertEqual(script.out, "[]\n")
+        let dash = try shell("/bin/dash", ["-c", "set -eu; . \"$0\"; echo fine"])
+        XCTAssertEqual(dash.out, "fine\n")
+        XCTAssertEqual(dash.status, 0)
+    }
+
     /// With a role: bridges.json, mcp.env (0600) and both agents told; the
     /// token in the file only. Without one, all of it goes again.
     func testAVMWithARoleFindsMonad() throws {

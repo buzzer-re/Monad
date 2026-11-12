@@ -84,13 +84,6 @@ final class TabSelectionTests: XCTestCase {
         }
     }
 
-    /// The tab bar shows its "+" only when the window's responder chain
-    /// answers newWindowForTab.
-    func testTheTabBarHasItsPlus() {
-        XCTAssertFalse(NSWindowController.instancesRespond(to: #selector(NSResponder.newWindowForTab(_:))))
-        XCTAssertTrue(TerminalWindowController.instancesRespond(to: #selector(NSResponder.newWindowForTab(_:))))
-    }
-
     /// The "…" is only its icon (a pull-down drew its first item's title,
     /// cut to "N"), and its menu, filled as it opens, starts with the new tab.
     func testTheTabMenuButtonIsOnlyItsIcon() throws {
@@ -107,43 +100,41 @@ final class TabSelectionTests: XCTestCase {
         XCTAssertEqual(button.tabMenu.items.count, count, "filled again, not added to")
     }
 
-    func testSelectsTabsInRealTabGroup() throws {
+    /// ⌘1 … ⌘9 in a terminal window; any other window has no tabs.
+    func testSelectsTabsOfATerminalWindow() throws {
         let delegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
-        let windows = (0..<4).map { i -> NSWindow in
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
-                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            w.isReleasedWhenClosed = false
-            w.tabbingMode = .preferred
-            w.tabbingIdentifier = "monad.test.tabs"
-            w.title = "tab \(i + 1)"
-            return w
-        }
-        defer { windows.forEach { $0.close() } }
-        windows[0].makeKeyAndOrderFront(nil)
-        for w in windows.dropFirst() { windows[0].addTabbedWindow(w, ordered: .above) }
-        let tabs = try XCTUnwrap(windows[0].tabbedWindows)
-        XCTAssertEqual(tabs.count, 4)
+        let controller = TerminalWindowController(target: .host)
+        defer { controller.window?.close() }
+        let first = controller.strip.selected
+        let ids = [first] + (0..<3).map { _ in controller.addTab(.host).id }
+        XCTAssertTrue(delegate.selectTab(number: 2, in: controller.window))
+        XCTAssertEqual(controller.strip.selected, ids[1])
+        XCTAssertTrue(delegate.selectTab(number: 9, in: controller.window))
+        XCTAssertEqual(controller.strip.selected, ids[3])
+        XCTAssertTrue(delegate.selectTab(number: 1, in: controller.window))
+        XCTAssertEqual(controller.strip.selected, ids[0])
+        XCTAssertFalse(delegate.selectTab(number: 5, in: controller.window))
+        XCTAssertEqual(controller.strip.selected, ids[0], "selection unchanged for a missing tab")
 
-        XCTAssertTrue(delegate.selectTab(number: 2, in: tabs[0]))
-        XCTAssertTrue(windows[0].tabGroup?.selectedWindow === tabs[1])
-        XCTAssertTrue(delegate.selectTab(number: 9, in: tabs[1]))
-        XCTAssertTrue(windows[0].tabGroup?.selectedWindow === tabs[3])
-        XCTAssertTrue(delegate.selectTab(number: 1, in: tabs[3]))
-        XCTAssertTrue(windows[0].tabGroup?.selectedWindow === tabs[0])
-        XCTAssertFalse(delegate.selectTab(number: 5, in: tabs[0]))
-        XCTAssertTrue(windows[0].tabGroup?.selectedWindow === tabs[0], "selection unchanged for a missing tab")
+        let plain = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled],
+                             backing: .buffered, defer: false)
+        plain.isReleasedWhenClosed = false
+        defer { plain.close() }
+        XCTAssertFalse(delegate.selectTab(number: 1, in: plain))
+        XCTAssertFalse(delegate.selectTab(number: 1, in: nil))
     }
 
-    func testSingleWindowWithoutTabs() {
-        let delegate = NSApp.delegate as? AppDelegate
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled],
-                         backing: .buffered, defer: false)
-        w.isReleasedWhenClosed = false
-        w.tabbingMode = .disallowed
-        defer { w.close() }
-        XCTAssertEqual(delegate?.selectTab(number: 1, in: w), true)
-        XCTAssertEqual(delegate?.selectTab(number: 2, in: w), false)
-        XCTAssertEqual(delegate?.selectTab(number: 1, in: nil), false)
+    /// The Window menu's tab items go to the terminal window in front.
+    func testTheWindowMenuMovesBetweenMonadsOwnTabs() throws {
+        let menu = try XCTUnwrap(NSApp.windowsMenu)
+        let actions = Set(menu.items.compactMap(\.action))
+        for action in [#selector(TerminalWindowController.showNextTab(_:)), #selector(TerminalWindowController.showPreviousTab(_:)),
+                       #selector(TerminalWindowController.addTabToNewGroup(_:)), #selector(TerminalWindowController.moveTabToNewWindow(_:)),
+                       #selector(AppDelegate.mergeAllWindows(_:))] {
+            XCTAssertTrue(actions.contains(action), "\(action)")
+        }
+        XCTAssertFalse(actions.contains(#selector(NSWindow.selectNextTab(_:))), "not the system's tabs")
+        XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
     }
 }
 

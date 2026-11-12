@@ -52,6 +52,10 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     private(set) var directory: String?
     /// Where its first VM shell starts (a split's), instead of the home folder.
     private(set) var startDirectory: String?
+    /// The directory it was opened in, kept until its shell reports one.
+    private let openedIn: String?
+    /// Its shell reported another directory (a window saves its session).
+    var onDirectoryChange: (() -> Void)?
 
     /// Called when the window/tab title should change.
     var onTitleChange: ((String) -> Void)?
@@ -67,6 +71,7 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     init(target: SessionTarget, cols: Int = 100, rows: Int = 30, host: HostClient? = nil, startIn directory: String? = nil) {
         self.target = target
         startDirectory = directory
+        openedIn = directory
         hostClient = host ?? HostAgent.client
         guard let model = TerminalModel(cols: cols, rows: rows, scrollback: Settings.scrollbackLines) else {
             fatalError("Cannot allocate terminal state")
@@ -82,7 +87,9 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         }
         model.onBell = { [weak self] in self?.terminalView.visualBell() }
         model.onDirectory = { [weak self] url in
-            if let d = Self.directory(fromURL: url) { self?.directory = d }
+            guard let self, let d = Self.directory(fromURL: url), d != self.directory else { return }
+            self.directory = d
+            self.onDirectoryChange?()
         }
         model.onImagesChanged = { [weak self] in self?.terminalView.needsDisplay = true }
         model.onClipboard = { [weak self] text in
@@ -462,7 +469,48 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         return path
     }
 
+    // MARK: A saved session
+
+    /// What opens this context again the next time Monad starts
+    /// (SavedSession): its VM by name and the directory its shell is in.
+    /// nil for an ephemeral VM, which is gone by then.
+    var savedContext: SavedSession.Context? {
+        // A host shell's directory is the Mac's to say, not what ran in it.
+        let directory = (target == .host ? session?.workingDirectory : nil) ?? self.directory ?? openedIn
+        switch target {
+        case .host:
+            return SavedSession.Context(kind: .host, vm: nil, directory: directory, theme: themeOverride)
+        case .ephemeralVM:
+            return nil
+        case .vm(let name):
+            if vm?.config.ephemeral == true { return nil }
+            return SavedSession.Context(kind: .vm, vm: name, directory: directory, theme: themeOverride)
+        case .defaultVM:
+            // By name once it is known: the default VM may be another by then.
+            return SavedSession.Context(kind: vm == nil ? .defaultVM : .vm, vm: vm?.name, directory: directory, theme: themeOverride)
+        }
+    }
+
+    /// The session target a saved context opens.
+    nonisolated static func target(of context: SavedSession.Context) -> SessionTarget {
+        switch context.kind {
+        case .host: return .host
+        case .defaultVM: return .defaultVM
+        case .vm: return context.vm.map { .vm($0) } ?? .defaultVM
+        }
+    }
+
     // MARK: Host sessions
+
+    /// Where a host shell starts: `directory` while it is a folder on this
+    /// Mac, else the home folder.
+    nonisolated static func hostDirectory(_ directory: String?, home: String = Paths.home.path) -> String {
+        var isFolder: ObjCBool = false
+        guard let directory, FileManager.default.fileExists(atPath: directory, isDirectory: &isFolder), isFolder.boolValue else {
+            return home
+        }
+        return directory
+    }
 
     private func connectHost() {
         let (shell, argv0) = Self.hostShell()
@@ -476,7 +524,9 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         #endif
         env["SHELL"] = shell
         let cmd = PTYSession.Command(executable: shell, arguments: [argv0], environment: env,
-                                     directory: Paths.home.path)
+                                     directory: Self.hostDirectory(startDirectory))
+        // Only the first shell: one started again starts at home.
+        startDirectory = nil
         spawn(cmd)
     }
 

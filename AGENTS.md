@@ -38,7 +38,8 @@ Then find the code with the [code map](#code-map), and the tests next to it in `
 | Role | What an MCP server inside a VM may do: `hostCommands`, or `orchestrator` (create and run VMs of its own) |
 | Approval, grant | A risky MCP call waits for the user's answer (an approval); "always allow" is kept as a grant |
 | Group, firewall tag | A group in the VM list also works as a firewall tag: a rule list every VM in it carries |
-| Context, pane | A pane in a terminal window holds several contexts (VM sessions); one is visible at a time |
+| Tab, tab group | A terminal window's tabs are Monad's own (`TabStrip`), not the system's; a tab group is a named, coloured run of tabs. Not the VM list's groups |
+| Context, pane | A pane in a tab holds several contexts (VM sessions); one is visible at a time |
 
 ## Architecture
 
@@ -81,6 +82,7 @@ Under `~/.monad` (Release) or `~/.monad-debug` (Debug), see `Monad/Support/Paths
 | `instances/order.json` | The VMs' order; the default VM is chosen there |
 | `networks/`, `firewall-tags/` | Monad networks and firewall tags, one JSON file each |
 | `distros/`, `profiles/`, `themes/` | What the user added, next to the ones in the app bundle |
+| `session.json` | The app's terminal windows, tabs and tab groups, to open them again (`SavedSession`) |
 | `logs/` | Settings › Logs, when debug logging is on |
 
 `instance.json` is `InstanceConfig` (versioned; old versions are migrated on load). Never write it from the app: the app sends an `update` and MonadHost validates and saves it.
@@ -94,7 +96,7 @@ App and host state lives on the main actor (`VMInstance`, `VMManager`, `HostServ
 | Path | What is there | Start with |
 |---|---|---|
 | `Monad/App` | AppKit and SwiftUI windows: the Virtual Machines list, a VM's window, Settings, the canvas, agent approvals, the New VM sheet | `AppDelegate.swift`, `VMManagerView.swift`, `VMDetailView.swift` |
-| `Monad/Terminal` | Tabs, panes and contexts, the terminal view, fonts, inline images, the pty | `TerminalSessionViewController.swift`, `TerminalModel.swift`, `PaneTree.swift` |
+| `Monad/Terminal` | Tabs and tab groups (Monad's own tab strip), panes and contexts, the terminal view, fonts, inline images, the pty | `TerminalSessionViewController.swift`, `TerminalModel.swift`, `TabStrip.swift`, `PaneTree.swift` |
 | `Monad/Theme`, `Monad/Themes` | Theme model, import from Terminal.app and iTerm2, built-in themes as JSON | `Theme.swift` |
 | `Monad/Host` | The app ↔ MonadHost protocol, transport and both ends | `HostProtocol.swift`, `HostService.swift`, `HostClient.swift` |
 | `Monad/VM` | One VM's life: config, state machine, provisioning, ssh, forwards, shares, bridges, the agent client, macOS install, setup and recovery | `VMInstance.swift`, `VMManager.swift`, `InstanceConfig.swift`, `CloudInit.swift` |
@@ -267,3 +269,4 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yml`:
 | [docs/CONFIG.md](docs/CONFIG.md) | A VM's settings file |
 | [docs/CANVAS.md](docs/CANVAS.md) | The canvas: model, persistence, interactions, notes |
 | [docs/GROUPS.md](docs/GROUPS.md) | Groups and firewall tags |
+| [docs/TABS.md](docs/TABS.md) | Tabs, tab groups and the session Monad opens again |

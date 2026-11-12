@@ -23,6 +23,21 @@ enum GuestDiscovery {
         export MONAD_BRIDGES="$HOME/.monad/bridges.json"
         # Monad's MCP server, when this VM has a role (Settings › Agents).
         if [ -r "$HOME/.monad/mcp.env" ]; then . "$HOME/.monad/mcp.env"; fi
+        # An interactive bash or zsh tells the terminal its directory at each
+        # prompt (OSC 7): a split, and a tab Monad opens again, start there.
+        # In eval: other shells read this file too, and must not parse it.
+        case $- in *i*)
+            if [ -n "${BASH_VERSION-}" ]; then
+                eval '__monad_cwd() { local d=${PWD//%/%25}; printf "\\033]7;file://%s%s\\007" "${HOSTNAME-}" "${d// /%20}"; }
+                case ";${PROMPT_COMMAND-};" in
+                    *";__monad_cwd;"*) ;;
+                    *) PROMPT_COMMAND="__monad_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+                esac'
+            elif [ -n "${ZSH_VERSION-}" ]; then
+                eval '__monad_cwd() { local d=${PWD//\\%/%25}; printf "\\033]7;file://%s%s\\007" "${HOST-}" "${d// /%20}"; }
+                autoload -Uz add-zsh-hook && add-zsh-hook precmd __monad_cwd'
+            fi ;;
+        esac
 
         """
 

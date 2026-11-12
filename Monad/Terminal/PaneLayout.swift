@@ -31,6 +31,23 @@ struct PaneLayout: Equatable {
         visibleByPane = [pane: context]
     }
 
+    /// A saved layout: nil unless the tree is sound and every pane has
+    /// contexts of its own, the one that shows among them.
+    init?(tree: PaneTree, contexts: [PaneID: [ContextID]], visible: [PaneID: ContextID]) {
+        guard tree.isSound else { return nil }
+        var seen = Set<ContextID>()
+        var shown: [PaneID: ContextID] = [:]
+        var kept: [PaneID: [ContextID]] = [:]
+        for pane in tree.panes {
+            guard let list = contexts[pane], let first = list.first, list.allSatisfy({ seen.insert($0).inserted }) else { return nil }
+            kept[pane] = list
+            shown[pane] = visible[pane].flatMap { list.contains($0) ? $0 : nil } ?? first
+        }
+        self.tree = tree
+        contextsByPane = kept
+        visibleByPane = shown
+    }
+
     /// The context that gets keystrokes and pastes.
     var focusedContext: ContextID? { visible(in: tree.focused) }
 

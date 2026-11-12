@@ -48,6 +48,42 @@ final class TerminalPanesTests: XCTestCase {
         XCTAssertNil(panes.focusedSession?.startDirectory, "another VM")
     }
 
+    /// What a saved session keeps of a tab: its panes, each context's VM
+    /// and the directory its shell reported, the theme chosen for it.
+    func testPanesAreSavedAndComeBackWhereTheyWere() async throws {
+        let panes = TerminalPanes(target: .vm("web"), host: host)
+        let first = try XCTUnwrap(panes.focusedSession)
+        first.model.feed("\u{1B}]7;file://monad-web/srv/site\u{07}")
+        await assertEventually { first.directory == "/srv/site" }
+        first.themeOverride = "Pro"
+        var changes = 0
+        panes.onSavedStateChange = { changes += 1 }
+        panes.addContext(.vm("db"))
+        panes.split(.horizontal)
+        panes.addContext(.vm("api"))
+        XCTAssertGreaterThanOrEqual(changes, 3, "a window hears that there is something to save")
+        let before = changes
+        first.model.feed("\u{1B}]7;file://monad-web/srv/other\u{07}")
+        await assertEventually { changes > before }
+
+        let saved = try XCTUnwrap(panes.saved)
+        let back = try XCTUnwrap(TerminalPanes(restoring: saved, host: host))
+        XCTAssertEqual(back.layout.tree, panes.layout.tree)
+        XCTAssertEqual(back.allSessions.map(\.target), [.vm("web"), .vm("db"), .vm("db"), .vm("api")])
+        XCTAssertEqual(back.allSessions.map(\.startDirectory), ["/srv/other", nil, nil, nil])
+        XCTAssertEqual(back.allSessions.first?.themeOverride, "Pro")
+        XCTAssertEqual(back.focusedSession?.target, .vm("api"))
+        XCTAssertEqual(back.saved, saved, "not started yet: it keeps where it is to start")
+    }
+
+    /// An ephemeral VM is discarded when Monad quits: nothing to open again.
+    func testEphemeralVMsAreNotSaved() throws {
+        let panes = TerminalPanes(target: .ephemeralVM, host: host)
+        XCTAssertNil(panes.saved)
+        panes.addContext(.vm("web"))
+        XCTAssertEqual(panes.saved?.contexts.values.flatMap { $0 }.map(\.vm), ["web"])
+    }
+
     /// The dock: asked for a VM it already has, it shows that one.
     func testAVMAlreadyThereIsShownNotOpenedAgain() {
         let panes = TerminalPanes(target: .vm("web"), host: host)

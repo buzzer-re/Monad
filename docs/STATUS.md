@@ -1,6 +1,6 @@
 # Monad: where things stand
 
-Last updated: 2026-10-25, before the first public release. This is the state of the project, not its
+Last updated: 2026-11-12. This is the state of the project, not its
 history: what Monad does, how it is built, how it is tested, and what is open. Update it with every
 change that moves any of these.
 
@@ -33,7 +33,7 @@ macOS guest: monad-guestd (vsock → sshd -i, agent), set up by one admin-prompt
 
 VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SECURITY.md`
 (processes and boundaries), `docs/MACOS.md`, `docs/AGENTS.md`, `docs/CANVAS.md`, `docs/CONFIG.md`,
-`docs/GROUPS.md`, `docs/DISTROS.md`, `docs/BUILDING.md`.
+`docs/GROUPS.md`, `docs/TABS.md`, `docs/DISTROS.md`, `docs/BUILDING.md`.
 
 ## What Monad does
 
@@ -84,8 +84,14 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   a private folder on the Mac and its path typed; Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
-- **Windows:** a new tab takes its window's place at the size it is (cell steps, which snapped it
-  a few points each ⌘T, only apply to a window with one tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
+- **Tabs:** Monad's own tab strip (the system's has no place for groups) with tab groups as
+  Firefox has them: a named, coloured label, a line under its tabs, a click to collapse it, tabs
+  and groups moved by drag and drop, to a window of their own, or merged into one window. The
+  windows, tabs and groups of last time open again when Monad starts, each shell in the directory
+  it was in (`~/.monad/session.json`; a tab starts when first shown; ephemeral VMs are not kept);
+  bash and zsh in a VM report their directory through `/etc/profile.d/monad.sh` (`docs/TABS.md`).
+- **Windows:** a window is one size whatever its tabs (cell steps only apply to a window with one
+  tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
   added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
   a full-screen terminal's too.
 - **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
@@ -145,6 +151,11 @@ warnings, this file updated, and no private names or paths in what is committed.
 - **Limits:** a VM's disk cannot grow after it is made; distributions without systemd (Alpine)
   are not supported; Arch Linux has no official arm64 image; the App Sandbox is off (the app runs
   `ssh`); netd has no IPv6 (IPv6 rules cannot be saved).
+- **Tab groups:** checked in the running Debug app with events sent through the debugger (a click
+  selects, a tab dragged onto a grouped tab joins its group, a label collapses and drags its group,
+  a name typed under the label, the layout under a see-through theme and in full screen, a session
+  of grouped tabs opened again after a relaunch, bash in a Debian VM reporting its directory).
+  Still to see by eye: the strip over a blurred theme, and a drag with a real mouse.
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
   first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
   through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a

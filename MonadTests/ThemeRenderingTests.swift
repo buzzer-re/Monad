@@ -93,8 +93,9 @@ final class ThemeRenderingTests: XCTestCase {
     func testTheWindowLaysOutUnderItsTitlebar() throws {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
-        let terminals = NSView()
-        let content = TerminalWindowContentView(terminals: terminals)
+        let tabStrip = NSView()
+        let content = TerminalWindowContentView(tabStrip: tabStrip, frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let terminals = content.terminals
         window.contentView = content
         content.apply(TitlebarStyle(color: RGB(hex: 0x000080), opacity: 0.8, dark: true), to: window)
         content.layoutSubtreeIfNeeded()
@@ -115,6 +116,30 @@ final class ThemeRenderingTests: XCTestCase {
         XCTAssertTrue(content.strip.isHidden)
         XCTAssertEqual(terminals.frame, content.bounds)
         XCTAssertNil(window.appearance)
+    }
+
+    /// The tab strip takes the top of the window's content, the terminals
+    /// the rest; under a painted titlebar the same paint is behind both.
+    func testTheTabStripSitsUnderTheTitlebar() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
+        let tabStrip = NSView()
+        let content = TerminalWindowContentView(tabStrip: tabStrip, frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        window.contentView = content
+        content.layoutSubtreeIfNeeded()
+        XCTAssertTrue(tabStrip.isHidden)
+        XCTAssertEqual(content.terminals.frame, content.bounds)
+        content.showsTabStrip = true
+        XCTAssertFalse(tabStrip.isHidden)
+        XCTAssertEqual(tabStrip.frame, NSRect(x: 0, y: 300 - TabStripLayout.height, width: 400, height: TabStripLayout.height))
+        XCTAssertEqual(content.terminals.frame, NSRect(x: 0, y: 0, width: 400, height: 300 - TabStripLayout.height))
+        content.apply(TitlebarStyle(color: RGB(hex: 0x000080), opacity: 0.8, dark: true), to: window)
+        content.layoutSubtreeIfNeeded()
+        let inner = content.convert(window.contentLayoutRect, from: nil)
+        XCTAssertEqual(tabStrip.frame.maxY, inner.maxY, accuracy: 0.5)
+        XCTAssertEqual(content.terminals.frame.maxY, tabStrip.frame.minY, accuracy: 0.5)
+        XCTAssertEqual(content.strip.frame.minY, tabStrip.frame.minY, accuracy: 0.5, "one paint behind the titlebar and the strip")
+        XCTAssertEqual(content.strip.frame.maxY, content.bounds.maxY, accuracy: 0.5)
     }
 
     func testOpaqueThemesStayOpaque() throws {

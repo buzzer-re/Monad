@@ -136,6 +136,7 @@ private struct TerminalSettingsPane: View {
     @AppStorage(SettingsKey.optionAsMeta) private var optionAsMeta = true
     @AppStorage(SettingsKey.cursorBlink) private var cursorBlink = false
     @AppStorage(SettingsKey.scrollbackLines) private var scrollback = 10_000
+    @AppStorage(SettingsKey.restoreTabs) private var restoreTabs = true
 
     private static let scrollbackChoices = [1_000, 5_000, 10_000, 50_000, 100_000, 200_000]
 
@@ -190,6 +191,10 @@ private struct TerminalSettingsPane: View {
                 }
                 SettingRow(symbol: "cursorarrow.rays", color: .purple, title: "Blinking cursor") {
                     Toggle("", isOn: $cursorBlink).labelsHidden().toggleStyle(.switch)
+                }
+                SettingRow(symbol: "rectangle.stack", color: .blue, title: "Open the tabs of last time",
+                           detail: "When Monad starts: its windows, tabs and tab groups, each shell in the directory it was in. A tab starts when you first show it. Tabs on ephemeral VMs are not kept.") {
+                    Toggle("", isOn: $restoreTabs).labelsHidden().toggleStyle(.switch)
                 }
                 SettingRow(symbol: "scroll", color: .teal, title: "Scrollback",
                            detail: "Lines kept per tab, at most 64 MB each (fewer lines in very wide windows). Applies to new tabs.") {

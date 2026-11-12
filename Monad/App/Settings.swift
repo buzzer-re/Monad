@@ -22,6 +22,8 @@ enum SettingsKey {
     static let lastUpdateCheck = "lastUpdateCheck"
     /// Notifications when a VM runs low on memory or disk (VMAlerts).
     static let vmAlerts = "vmAlerts"
+    /// The windows, tabs and groups of last time open again (SavedSession).
+    static let restoreTabs = "restoreTabs"
 }
 
 enum Settings {
@@ -33,6 +35,7 @@ enum Settings {
         SettingsKey.cursorBlink: false,
         SettingsKey.checkForUpdates: true,
         SettingsKey.vmAlerts: true,
+        SettingsKey.restoreTabs: true,
     ]
 
     static func registerDefaults() {
@@ -55,6 +58,7 @@ enum Settings {
     static var cursorBlink: Bool { UserDefaults.standard.bool(forKey: SettingsKey.cursorBlink) }
     static var checkForUpdates: Bool { UserDefaults.standard.bool(forKey: SettingsKey.checkForUpdates) }
     static var vmAlerts: Bool { UserDefaults.standard.bool(forKey: SettingsKey.vmAlerts) }
+    static var restoreTabs: Bool { UserDefaults.standard.bool(forKey: SettingsKey.restoreTabs) }
     static var scrollbackLines: Int {
         min(max(UserDefaults.standard.integer(forKey: SettingsKey.scrollbackLines), 0), 200_000)
     }

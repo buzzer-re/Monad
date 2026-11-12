@@ -38,6 +38,9 @@ final class TerminalPanes: NSObject {
     var onLastClosed: (() -> Void)?
     /// The panes changed shape or the font changed (a window's resize steps).
     var onLayoutChange: (() -> Void)?
+    /// Something a saved session keeps changed: the panes, their contexts,
+    /// a shell's directory.
+    var onSavedStateChange: (() -> Void)?
 
     init(target: SessionTarget, host: HostClient? = nil, turnedOn: (@MainActor () -> [String])? = nil) {
         self.host = host
@@ -48,9 +51,41 @@ final class TerminalPanes: NSObject {
         layout = PaneLayout(context: context, pane: .make())
         super.init()
         view.onNewPane = { [weak self] pane in self?.setUp(pane) }
-        view.onFractions = { [weak self] fractions, path in self?.layout.setFractions(fractions, ofSplitAt: path) }
+        view.onFractions = { [weak self] fractions, path in
+            self?.layout.setFractions(fractions, ofSplitAt: path)
+            self?.onSavedStateChange?()
+        }
         _ = makeSession(target, context)
         rebuild()
+    }
+
+    /// The panes of a saved session (SavedSession), each context on its VM
+    /// and in its directory; nil when the saved parts do not fit together.
+    init?(restoring saved: SavedSession.Panes, host: HostClient? = nil, turnedOn: (@MainActor () -> [String])? = nil) {
+        guard let restored = saved.restored() else { return nil }
+        self.host = host
+        self.turnedOn = turnedOn ?? {
+            PaneMenu.turnedOn((host ?? HostAgent.client).instances.map { ($0.name, $0.state) })
+        }
+        layout = restored.layout
+        super.init()
+        view.onNewPane = { [weak self] pane in self?.setUp(pane) }
+        view.onFractions = { [weak self] fractions, path in
+            self?.layout.setFractions(fractions, ofSplitAt: path)
+            self?.onSavedStateChange?()
+        }
+        for id in layout.allContexts {
+            guard let context = restored.contexts[id] else { continue }
+            let session = makeSession(TerminalSessionViewController.target(of: context), id, startIn: context.directory)
+            session.themeOverride = context.theme
+        }
+        rebuild()
+    }
+
+    /// The panes as a saved session keeps them; nil when nothing in them
+    /// can be opened again (ephemeral VMs only).
+    var saved: SavedSession.Panes? {
+        SavedSession.Panes(layout: layout) { sessions[$0]?.savedContext }
     }
 
     /// The session in front: the focused pane's visible context.
@@ -113,6 +148,7 @@ final class TerminalPanes: NSObject {
         }
         session.onTransparencyChange = { [weak self] _ in self?.refreshOpacity() }
         session.onFinished = { [weak self] in self?.finished(id) }
+        session.onDirectoryChange = { [weak self] in self?.onSavedStateChange?() }
         session.terminalView.extraMenuItems = { [weak self] in
             guard let self, let pane = self.layout.pane(of: id) else { return [] }
             return self.paneMenuItems(for: pane)
@@ -362,6 +398,7 @@ final class TerminalPanes: NSObject {
         for (id, session) in sessions { session.isFocusedContext = id == layout.focusedContext }
         refreshTitles()
         refreshOpacity()
+        onSavedStateChange?()
     }
 
     func focusTerminal() {

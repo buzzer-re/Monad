@@ -23,7 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Settings.registerDefaults()
-        NSWindow.allowsAutomaticWindowTabbing = true
+        // Terminal windows have Monad's own tabs (TabStripView).
+        NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = buildMainMenu()
         // Unit tests and Xcode previews run inside the app: never provision
         // VMs or open windows.
@@ -63,8 +64,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         vmAlerts = VMAlertCenter(host: HostAgent.client) { [weak self] name in
             if let vm = HostAgent.client.instances.first(where: { $0.name == name }) { self?.showDetails(of: vm) }
         }
-        newWindow(nil)
+        TerminalWindowController.onSavedStateChange = { [weak self] in self?.sessionChanged() }
+        TerminalWindowController.onWillClose = { [weak self] _ in
+            // The last window's tabs are what opens next time, also when
+            // it is closed before Monad quits.
+            if TerminalWindowController.all.count == 1 { self?.saveSession() }
+        }
+        if !restoreSession() { newWindow(nil) }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: The saved session
+
+    private var sessionSave: DispatchWorkItem?
+    private var terminating = false
+
+    /// The windows of the last time, each tab on its VM and in its
+    /// directory (Settings › Terminal › Open the tabs of last time). False
+    /// when there is nothing to open.
+    private func restoreSession() -> Bool {
+        guard Settings.restoreTabs, let session = SessionStore().load() else { return false }
+        var opened: [TerminalWindowController] = []
+        for saved in session.windows {
+            guard let controller = TerminalWindowController(restoring: saved) else { continue }
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.start()
+            opened.append(controller)
+        }
+        DebugLog.shared.log("tabs", "opened \(opened.count) window(s) of the last session, \(opened.map(\.tabCount).reduce(0, +)) tab(s)")
+        return !opened.isEmpty
+    }
+
+    /// Something a saved session keeps changed: saved soon, once.
+    private func sessionChanged() {
+        guard !terminating, sessionSave == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.sessionSave = nil
+            self?.saveSession()
+        }
+        sessionSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func saveSession() {
+        guard !terminating, !Self.isHeadless(), !Self.hostShellOnly else { return }
+        let store = SessionStore()
+        guard Settings.restoreTabs else {
+            try? FileManager.default.removeItem(at: store.url)
+            return
+        }
+        do {
+            switch SavedSession.keeping(TerminalWindowController.all.map(\.saved)) {
+            case .asItIs: break
+            case .nothing: try? FileManager.default.removeItem(at: store.url)
+            case .session(let session): try store.save(session)
+            }
+        } catch {
+            DebugLog.shared.log("tabs", "the session could not be saved: \(error.localizedDescription)")
+        }
     }
 
     /// Debug-only switch for UI tests (`-MonadHostShellOnly YES`): every new
@@ -98,6 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// VMs keep running in MonadHost; closing the connection releases this
     /// app's tab sessions (ephemeral VMs are discarded by the host).
     func applicationWillTerminate(_ notification: Notification) {
+        saveSession()
+        terminating = true
         for c in TerminalWindowController.all { c.closeAllSessions() }
         if !Self.isHeadless() && !Self.hostShellOnly { HostAgent.client.stop() }
     }
@@ -110,40 +169,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
     private var focusedTab: TabRouting.Tab? { focusedTerminal?.routingTab }
 
-    /// The terminal windows, front to back (tabs not in front last).
-    private func terminalWindows(besides new: NSWindow) -> [NSWindow] {
-        let all = TerminalWindowController.all.compactMap(\.window).filter { $0 !== new }
+    /// The terminal windows, front to back.
+    private func terminalWindows() -> [NSWindow] {
+        let all = TerminalWindowController.all.compactMap(\.window)
         let ordered = NSApp.orderedWindows.filter { w in all.contains { $0 === w } }
         return ordered + all.filter { w in !ordered.contains { $0 === w } }
     }
 
     /// A tab on `target` (any VM, a host shell): in `owner`'s window, the
     /// one it was asked from, else the terminal window in front
-    /// (TabRouting); a window of its own when `asTab` is false (⌘N) or no
-    /// terminal window is open.
+    /// (TabRouting), there in `group` when one is given; a window of its
+    /// own when `asTab` is false (⌘N) or no terminal window is open.
+    /// Returns the window it is in.
     @discardableResult
     func open(_ target: SessionTarget, from owner: TerminalWindowController? = nil,
-              asTab: Bool = true) -> TerminalWindowController {
-        let controller = TerminalWindowController(target: target)
-        guard let window = controller.window else { return controller }
-        let windows = terminalWindows(besides: window)
+              asTab: Bool = true, in group: TabGroupID? = nil) -> TerminalWindowController {
+        let windows = terminalWindows()
         let number = asTab ? TabRouting.window(asked: (owner ?? focusedTerminal)?.window?.windowNumber,
                                                frontToBack: windows.map(\.windowNumber)) : nil
-        if let host = windows.first(where: { $0.windowNumber == number }) {
-            DebugLog.shared.log("tabs", "\(target) opens as a tab in window \(host.windowNumber)")
-            controller.join(host)
+        if let host = TerminalWindowController.all.first(where: { $0.window?.windowNumber == number }) {
+            DebugLog.shared.log("tabs", "\(target) opens as a tab in window \(number ?? 0)")
+            host.addTab(target, in: group)
+            host.window?.makeKeyAndOrderFront(nil)
+            return host
+        }
+        DebugLog.shared.log("tabs", "\(target) opens a window\(asTab ? " (no terminal window open)" : "")")
+        let last = TerminalWindowController.all.last?.window
+        let controller = TerminalWindowController(target: target)
+        guard let window = controller.window else { return controller }
+        if let last {
+            window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
         } else {
-            DebugLog.shared.log("tabs", "\(target) opens a window\(asTab ? " (no terminal window open)" : "")")
-            if let last = TerminalWindowController.all.dropLast().last?.window {
-                window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
-            } else {
-                window.center()
-            }
+            window.center()
         }
         window.makeKeyAndOrderFront(nil)
         controller.start()
-        // A window that now has two tabs shows its tab bar, and "…" in each tab.
-        TerminalWindowController.all.forEach { $0.refreshTabMenu() }
         return controller
     }
 
@@ -157,19 +217,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         return number <= tabCount ? number - 1 : nil
     }
 
-    /// Select tab `number` in the tab group of `window`. Returns false if
-    /// there is no such tab.
+    /// Select tab `number` of the terminal window `window`. Returns false
+    /// if there is no such tab.
     @discardableResult
     func selectTab(number: Int, in window: NSWindow?) -> Bool {
-        guard let window else { return false }
-        let tabs = window.tabbedWindows ?? [window]
-        guard let index = Self.tabIndex(forShortcut: number, tabCount: tabs.count) else { return false }
-        let target = tabs[index]
-        if let group = window.tabGroup, group.selectedWindow !== target {
-            group.selectedWindow = target
-        }
-        target.makeKeyAndOrderFront(nil)
-        return true
+        (window?.windowController as? TerminalWindowController)?.selectTab(number: number) ?? false
+    }
+
+    /// Window ▸ Merge All Windows: every terminal window's tabs, groups
+    /// included, in the one in front.
+    @objc func mergeAllWindows(_ sender: Any?) {
+        guard let front = focusedTerminal ?? terminalWindows().first?.windowController as? TerminalWindowController else { return }
+        for other in TerminalWindowController.all where other !== front { front.absorb(other) }
+        front.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc func selectTabByNumber(_ sender: NSMenuItem) {
@@ -203,13 +263,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
 
     /// Another tab on `owner`'s VM (or the tab in front's), in its window
-    /// (the tab bar's "+" too).
-    func newTab(from owner: TerminalWindowController?) {
+    /// (the tab strip's "+" too), there in `group` when one is given.
+    func newTab(from owner: TerminalWindowController?, in group: TabGroupID? = nil) {
         guard let target = TabRouting.newTab(focused: (owner ?? focusedTerminal)?.routingTab, fallback: defaultTarget) else {
             NSSound.beep()
             return
         }
-        open(target, from: owner)
+        open(target, from: owner, in: group)
     }
 
     /// A new ephemeral VM, in a new tab.
@@ -242,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             item.title = TabRouting.settingsTitle(focused: focusedTab)
             return TabRouting.settingsVM(focused: focusedTab).flatMap { HostAgent.client.vm(named: $0) } != nil
         }
+        if item.action == #selector(mergeAllWindows(_:)) { return TerminalWindowController.all.count > 1 }
         guard item.action == #selector(newTab(_:)) else { return true }
         item.title = TabRouting.newTabTitle(focused: focusedTab, fallback: defaultTarget,
                                             defaultVM: HostAgent.client.defaultVM?.name)
@@ -566,11 +627,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         window.addItem(.separator())
-        let next = window.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")
+        let next = window.addItem(withTitle: "Show Next Tab", action: #selector(TerminalWindowController.showNextTab(_:)), keyEquivalent: "}")
         next.keyEquivalentModifierMask = [.command]
-        let prev = window.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")
+        let prev = window.addItem(withTitle: "Show Previous Tab", action: #selector(TerminalWindowController.showPreviousTab(_:)), keyEquivalent: "{")
         prev.keyEquivalentModifierMask = [.command]
-        window.addItem(withTitle: "Merge All Windows", action: #selector(NSWindow.mergeAllWindows(_:)), keyEquivalent: "")
+        window.addItem(withTitle: "Add Tab to New Group", action: #selector(TerminalWindowController.addTabToNewGroup(_:)), keyEquivalent: "")
+        window.addItem(withTitle: "Move Tab to New Window", action: #selector(TerminalWindowController.moveTabToNewWindow(_:)), keyEquivalent: "")
+        window.addItem(withTitle: "Merge All Windows", action: #selector(mergeAllWindows(_:)), keyEquivalent: "")
         window.addItem(.separator())
         // Panes: ⌘ and an arrow.
         let panes: [(String, Selector, Int)] = [

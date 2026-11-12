@@ -66,7 +66,9 @@ Tick a profile in New VM and the VM is set up on its first boot. Agentic brings 
 
 ![A tab split in three: a Next.js server and git log on the VM web, and a pane whose menu is switching it to the VM db.](docs/images/splits.png)
 
-⇧⌘V and ⇧⌘H split a tab side by side or stacked. A pane holds several contexts, a VM session each, so one window can watch a web server, its repository and its database. Switch a pane's context from its menu, or with ⇧⌘← and ⇧⌘→ without leaving the keyboard. They go through the menu's list in order: the pane's contexts, then every other VM that is on, where they open a context (a stopped VM is never started). The context you leave keeps running. Drag a pane by its header to move it. Each VM also gets its own tab group, and the "…" in a tab opens tabs on other VMs.
+⇧⌘V and ⇧⌘H split a tab side by side or stacked. A pane holds several contexts, a VM session each, so one window can watch a web server, its repository and its database. Switch a pane's context from its menu, or with ⇧⌘← and ⇧⌘→ without leaving the keyboard. They go through the menu's list in order: the pane's contexts, then every other VM that is on, where they open a context (a stopped VM is never started). The context you leave keeps running. Drag a pane by its header to move it. The "…" in the tab strip opens tabs on other VMs.
+
+Tabs can be put in groups, as in Firefox: right-click a tab and choose Add Tab to New Group, give it a name and a colour, and click its label to collapse it. Drag tabs and labels to rearrange them. When Monad starts it opens the windows, tabs and groups of last time, each shell in the directory it was in ([docs/TABS.md](docs/TABS.md)).
 
 ## Ports forward themselves
 
