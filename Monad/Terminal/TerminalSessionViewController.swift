@@ -50,8 +50,7 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     /// A profile was being set up while this tab watched (so "set up" news is its own).
     private var sawProfileWork = false
     private var closed = false
-    /// The directory its shell last reported (OSC 7), where a split of its
-    /// pane starts.
+    /// The directory its shell last reported (OSC 7).
     private(set) var directory: String?
     /// Where its first VM shell starts (a split's), instead of the home folder.
     private(set) var startDirectory: String?
@@ -149,8 +148,8 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         case .defaultVM: return hostClient.defaultVM?.name ?? VMManager.defaultName
         case .ephemeralVM: return "ephemeral"
         case .vm(let name): return name
-        case .ssh(let name): return name
         case .host: return "host"
+        case .ssh(let name): return name
         }
     }
 
@@ -229,8 +228,8 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         case .defaultVM: return try await hostClient.ensureDefault()
         case .ephemeralVM: return try await hostClient.createEphemeral()
         case .vm(let name): return try await hostClient.existing(name)
-        case .ssh: throw MonadError("SSH hosts have no VM.")
         case .host: throw MonadError("Host shells have no VM.")
+        case .ssh: throw MonadError("SSH hosts have no VM.")
         }
     }
 
@@ -536,14 +535,21 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         return path
     }
 
+    /// Where its shell is now (where a split of its pane starts, and what a
+    /// saved session keeps). A host shell's directory is the Mac's to say,
+    /// not what ran in it; a VM's or an SSH host's shell has to report it
+    /// (OSC 7); until then, where it was opened.
+    var currentDirectory: String? {
+        (target == .host ? session?.workingDirectory : nil) ?? directory ?? openedIn
+    }
+
     // MARK: A saved session
 
     /// What opens this context again the next time Monad starts
     /// (SavedSession): its VM by name and the directory its shell is in.
     /// nil for an ephemeral VM, which is gone by then.
     var savedContext: SavedSession.Context? {
-        // A host shell's directory is the Mac's to say, not what ran in it.
-        let directory = (target == .host ? session?.workingDirectory : nil) ?? self.directory ?? openedIn
+        let directory = currentDirectory
         switch target {
         case .host:
             return SavedSession.Context(kind: .host, vm: nil, directory: directory, theme: themeOverride)
@@ -552,27 +558,27 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         case .vm(let name):
             if vm?.config.ephemeral == true { return nil }
             return SavedSession.Context(kind: .vm, vm: name, directory: directory, theme: themeOverride)
+        case .ssh(let name):
+            return SavedSession.Context(kind: .ssh, vm: name, directory: directory, theme: themeOverride)
         case .defaultVM:
             // By name once it is known: the default VM may be another by then.
             return SavedSession.Context(kind: vm == nil ? .defaultVM : .vm, vm: vm?.name, directory: directory, theme: themeOverride)
         }
     }
 
-        case .ssh(let name):
-            return SavedSession.Context(kind: .ssh, vm: name, directory: directory, theme: themeOverride)
     /// The session target a saved context opens.
     nonisolated static func target(of context: SavedSession.Context) -> SessionTarget {
         switch context.kind {
         case .host: return .host
         case .defaultVM: return .defaultVM
         case .vm: return context.vm.map { .vm($0) } ?? .defaultVM
+        case .ssh: return context.vm.map { .ssh($0) } ?? .defaultVM
         }
     }
 
     // MARK: Host sessions
 
     /// Where a host shell starts: `directory` while it is a folder on this
-        case .ssh: return context.vm.map { .ssh($0) } ?? .defaultVM
     /// Mac, else the home folder.
     nonisolated static func hostDirectory(_ directory: String?, home: String = Paths.home.path) -> String {
         var isFolder: ObjCBool = false
@@ -727,18 +733,22 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         autoRetries = 0
         if let vm, code == 255 {
             error("Connection to \(vm.name) failed or was lost.")
+        } else if case .ssh(let name) = target, code == 255 {
+            // An SSH tab never signs in again by itself: Return asks for it.
+            error("Connection to \(name) failed or was lost.")
         }
         model.feed("\r\n\u{1B}[0m\u{1B}[2m[Process completed — press Return to reconnect]\u{1B}[22m\r\n")
         terminalView.refresh()
         updateTitle()
     }
 
-        } else if case .ssh(let name) = target, code == 255 {
-            // An SSH tab never signs in again by itself: Return asks for it.
-            error("Connection to \(name) failed or was lost.")
     private func reconnect() {
         if target == .host {
             connectHost()
+            return
+        }
+        if case .ssh(let name) = target {
+            connectSSH(name)
             return
         }
         guard let vm, attached != nil else {
@@ -747,10 +757,6 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         }
         phase = .waiting
         if vm.state == .ready {
-        if case .ssh(let name) = target {
-            connectSSH(name)
-            return
-        }
             connectVM(vm)
         } else {
             status("Starting VM \(vm.name)…")
@@ -859,15 +865,15 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                     paths.append(try await FileUploader.upload(img.png, name: img.suggestedName,
                                                                directory: .screenshots, to: to.target))
                 }
+            } catch {
+                view.showToast("Upload failed: \(error.localizedDescription)", duration: 5)
+                return
             }
             view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
             view.showToast(paths.count == 1 ? "Image copied into \(name)" : "\(paths.count) images copied")
         }
         return true
     }
-            } catch {
-                view.showToast("Upload failed: \(error.localizedDescription)", duration: 5)
-                return
 
     func terminalView(_ view: MonadTerminalView, receivedFiles urls: [URL]) -> Bool {
         guard target != .host else { return false }
@@ -884,15 +890,15 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                 for url in urls {
                     paths.append(try await FileUploader.uploadFile(url, to: to.target))
                 }
+            } catch {
+                view.showToast("Copy failed: \(error.localizedDescription)", duration: 5)
+                return
             }
             view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
             view.showToast("Copied into \(name):~/.monad/uploads")
         }
         return true
     }
-            } catch {
-                view.showToast("Copy failed: \(error.localizedDescription)", duration: 5)
-                return
 }
 
 /// Follows a growing file (the VM serial console log).

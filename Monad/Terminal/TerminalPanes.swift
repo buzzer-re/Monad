@@ -194,14 +194,14 @@ final class TerminalPanes: NSObject {
     // MARK: Panes
 
     /// A pane beside (horizontal) or below (vertical) the focused one, on its
-    /// VM, in the directory its shell last reported.
+    /// VM, SSH host or this Mac, in the directory its shell is in.
     func split(_ axis: PaneTree.Axis) {
         guard let target = targetInFront else {
             NSSound.beep()
             return
         }
         let id = ContextID.make()
-        _ = makeSession(target, id, startIn: target == .host ? nil : focusedSession?.directory)
+        _ = makeSession(target, id, startIn: focusedSession?.currentDirectory)
         layout.split(axis, pane: .make(), context: id)
         rebuild()
         start()

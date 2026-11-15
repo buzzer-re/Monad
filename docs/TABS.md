@@ -66,6 +66,12 @@ window starts, the others wait. A VM's shell starts with `cd <directory>` and th
 
 ### Where a shell is
 
+A split of a pane, and a tab Monad opens again, start where the shell in front is
+(`TerminalSessionViewController.currentDirectory`).
+
+A host shell needs nothing: the Mac knows its directory (`PTYSession.workingDirectory`), so a
+split of a host shell opens in the folder that shell is in.
+
 A VM's shell says where it is with OSC 7 at each prompt. `/etc/profile.d/monad.sh`
 (`GuestDiscovery.profileScript`, pushed at every boot; `~/.monad/profile.sh` in a macOS guest)
 makes an interactive bash or zsh do it. Other shells need it in their own prompt:
@@ -74,9 +80,11 @@ makes an interactive bash or zsh do it. Other shells need it in their own prompt
 printf '\033]7;file://%s%s\033\\' "$HOSTNAME" "$PWD"
 ```
 
-A shell that does not report opens again in the home folder. A VM made before this needs one boot
-with this Monad, and a new login shell, for the hook to be there. A host shell needs nothing: the
-Mac knows its directory.
+A shell that does not report opens again, and splits, in the home folder. A VM made before this
+needs one boot with this Monad, and a new login shell, for the hook to be there. Monad puts
+nothing on an SSH host: its shell reports only if the server's own setup makes it (the line
+above in its prompt), so a split of a tab on a server whose shell does not report starts in the
+home folder there.
 
 ### What the file is trusted with
 

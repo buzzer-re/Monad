@@ -4,7 +4,7 @@
 //  13): contexts come and go, the one in front is the one shown, a VM
 //  already there is shown rather than opened again, the owner hears when
 //  the last one goes, and a pane is only taken in from its own panes.
-//  Sessions are never started here (no host).
+//  VM sessions never connect here (no host); one test runs host shells.
 //
 
 import AppKit
@@ -46,6 +46,30 @@ final class TerminalPanesTests: XCTestCase {
         XCTAssertEqual(panes.focusedSession?.startDirectory, "/home/dev/horizon")
         panes.addContext(.vm("db"))
         XCTAssertNil(panes.focusedSession?.startDirectory, "another VM")
+    }
+
+    /// A host shell reports nothing, and the Mac knows where it is: its
+    /// split starts there too, not in the home folder.
+    func testAHostShellsSplitStartsWhereThatShellIs() async throws {
+        // A plain sh: no rc file of whoever runs the tests changes directory.
+        UserDefaults.standard.set("/bin/sh", forKey: "MonadTestShell")
+        defer { UserDefaults.standard.removeObject(forKey: "MonadTestShell") }
+        func real(_ path: String?) -> String? { path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } }
+        let tmp = TempDir()
+        let panes = TerminalPanes(target: .host, host: host)
+        defer { panes.closeAllSessions() }
+        panes.start()
+        let first = try XCTUnwrap(panes.focusedSession)
+        await assertEventually { first.phase == .connected }
+        first.terminalView(first.terminalView, send: Data("cd \(ShellQuote.quote(tmp.url.path))\r".utf8))
+        await assertEventually { real(first.savedContext?.directory) == real(tmp.url.path) }
+
+        panes.split(.horizontal)
+        let second = try XCTUnwrap(panes.focusedSession)
+        XCTAssertFalse(second === first)
+        XCTAssertEqual(second.target, .host)
+        await assertEventually { second.phase == .connected }
+        XCTAssertEqual(real(second.savedContext?.directory), real(tmp.url.path))
     }
 
     /// What a saved session keeps of a tab: its panes, each context's VM
@@ -204,10 +228,10 @@ final class CanvasDockTests: XCTestCase {
         controller.canvas.openTerminal("web")
         XCTAssertTrue(controller.dockIsShown, "the canvas's Terminal docks")
         XCTAssertEqual(controller.dockedVMs, ["web"])
-    }
-}
         // An SSH host's terminal docks beside the VMs', once.
         controller.canvas.openTerminal(sshHost: "box")
         controller.openTerminal(sshHost: "box")
         XCTAssertEqual(controller.dockedSSHHosts, ["box"], "shown again, not a second one")
         XCTAssertEqual(controller.dockedVMs, ["web"])
+    }
+}

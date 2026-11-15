@@ -64,7 +64,9 @@ and a ticket (installing Monad's key first when it is not on the server yet) and
 pty. Each tab is its own connection. A tab that loses its connection says so and waits for Return;
 it does not sign in again by itself. Dropped files and pasted pictures are uploaded like a VM's
 (`~/.monad/uploads`, `~/.monad/shots` on the server). The saved session keeps the tab by the host's
-name and the directory its shell reported (OSC 7).
+name and the directory its shell reported (OSC 7); a split of its pane starts there too. Monad
+installs nothing on the server, so a shell that does not report its directory (docs/TABS.md)
+opens again, and splits, in the home folder.
 
 ## A port between a VM and an SSH host
 

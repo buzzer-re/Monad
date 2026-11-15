@@ -81,7 +81,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **Terminal:** Nerd Font icons come from the bundled Symbols Nerd Font Mono (an icon before a
   blank cell spreads over both, Powerline separators fill their cell); a session that ends turns off the modes its program left on (mouse reports,
   bracketed paste, keypad, alternate screen); a picture pasted (⌘V) into a host shell is saved to
-  a private folder on the Mac and its path typed; Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
+  a private folder on the Mac and its path typed; Monad's own emulator, tabs per VM, split panes (a split starts in the directory the shell in front is in: a host shell's as the Mac knows it, a VM's or an SSH host's as it reported, OSC 7) with contexts (⇧⌘←/→ cycle them and the VMs that are on), themes (Terminal.app
   built-ins, imports, transparency, blur, images), inline images (off per VM; `img` in every VM, Linux or
   macOS), OSC 52 within limits.
 - **Tabs:** Monad's own tab strip (the system's has no place for groups) with tab groups as
