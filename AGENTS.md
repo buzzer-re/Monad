@@ -245,6 +245,7 @@ The core (`Monad/Backend/net/mnd_net*.c`) never touches the OS: time and frames 
 
 ## Committing
 
+- Every new feature gets a branch of its own, made from `main` before its first change: `git switch -c dev/<short-name>`, such as `dev/ssh-hosts` (the branches here are `dev/…`). Never start a feature on `main`.
 - One change per commit, with a short summary line in plain words and a body that says why when it isn't obvious. Look at `git log` for the style.
 - Agents: end the message with a `Co-Authored-By:` trailer naming the model, and nothing else (no session links).
 - The maintainer's commits use UTC dates (`GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` with `+0000`), so no timezone is recorded.
