@@ -17,6 +17,7 @@ final class VMLifecycleTests: XCTestCase {
     private var watcher: ManualProcessWatcher!
     private var debugLog: DebugLog!
     private var bridges: FakeBridges!
+    private var sshLegs: FakeSSHLegs!
     /// Settings › Virtual Machines › Full boot messages, for the VM.
     private var bootMessages = BootMessages.quiet
     /// Every VM a test made: stopped after it, or its agent would keep
@@ -41,6 +42,7 @@ final class VMLifecycleTests: XCTestCase {
         }
         factory = FakeMachineFactory()
         bridges = FakeBridges()
+        sshLegs = FakeSSHLegs()
         clock = TestClock()
         debugLog = DebugLog(process: "unit", directory: tmp.url.appendingPathComponent("logs"),
                             settings: tmp.url.appendingPathComponent("logging.json"))
@@ -66,6 +68,7 @@ final class VMLifecycleTests: XCTestCase {
                                 watcher: watcher, networks: networks)
         env.profiles = { profiles ?? ProfileCatalog(builtIn: [], custom: []) }
         env.debugLog = debugLog
+        env.sshLegs = sshLegs
         env.bootMessages = { [unowned self] in self.bootMessages }
         env.bridgeServer = { [bridges] in bridges!.make($0, $1) }
         env.hostCommandServer = { [bridges] in bridges!.make($0, $1, $2) }
@@ -759,14 +762,14 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertNil(vm.sharesError)
     }
 
-    private func agentReadyVM() throws -> VMInstance {
+    private func agentReadyVM(edit: (inout InstanceConfig) -> Void = { _ in }) throws -> VMInstance {
         runner.setHandler { [ssh] call in
             if let r = ssh!.handle(call) { return r }
             if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
             if call.arguments.last == CloudInit.guestInstallCommand { return .ok("agent-ok\n") }
             return .ok()
         }
-        return try makeInstance()
+        return try makeInstance(edit: edit)
     }
 
     // MARK: Lima VMs
@@ -947,6 +950,52 @@ final class VMLifecycleTests: XCTestCase {
         await assertEventually { vm.forwards.first?.state == .active }
         await vm.stop()
         XCTAssertTrue(vm.forwards.isEmpty)
+    }
+
+    /// A port carried between the VM and an SSH host (SSHForward): the
+    /// VM's end is a forward on its own master, the other end is handed to
+    /// the SSH hosts' side, and both go with the VM. A port brought into
+    /// the VM is never forwarded back onto the Mac.
+    func testForwardsThroughSSHHostsHaveALegOnEachSide() async throws {
+        let db = SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remoteHost: "db.internal", remotePort: 5432)
+        let web = SSHForward(sshHost: "edge", direction: .ontoHost, guestPort: 8000, remotePort: 18000)
+        let off = SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 9000, remotePort: 19000, enabled: false)
+        let ch = SocketPairChannel()
+        factory.machine.channels = [ch]
+        let vm = try agentReadyVM { $0.sshForwards = [db, web, off] }
+        XCTAssertTrue(sshLegs.applied.isEmpty, "nothing before the VM runs")
+        vm.start()
+        let vmSide = [db.vmSpec(in: vm.paths).value, web.vmSpec(in: vm.paths).value]
+        await assertEventually("specs \(ssh.specs)") { self.ssh.specs == vmSide }
+        XCTAssertEqual(sshLegs.applied.last?.vm, "unit")
+        XCTAssertEqual(sshLegs.applied.last?.legs, [SSHLeg(host: "box", spec: db.hostSpec(in: vm.paths)),
+                                                    SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths))],
+                       "a forward that is off has no leg")
+        await assertEventually { vm.forwards.count == 2 && vm.forwards.allSatisfy { $0.origin == .bridge && $0.state == .active } }
+
+        // sshd in the VM now listens on 5432 for the forward: not a port to bring to the Mac.
+        await assertEventually { self.factory.machine.openedPorts == [1024] }
+        ch.agentSays("hello monad-agent 1\nport+ tcp 127.0.0.1 5432\nport+ tcp 0.0.0.0 8000\n")
+        await assertEventually("specs \(ssh.specs)") { self.ssh.specs == vmSide + ["127.0.0.1:8000:127.0.0.1:8000"] }
+        XCTAssertFalse(ssh.specs.contains("127.0.0.1:5432:127.0.0.1:5432"))
+
+        // ssh leaves a forward's socket file where it made it: gone with the forward, and with the VM.
+        let notes = vm.paths.dir.appendingPathComponent("sshfwd-notes.sock")
+        try makeSocketFile(at: db.socket(in: vm.paths))
+        try makeSocketFile(at: web.socket(in: vm.paths))
+        try Data("not a socket".utf8).write(to: notes)
+        var c = vm.config
+        c.sshForwards = [web]
+        try vm.update(c)
+        await assertEventually("specs \(ssh.specs)") { !self.ssh.specs.contains(vmSide[0]) }
+        XCTAssertEqual(sshLegs.applied.last?.legs, [SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths))])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: db.socket(in: vm.paths).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: web.socket(in: vm.paths).path), "still carried")
+
+        await vm.stop()
+        XCTAssertEqual(sshLegs.applied.last?.legs, [], "its legs go with the VM")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: web.socket(in: vm.paths).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: notes.path), "only a socket is ever removed")
     }
 
     // MARK: Settings changes

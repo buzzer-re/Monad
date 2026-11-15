@@ -59,6 +59,9 @@ struct ForwardPlan: Equatable {
         let origin: ForwardStatus.Origin
         /// The TCP port it listens on on the Mac, if any.
         var macPort: Int? = nil
+        /// A socket of Monad's own the master makes on the Mac for it: one
+        /// left behind (a master that died) is removed before it is added.
+        var bindsSocket: URL? = nil
     }
 
     let forwards: [Forward]
@@ -72,6 +75,8 @@ struct ForwardPlan: Equatable {
     struct Bridge: Equatable {
         let spec: SSHMux.Spec
         let guestPort: Int?
+        /// See `Forward.bindsSocket`.
+        var bindsSocket: URL? = nil
     }
 
     init(configured: [ForwardRule], autoForward: AutoForwardSettings, ports: Set<ListeningPort>, bridges: [Bridge] = []) {
@@ -89,7 +94,7 @@ struct ForwardPlan: Equatable {
             if rule.kind == .remote, let p = rule.guestPort { intoTheMac.insert(p) }
         }
         for bridge in bridges {
-            out.append(Forward(spec: bridge.spec, origin: .bridge))
+            out.append(Forward(spec: bridge.spec, origin: .bridge, bindsSocket: bridge.bindsSocket))
             if let p = bridge.guestPort { intoTheMac.insert(p) }
         }
         let firstAuto = out.count
@@ -210,6 +215,12 @@ final class ForwardManager {
     /// The VM whose forwards these are (its master is named after it when
     /// it holds a port another VM wants).
     private let vmName: String?
+    /// What the master connects to, as a failure says it ("the VM", "the
+    /// SSH host box").
+    private let target: String
+    /// Added to the environment of the ssh that starts the master (an SSH
+    /// host's askpass variables, a new ticket each start).
+    var masterEnvironment: (@MainActor () -> [String: String])?
 
     /// Each running ssh master by pid, with its VM: a Mac port held by one
     /// is "in use by the virtual machine <name>", not by "ssh".
@@ -218,8 +229,9 @@ final class ForwardManager {
     static func forgetMasters() { masters = [:] }
 
     init(mux: SSHMux, runner: CommandRunning, watcher: ProcessExitWatching? = nil, clock: MonadClock = SystemClock(),
-         debugLog: DebugLog = .shared, debugScope: String = "forwards", vmName: String? = nil) {
+         debugLog: DebugLog = .shared, debugScope: String = "forwards", vmName: String? = nil, target: String = "the VM") {
         self.vmName = vmName
+        self.target = target
         self.mux = mux
         self.runner = runner
         self.watcher = watcher ?? KqueueProcessWatcher()
@@ -303,7 +315,7 @@ final class ForwardManager {
         }
         guard let pid = await ensureMaster() else {
             active = [:]
-            let reason = "The SSH connection to the VM is not available (\(masterLogTail()))."
+            let reason = "The SSH connection to \(target) is not available (\(masterLogTail()))."
             debug("no ssh master: \(masterLogTail())")
             for f in plan.forwards { failures[f.spec] = reason }
             publish(plan)
@@ -339,6 +351,7 @@ final class ForwardManager {
                 debug("\(f.spec.flag) \(f.spec.value) skipped: \(failures[f.spec] ?? "")")
                 continue
             }
+            if let socket = f.bindsSocket { Self.removeStaleSocket(socket) }
             let r = try? await runner.run("/usr/bin/ssh", mux.add(f.spec), timeout: 15)
             if let r, r.status == 0 {
                 debug("added \(f.spec.flag) \(f.spec.value) (\(f.origin))")
@@ -377,8 +390,16 @@ final class ForwardManager {
             try? FileManager.default.moveItem(at: log, to: old)
         }
         let start = mux.startMaster
-        _ = try? await runner.run(start.executable, start.arguments, timeout: 60)
+        _ = try? await runner.run(start.executable, start.arguments, environment: masterEnvironment?() ?? [:], stdin: nil,
+                                  timeout: mux.startTimeout)
         return await checkMaster()
+    }
+
+    /// Removes `url` when it is a socket (never anything else that took its place).
+    static func removeStaleSocket(_ url: URL) {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK else { return }
+        unlink(url.path)
     }
 
     private func checkMaster() async -> Int32? {
@@ -482,8 +503,10 @@ final class ForwardManager {
             .last { !$0.isEmpty } ?? "ssh exited with status \(r.status)"
     }
 
+    /// What the master's log says last, as Monad shows it (a guest or a
+    /// server chooses some of these words).
     private func masterLogTail() -> String {
         guard let text = try? String(contentsOf: mux.masterLog, encoding: .utf8) else { return "no details" }
-        return text.split(whereSeparator: \.isNewline).last.map(String.init) ?? "no details"
+        return text.split(whereSeparator: \.isNewline).last.map { String($0).plain(limit: 300) } ?? "no details"
     }
 }

@@ -223,13 +223,15 @@ struct LoggingCommandRunner: CommandRunning {
         self.log = log
     }
 
-    func run(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) async throws
-        -> ProcessRunner.Result {
-        guard log.isEnabled else { return try await inner.run(executable, arguments, stdin: stdin, timeout: timeout) }
-        let id = begin(executable, arguments, stdin: stdin, timeout: timeout)
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], stdin: Data?,
+             timeout: TimeInterval) async throws -> ProcessRunner.Result {
+        guard log.isEnabled else {
+            return try await inner.run(executable, arguments, environment: environment, stdin: stdin, timeout: timeout)
+        }
+        let id = begin(executable, arguments, environment: environment, stdin: stdin, timeout: timeout)
         let start = ContinuousClock.now
         do {
-            let r = try await inner.run(executable, arguments, stdin: stdin, timeout: timeout)
+            let r = try await inner.run(executable, arguments, environment: environment, stdin: stdin, timeout: timeout)
             log.log("cmd", "#\(id) exit \(r.status) after \(DebugLog.elapsed(since: start))" + DebugLog.output(r))
             return r
         } catch {
@@ -260,14 +262,17 @@ struct LoggingCommandRunner: CommandRunning {
         }
     }
 
-    private func begin(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) -> Int {
+    /// Extra variables are logged by name only: a value may be a secret's ticket.
+    private func begin(_ executable: String, _ arguments: [String], environment: [String: String] = [:], stdin: Data?,
+                       timeout: TimeInterval) -> Int {
         let id = counter.withLock { n -> Int in
             n += 1
             return n
         }
         let input = stdin.map { "stdin \($0.count) bytes" } ?? "no stdin"
         let limit = timeout == timeout.rounded() ? "\(Int(timeout)) s" : String(format: "%.1f s", timeout)
-        log.log("cmd", "#\(id) \(([executable] + arguments).map(Self.quoted).joined(separator: " ")) (\(input), timeout \(limit))")
+        let env = environment.isEmpty ? "" : " env " + environment.keys.sorted().joined(separator: ",")
+        log.log("cmd", "#\(id) \(([executable] + arguments).map(Self.quoted).joined(separator: " "))\(env) (\(input), timeout \(limit))")
         return id
     }
 

@@ -18,7 +18,7 @@ signed binary as MonadHost: it reads MCP messages on stdin and relays them over 
 MonadHost that runs your VMs, which checks it like it checks the app. Monad must have run once.
 
 Tools that read or that stay inside a VM run at once. Tools that reach into the Mac or cannot be
-undone ask you first: `delete_vm`, `add_distro`, `remove_distro`, `add_mac_forward`,
+undone ask you first: `delete_vm`, `add_distro`, `remove_distro`, `add_mac_forward`, `add_ssh_forward`,
 `allow_destination`, `set_firewall`, `set_group`, `add_share`, `add_bridge`, `add_host_command`, `set_agent_role`,
 `set_macos_security`. The
 question shows the tool and its arguments; the answers are Deny, Allow Once, Always Allow that
@@ -48,8 +48,9 @@ answers are kept in `~/.monad/agents/grants.json` and taken back in Settings ›
 | `set_group` | A VM's group in the Virtual Machines list (asks: a group's firewall tag may allow more) |
 | `restrict_vm` | Tightens a VM's firewall: only what its rules allow, and this Mac's network blocked unless said |
 | `set_firewall` | Sets a VM's firewall either way (asks: it can loosen it) |
-| `list_canvas`, `add_note`, `edit_note`, `remove_note` | What the canvas shows, and notes, labels, zones and arrows on it (docs/CANVAS.md) |
+| `list_canvas`, `add_note`, `edit_note`, `remove_note` | What the canvas shows (VMs, networks, and for an agent on the Mac the SSH hosts by name and place), and notes, labels, zones and arrows on it; things are named `vm:<name>`, `net:<name>`, `ssh:<name>`, `note:<id>`, `mac`, `internet`, or plainly. A VM's agent is shown nothing that names an SSH host (docs/CANVAS.md) |
 | `add_forward`, `add_mac_forward`, `remove_forward` | Into the VM; into the Mac (`remote`, `unixRemote`) |
+| `list_ssh_hosts`, `add_ssh_forward`, `remove_ssh_forward` | The SSH hosts added in Monad (name, host, port, user, how they sign in; never a key or a password), and a port carried between a VM and one of them (`intoVM` or `ontoHost`, docs/SSH.md). Adding one asks: it passes the VM's firewall with your sign-in to the server. Agents cannot add, change or open SSH hosts |
 | `block_destination`, `allow_destination`, `remove_firewall_rule` | |
 | `add_share`, `remove_share` | Read-only unless said, under the same rules as the window |
 | `add_bridge`, `remove_bridge`, `add_host_command`, `remove_host_command` | |

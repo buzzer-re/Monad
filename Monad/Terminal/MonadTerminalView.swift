@@ -1291,12 +1291,3 @@ extension mnd_pos: @retroactive Comparable {
 
     public static func == (a: mnd_pos, b: mnd_pos) -> Bool { a.line == b.line && a.col == b.col }
 }
-
-enum ShellQuote {
-    /// POSIX shell single-quoting (only when needed).
-    static func quote(_ s: String) -> String {
-        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./-_~")
-        if !s.isEmpty && s.unicodeScalars.allSatisfy({ safe.contains($0) }) { return s }
-        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-}

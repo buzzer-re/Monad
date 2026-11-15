@@ -59,6 +59,18 @@ final class SSHMuxTests: XCTestCase {
         XCTAssertEqual(ssh.last, "monad-dev")
     }
 
+    /// A VM's master never asks; an SSH host's may (through Monad's
+    /// askpass), and may wait for the user's answers.
+    func testOnlyAnSSHHostsMasterMayAsk() {
+        XCTAssertTrue(mux.startMaster.arguments.windows(ofCount: 2).contains { Array($0) == ["-o", "BatchMode=yes"] })
+        XCTAssertEqual(mux.startTimeout, 60)
+        let asking = SSHMux(paths: paths, host: "example.com", options: ["-F", "none"], interactive: true, startTimeout: 300)
+        XCTAssertFalse(asking.startMaster.arguments.contains("BatchMode=yes"))
+        XCTAssertEqual(Array(asking.startMaster.arguments.suffix(9)),
+                       ["-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-E",
+                        paths.dir.appendingPathComponent("ssh-master.log").path, "-f", "-N", "example.com"])
+    }
+
     func testMasterPIDFromCheck() {
         XCTAssertEqual(SSHMux.masterPID(fromCheckOutput: "Master running (pid=4242)\r\n"), 4242)
         XCTAssertNil(SSHMux.masterPID(fromCheckOutput: "Control socket connect(/x): No such file or directory"))

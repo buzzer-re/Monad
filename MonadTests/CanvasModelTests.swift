@@ -3,7 +3,8 @@
 //  VMs as nodes inside them, placed on their own and kept where the user
 //  puts them, a VM's network being the frame it sits in (dropped into
 //  another, it asks to move there), edges for traffic between VMs, links
-//  to this Mac and NAT networks' way out, and the layout saved to disk.
+//  to this Mac, NAT networks' way out and forwards through SSH hosts (which
+//  stand below the networks), and the layout saved to disk.
 //
 
 import XCTest
@@ -196,6 +197,72 @@ final class CanvasModelTests: XCTestCase {
         ], "both ways in one edge, VMs not on the canvas left out, an internal network has no way out")
     }
 
+    // MARK: SSH hosts
+
+    /// SSH hosts (Monad/SSH) stand below the networks, placed once and then
+    /// left where they are put; one that is gone is dropped.
+    func testSSHHostsStandBelowTheNetworksAndStayWherePut() throws {
+        let vms = [vm("a", "default"), vm("c", "lab")]
+        var m = CanvasModel()
+        m.update(vms: vms, networks: [nat, lab], sshHosts: ["bastion", "box"])
+        let bastion = try XCTUnwrap(m.rect(ofSSHHost: "bastion")), box = try XCTUnwrap(m.rect(ofSSHHost: "box"))
+        XCTAssertEqual(bastion.size, CanvasModel.sshNode)
+        XCTAssertFalse(bastion.intersects(box))
+        for frame in m.layout.frames.values {
+            XCTAssertFalse(frame.intersects(bastion) || frame.intersects(box))
+            XCTAssertGreaterThan(bastion.minY, frame.maxY, "below every network")
+        }
+        XCTAssertFalse(bastion.contains(m.macPosition) || bastion.contains(m.internetPosition))
+        let placed = m.layout
+        m.update(vms: vms, networks: [nat, lab], sshHosts: ["bastion", "box"])
+        XCTAssertEqual(m.layout, placed, "nothing moves by itself")
+
+        m.moveSSHHost("box", to: CGPoint(x: -500, y: 900))
+        m.moveSSHHost("ghost", to: .zero)
+        XCTAssertNil(m.position(sshHost: "ghost"), "only what is on the canvas moves")
+        m.update(vms: vms, networks: [nat, lab], sshHosts: ["bastion", "box", "edge"])
+        XCTAssertEqual(m.position(sshHost: "box"), CGPoint(x: -500, y: 900), "kept where it was put")
+        let edge = try XCTUnwrap(m.rect(ofSSHHost: "edge"))
+        XCTAssertFalse(edge.intersects(bastion), "a new one takes a free place")
+        // One made on the canvas appears where it was asked for.
+        m.hint(sshHost: "made", at: CGPoint(x: 77, y: 88))
+        m.update(vms: vms, networks: [nat, lab], sshHosts: ["bastion", "box", "edge", "made"])
+        XCTAssertEqual(m.position(sshHost: "made"), CGPoint(x: 77, y: 88))
+
+        m.update(vms: vms, networks: [nat, lab], sshHosts: ["box"])
+        XCTAssertEqual(Set(m.layout.sshHosts.keys), ["box"], "what is gone is dropped")
+        m.restore(placed)
+        XCTAssertEqual(m.position(sshHost: "bastion"), CGPoint(x: bastion.midX, y: bastion.midY), "⌘Z puts them back too")
+    }
+
+    /// A VM's forwards through an SSH host draw one edge to it, when the
+    /// host is there.
+    func testForwardsThroughAnSSHHostAreAnEdge() {
+        var a = vm("a", "default"), c = vm("c", "lab")
+        a.sshHosts = ["box", "gone"]
+        c.sshHosts = ["bastion", "box"]
+        var m = CanvasModel()
+        m.update(vms: [c, a, vm("b", "default", mac: true)], networks: [nat, lab], sshHosts: ["bastion", "box"])
+        XCTAssertEqual(m.edges(traffic: []), [
+            .mac("b"),
+            .internet("default"),
+            .ssh(vm: "a", host: "box"),
+            .ssh(vm: "c", host: "bastion"),
+            .ssh(vm: "c", host: "box"),
+        ], "a forward naming a host that is not there has no edge")
+
+        var config = InstanceConfig.defaults(name: "web")
+        config.sshForwards = [
+            SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remotePort: 5432),
+            SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 8000, remotePort: 18000),
+            SSHForward(sshHost: "bastion", direction: .intoVM, guestPort: 2222, remotePort: 22),
+            SSHForward(sshHost: "off", direction: .intoVM, guestPort: 3333, remotePort: 22, enabled: false),
+        ]
+        let read = CanvasVM(config: config, running: true, networks: ["default"])
+        XCTAssertEqual(read.sshHosts, ["bastion", "box"], "each host once, only for forwards that are on")
+        XCTAssertFalse(read.linksToMac, "they do not reach this Mac")
+    }
+
     func testAVMIsReadFromItsSettings() {
         var c = InstanceConfig.defaults(name: "web")
         c.networks = [NetworkAttachment(network: "lab", macAddress: nil)]
@@ -253,6 +320,15 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertEqual(store.load(), CanvasLayout(), "an unreadable file: start again")
         try Data(#"{"version":99,"frames":{},"nodes":{}}"#.utf8).write(to: store.url)
         XCTAssertEqual(store.load(), CanvasLayout(), "a newer file: start again")
+        // SSH hosts' places are kept too; a layout from before them reads as it did.
+        m.update(vms: [vm("a", "default"), vm("c", "lab")], networks: [nat, lab], sshHosts: ["box"])
+        m.moveSSHHost("box", to: CGPoint(x: 40, y: 700))
+        try store.save(m.layout)
+        XCTAssertEqual(store.load().sshHosts, ["box": CGPoint(x: 40, y: 700)])
+        try Data(#"{"version":1,"frames":{},"nodes":{},"sshHosts":{"box":[1e300,0],"ok":[5,6]}}"#.utf8).write(to: store.url)
+        XCTAssertEqual(store.load().sshHosts, ["ok": CGPoint(x: 5, y: 6)], "a place that makes no sense is dropped")
+        try Data(#"{"version":1,"frames":{},"nodes":{}}"#.utf8).write(to: store.url)
+        XCTAssertEqual(store.load().sshHosts, [:])
     }
 
     /// A VM's tile: its distribution's letter and colour, or Apple's mark

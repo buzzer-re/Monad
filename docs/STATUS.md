@@ -1,6 +1,6 @@
 # Monad: where things stand
 
-Last updated: 2026-11-12. This is the state of the project, not its
+Last updated: 2026-11-14. This is the state of the project, not its
 history: what Monad does, how it is built, how it is tested, and what is open. Update it with every
 change that moves any of these.
 
@@ -19,7 +19,7 @@ built for isolation first: a hostile guest is the primary threat (`docs/SECURITY
 | Networking | Monad's own stack (`monad-netd`, sandboxed C): switch, DHCP, DNS, NAT, firewall per VM |
 | Shared folders | Opt-in per VM (the device exists only when on); `~/.monad` never shared; the home folder reaches a VM as its visible folders only |
 | Signing | The first release is signed ad hoc and installed by `scripts/install.sh` (or by hand from the zip, with Open Anyway); Developer ID only if the release is well received |
-| Security choices | Recorded in `docs/SECURITY.md` › Decisions (clipboard writes, VMs kept apart per network, DNS under the firewall, forwards into the Mac confirmed one by one, forwards open to other computers only when asked for, imported settings untrusted, images off per VM) |
+| Security choices | Recorded in `docs/SECURITY.md` › Decisions (clipboard writes, VMs kept apart per network, DNS under the firewall, forwards into the Mac confirmed one by one, forwards open to other computers only when asked for, imported settings untrusted, images off per VM) and › SSH hosts (no ssh config file, questions asked in Monad's panel, passwords in the Keychain, forwards through a server confirmed one by one) |
 
 ## Architecture
 
@@ -33,7 +33,7 @@ macOS guest: monad-guestd (vsock → sshd -i, agent), set up by one admin-prompt
 
 VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SECURITY.md`
 (processes and boundaries), `docs/MACOS.md`, `docs/AGENTS.md`, `docs/CANVAS.md`, `docs/CONFIG.md`,
-`docs/GROUPS.md`, `docs/TABS.md`, `docs/DISTROS.md`, `docs/BUILDING.md`.
+`docs/GROUPS.md`, `docs/TABS.md`, `docs/SSH.md`, `docs/DISTROS.md`, `docs/BUILDING.md`.
 
 ## What Monad does
 
@@ -90,11 +90,21 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   windows, tabs and groups of last time open again when Monad starts, each shell in the directory
   it was in (`~/.monad/session.json`; a tab starts when first shown; ephemeral VMs are not kept);
   bash and zsh in a VM report their directory through `/etc/profile.d/monad.sh` (`docs/TABS.md`).
+- **SSH hosts:** servers reached over ssh, listed in Virtual Machines › SSH and kept by MonadHost
+  (`~/.monad/ssh-hosts`): a tab opens on one like on a VM (Shell › Open SSH Host, a pane's New
+  Context, the saved session), signing in with a password (login Keychain), a private key, or a
+  key pair Monad makes and installs with `ssh-copy-id`. No ssh config file is read; every question
+  ssh asks (host key, password, passphrase, code) comes up in a panel of Monad's through its own
+  askpass, never in a tab. A VM's port is carried to or from a server with Monad in the middle
+  (`sshForwards`: two ssh masters joined by a private socket), from the VM's Port Forwarding page
+  or `add_ssh_forward`; agents can list the hosts but not add or open them (`docs/SSH.md`). The
+  hosts are on the canvas too, each with a line to the VMs that carry ports through it.
 - **Windows:** a window is one size whatever its tabs (cell steps only apply to a window with one
   tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
   added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
   a full-screen terminal's too.
-- **Canvas:** VMs and networks drawn live, notes, labels, zones and arrows, docked terminals.
+- **Canvas:** VMs, networks and SSH hosts drawn live, notes, labels, zones and arrows, docked
+  terminals (on VMs and on SSH hosts).
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role
   (host commands, or orchestrator of child VMs), with approvals for anything that reaches the Mac
   and an audit log; a VM's console and health logs are read through it without ssh, and when the
@@ -115,7 +125,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 | Suite | Where | What |
 |---|---|---|
 | `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`), the guest scripts' shell tests |
-| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,200 Swift tests |
+| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,300 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
 
@@ -157,6 +167,20 @@ warnings, this file updated, and no private names or paths in what is committed.
   of grouped tabs opened again after a relaunch, bash in a Debian VM reporting its directory).
   The strip over a see-through theme was looked at in a capture of the real window. Still to try:
   a drag with a real mouse (the events sent took the same path).
+- **SSH hosts, not yet tried in the running app:** the unit tests run against fakes, and ssh's own
+  behaviour was checked by hand against a loopback sshd (`docs/SECURITY.md` › Checked on the Mac).
+  Still to do with the Debug build and a real server: add a host by password (the panel asks to
+  trust the key, then for the password with "Keep it in my Keychain"; a second tab asks nothing;
+  Keychain Access shows "Monad SSH host <name>"); "Key pair from Monad" (Save and Install Key, then
+  a tab that asks nothing); in a running Linux VM, Add Forward › SSH Host both ways (`nc` in the VM
+  to a server port, `curl` on the server to a VM port) and the port gone once the VM stops; a file
+  dropped on the tab; the tab back after a relaunch. On the canvas (drawn offscreen and looked at,
+  not yet used by hand): a host's card dragged and still there after a relaunch, its inspector,
+  the line to a VM turning teal once a forward is up, New › SSH Host placing the card where it
+  was asked for, Terminal docking a session on the host.
+- **SSH hosts, limits:** a forward through a server whose connection is lost is tried again once;
+  after that it stays down until Connect Forwards Again (the host's ⋯ menu) or a change of the
+  VM's forwards. One level of "connect through". A tab does not reconnect by itself.
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
   first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
   through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a

@@ -63,7 +63,8 @@ Import treats a file as untrusted and makes a **new** VM from it:
 - A Lima VM's file (`attached`, `copiedFrom`) makes a VM from a fresh image instead. The Lima VM's
   disk is not in the file.
 - **What reaches into this Mac is left out unless you keep it** in the import sheet: shared
-  folders, bridges, forwards into the Mac (`remote`, `unixRemote`), `allowLAN` and
+  folders, bridges, forwards into the Mac (`remote`, `unixRemote`), forwards through SSH hosts
+  (`sshForwards`), `allowLAN` and
   `inlineImages` (image data the VM sends, decoded on the Mac). A shared folder
   that needs your word (the home folder, anything outside it, `~/.ssh`, `~/Library`) is never
   imported. Add it in the VM's settings, which ask you first.
@@ -95,6 +96,7 @@ it is saved.
 | `sharing` | object | no sharing | See below. |
 | `forwards` | list | none | Port and socket forwards (see below). |
 | `bridges` | list | none | Mac commands the VM can use (see below), at most 8 with the host commands. |
+| `sshForwards` | list | none | Ports carried between the VM and SSH hosts (see below), at most 8. |
 | `hostCommands` | list | none | Mac commands the VM runs with values it varies under patterns (see below). |
 | `agents` | object | none | What the VM may do with Monad itself: `role` (`hostCommands` or `orchestrator`), `guestPort` (Monad's MCP endpoint on the VM's loopback, default 7766), and for an orchestrator `maxChildren` (default 4), `childCPUs` and `childMemoryGiB` (its VMs together; default its own size). Reaches into the Mac. |
 | `parent` | string | none | The orchestrator VM that made this one. Fixed. |
@@ -180,6 +182,24 @@ Mac (`chmod u+rwx` in Terminal, or Get Info in Finder).
 | `guestPort` | number | (needed for `local` and `remote`) | 1 to 65535. |
 | `hostSocket` | string | (needed for sockets) | Absolute path on the Mac. |
 | `guestSocket` | string | (needed for sockets) | Absolute path in the VM. |
+| `enabled` | true or false | true | |
+
+### Forwards through SSH hosts (`sshForwards`)
+
+A port carried between the VM and a server added under Virtual Machines › SSH, with Monad in the
+middle: one forward on the VM's ssh connection and one on the server's, joined by a private socket
+in the VM's folder (never a port of the Mac). It passes the VM's firewall with your sign-in to the
+server, so each is confirmed when added, left out of an import unless you keep it, and not copied
+with the VM. A forward whose SSH host is not on this Mac stays in the settings and says so.
+
+| Key | Type | If left out | Notes |
+|---|---|---|---|
+| `id` | string (UUID) | a new one | Names its socket in the VM's folder. |
+| `sshHost` | string | (needed) | The SSH host's name in Monad. |
+| `direction` | string | (needed) | `intoVM`: programs in the VM connect to `127.0.0.1:guestPort` and reach `remoteHost:remotePort` as the server reaches it. `ontoHost`: the server listens on `remoteHost:remotePort` and connections reach `127.0.0.1:guestPort` in the VM. |
+| `guestPort` | number | (needed) | The port in the VM: 1024 to 65535 for `intoVM` (the VM listens there, and nothing else may), 1 to 65535 for `ontoHost`. |
+| `remoteHost` | string | `127.0.0.1` | `intoVM`: where the server connects, a host name or an IP address. `ontoHost`: the server's address to listen on, an IP address (whether others than the server itself can reach it is the server's `GatewayPorts`). |
+| `remotePort` | number | (needed) | 1 to 65535. |
 | `enabled` | true or false | true | |
 
 ### Bridges (`bridges`)

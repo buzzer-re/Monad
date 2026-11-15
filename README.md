@@ -108,7 +108,7 @@ For what needs a person (the developer tools installer, a system prompt), ⋯ �
 
 ![The canvas: the networks default and lab as frames with their VMs inside, live traffic between web and db, a note left by an agent, and the VM sample being dragged from lab into default.](docs/images/canvas.png)
 
-The Canvas (⇧⌘K) shows your networks as frames with their VMs inside. Drag a VM to another network to move it, and open a terminal on it right there. You can write on it too: notes, labels on VMs and networks, zones around them, arrows and freehand drawing. Agents write there through the MCP server, so when one builds you a lab, you watch it appear with the notes on what is what.
+The Canvas (⇧⌘K) shows your networks as frames with their VMs inside. Drag a VM to another network to move it, and open a terminal on it right there. Your SSH hosts are on it too, each with a line to the VMs that carry ports through it. You can write on it: notes, labels on VMs and networks, zones around them, arrows and freehand drawing. Agents write there through the MCP server, so when one builds you a lab, you watch it appear with the notes on what is what.
 
 ## Agents and MCP
 
@@ -147,6 +147,7 @@ Host commands give a VM's agents the Mac commands you defined for it as tools: a
 - A VM's settings can be read and edited as JSON, exported as a backup, or imported to make a new VM ([docs/CONFIG.md](docs/CONFIG.md)).
 - When a Linux VM won't boot, the error says what its disk shows: which filesystems are intact, and which have a damaged superblock or recorded errors. Repair Disk (in the VM's ⋯ menu, macOS 15 or later) attaches the disk to a temporary VM of the same distribution and runs its own tools (e2fsck, fsck.vfat, xfs_repair) on it, after keeping a copy of the disk as it was.
 - Monad finds your Lima VMs (the `vz` ones) and boots their disks in place, so the same VM works in Lima and in Monad (not both at once). "Copy to Monad" makes it Monad's own.
+- A tab can also be a server you reach over ssh (Virtual Machines › SSH): sign in with a password kept in your Keychain, a key you have, or a key pair Monad makes and installs for that server. ssh's questions come up in a panel of Monad's, never in the tab. A port can then be carried between that server and a VM, with Monad in the middle: a database only the server reaches, usable in the VM, or a VM's dev server shown on the server ([docs/SSH.md](docs/SSH.md)).
 
 ## Keys
 

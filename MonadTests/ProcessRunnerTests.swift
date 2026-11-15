@@ -26,6 +26,18 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(e.stderrString, "err\n")
     }
 
+    /// A helper gets what the caller adds (ssh's askpass variables) on top
+    /// of the minimal environment, never Monad's own.
+    func testExtraVariablesAreAddedToTheMinimalEnvironment() async throws {
+        let r = try await SystemCommandRunner().run("/usr/bin/env", [], environment: ["MONAD_TEST": "x"], stdin: nil,
+                                                    timeout: 10)
+        let lines = Set(r.stdoutString.split(separator: "\n").map(String.init))
+        XCTAssertTrue(lines.contains("MONAD_TEST=x"), r.stdoutString)
+        XCTAssertTrue(lines.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin"), r.stdoutString)
+        let plain = try ProcessRunner.runSync("/usr/bin/env", [], timeout: 10)
+        XCTAssertFalse(plain.stdoutString.contains("MONAD_TEST"))
+    }
+
     /// Output reaches the caller while the process still runs (profiles show
     /// their progress live), split into lines, stdout and stderr alike.
     func testOutputIsStreamedAsItComes() async throws {

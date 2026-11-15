@@ -372,6 +372,50 @@ final class MonadTools {
                     $0.forwards.remove(at: i)
                 }))
             },
+            MCPTool(name: "list_ssh_hosts",
+                    description: "The SSH hosts added in Monad (Virtual Machines › SSH): name, host, port, user and how they "
+                        + "sign in. A VM's port can be carried to or from one with add_ssh_forward.",
+                    schema: Self.schema([:]), risk: .read) { [unowned self] _ in
+                // Never a key's path, and nothing from the Keychain.
+                struct Host: Encodable { let name, host: String; let port: Int; let user, auth: String }
+                return .json(["ssh_hosts": self.service.sshHosts.hosts.map {
+                    Host(name: $0.name, host: $0.host, port: $0.port, user: $0.user, auth: $0.auth.rawValue)
+                }])
+            },
+            MCPTool(name: "add_ssh_forward",
+                    description: "Carry a port between a VM and an SSH host (list_ssh_hosts), with Monad in the middle. It passes "
+                        + "the VM's firewall, signed in as the user on that server.",
+                    schema: Self.schema(["name": Self.vmName, "ssh_host": Self.string("The SSH host's name."),
+                                         "direction": Self.string("intoVM: a port the SSH host reaches, usable in the VM at "
+                                                                  + "127.0.0.1; ontoHost: a VM port, reachable on the SSH host."),
+                                         "guest_port": Self.integer("Port in the VM (intoVM: 1024 or above)."),
+                                         "remote_port": Self.integer("Port on the SSH host's side."),
+                                         "remote_host": Self.string("intoVM: where the SSH host connects (default 127.0.0.1); "
+                                                                    + "ontoHost: its address to listen on (default 127.0.0.1).")],
+                                        required: ["name", "ssh_host", "direction", "guest_port", "remote_port"]),
+                    risk: .risky) { [unowned self] call in
+                let host = try call.string("ssh_host")
+                guard self.service.sshHosts.host(named: host) != nil else {
+                    throw MonadError("There is no SSH host called \(host). list_ssh_hosts names them.")
+                }
+                guard let direction = SSHForward.Direction(rawValue: try call.string("direction")) else {
+                    throw MonadError("direction is intoVM or ontoHost.")
+                }
+                let forward = SSHForward(sshHost: host, direction: direction, guestPort: try call.int("guest_port"),
+                                         remoteHost: try call.optionalString("remote_host") ?? "127.0.0.1",
+                                         remotePort: try call.int("remote_port"))
+                return .json(self.summary(try await self.update(try call.string("name")) { $0.sshForwards.append(forward) }))
+            },
+            MCPTool(name: "remove_ssh_forward",
+                    description: "Remove a VM's forward through an SSH host, by its place in get_vm's config.sshForwards (from 0).",
+                    schema: Self.schema(["name": Self.vmName, "index": Self.integer("Its index.")], required: ["name", "index"]),
+                    risk: .normal) { [unowned self] call in
+                let i = try call.int("index")
+                return .json(self.summary(try await self.update(try call.string("name")) {
+                    guard $0.sshForwards.indices.contains(i) else { throw MonadError("There is no SSH forward \(i).") }
+                    $0.sshForwards.remove(at: i)
+                }))
+            },
             MCPTool(name: "block_destination", description: "A firewall rule denying a VM a destination (name, *.name or address/prefix).",
                     schema: Self.firewallSchema, risk: .normal) { [unowned self] call in
                 let rule = try Self.firewallRule(call, action: .deny)
@@ -685,7 +729,7 @@ final class MonadTools {
         }
     }
 
-    private static let refHelp = "A VM or network by name, or vm:<name>, net:<name>, note:<id>, mac or internet."
+    private static let refHelp = "A VM, network or SSH host by name, or vm:<name>, net:<name>, ssh:<name>, note:<id>, mac or internet."
 
     /// Tools for working on Monad itself: in Debug builds only.
     private func debugTools() -> [MCPTool] {
@@ -718,18 +762,19 @@ final class MonadTools {
         let noteFields: [String: JSONValue] = [
             "text": Self.string("Its words (Markdown in notes; a label up to \(CanvasNote.maxLabel) characters)."),
             "color": Self.string(CanvasNote.Tint.allCases.map(\.rawValue).joined(separator: ", ") + "."),
-            "on": Self.string("label: the VM or network it is on; note: what it is pinned beside; arrow: where it starts. " + Self.refHelp),
+            "on": Self.string("label: the VM, network or SSH host it is on; note: what it is pinned beside; arrow: where it starts. "
+                + Self.refHelp),
             "to": Self.string("arrow: where it ends. " + Self.refHelp),
-            "around": Self.strings("zone: the VMs and networks it wraps (it follows them)."),
+            "around": Self.strings("zone: the VMs, networks and SSH hosts it wraps (it follows them)."),
             "x": Self.number("note, zone: left edge on the canvas (list_canvas shows where things are)."),
             "y": Self.number("note, zone: top edge."), "width": Self.number("note, zone: width."),
             "height": Self.number("note, zone: height."),
         ]
         return [
             MCPTool(name: "list_canvas",
-                    description: "What Monad's canvas shows: the VMs (by network) and networks, where each is, and the notes, "
-                        + "labels, zones, arrows and ink written on it.",
-                    schema: Self.schema([:]), risk: .read) { [unowned self] _ in
+                    description: "What Monad's canvas shows: the VMs (by network), networks and SSH hosts, where each is, and the "
+                        + "notes, labels, zones, arrows and ink written on it.",
+                    schema: Self.schema([:]), risk: .read) { [unowned self] call in
                 struct Place: Encodable { let name: String; let network: String?; let x, y, width, height: Double? }
                 let layout = CanvasStore().load()
                 func place(_ name: String, _ network: String?, _ r: CGRect?) -> Place {
@@ -741,13 +786,20 @@ final class MonadTools {
                           layout.nodes[vm.name].map(CanvasModel.nodeRect))
                 }
                 let networks = try self.networks.all().map { place($0.name, nil, layout.frames[$0.name]) }
-                struct Out: Encodable { let vms: [Place]; let networks: [Place]; let notes: [NoteOut] }
-                return .json(Out(vms: vms, networks: networks, notes: self.service.notes.map(NoteOut.init)))
+                // Where each is, and its name: nothing about how to get into one. A VM's agents are not
+                // told which servers there are (list_ssh_hosts asks the user), here or in what is written.
+                let mac = call.caller == .mac
+                let hosts = self.service.sshHosts.snapshots.map {
+                    place($0.config.name, nil, layout.sshHosts[$0.config.name].map(CanvasModel.sshRect))
+                }
+                let notes = mac ? self.service.notes : CanvasNote.hidingSSHHosts(self.service.notes)
+                struct Out: Encodable { let vms: [Place]; let networks: [Place]; let ssh_hosts: [Place]?; let notes: [NoteOut] }
+                return .json(Out(vms: vms, networks: networks, ssh_hosts: mac ? hosts : nil, notes: notes.map(NoteOut.init)))
             },
             MCPTool(name: "add_note",
                     description: "Write on Monad's canvas, where the user sees it at once: a note (Markdown on a card, free or "
-                        + "pinned beside a VM or network), a label (a short chip on a VM or network), a zone (a titled area "
-                        + "around VMs and networks, or at x, y, width, height) or an arrow with words between two things.",
+                        + "pinned beside a VM, network or SSH host), a label (a short chip on one of those), a zone (a titled area "
+                        + "around them, or at x, y, width, height) or an arrow with words between two things.",
                     schema: Self.schema(noteFields.merging(["kind": Self.string("note (default), label, zone or arrow.")]) { a, _ in a }),
                     risk: .normal) { [unowned self] call in
                 let kindText = try call.optionalString("kind") ?? "note"
@@ -785,12 +837,14 @@ final class MonadTools {
         .object(["type": .string("number"), "description": .string(description)])
     }
 
-    /// The call's fields on a note, things named plainly made refs.
+    /// The call's fields on a note, things named plainly made refs (an SSH
+    /// host only for an agent on the Mac: a VM's would learn which there are).
     private func apply(_ call: MCPCall, to n: inout CanvasNote) throws {
         let vms = service.manager.instances.map(\.name)
         let networks = (try? self.networks.all().map(\.name)) ?? []
+        let hosts = call.caller == .mac ? service.sshHosts.snapshots.map(\.config.name) : []
         func ref(_ text: String) throws -> String {
-            guard let r = CanvasRef.resolve(text, vms: vms, networks: networks) else {
+            guard let r = CanvasRef.resolve(text, vms: vms, networks: networks, sshHosts: hosts) else {
                 throw MonadError("“\(text.prefix(40))” is not on the canvas. " + Self.refHelp)
             }
             return r
@@ -979,6 +1033,7 @@ final class MonadTools {
         c.hostCommands = []
         c.agents = nil
         c.forwards = []
+        c.sshForwards = []
         c.startAtLaunch = false
     }
 

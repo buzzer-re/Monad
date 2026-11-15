@@ -8,8 +8,9 @@
 //  An imported file is untrusted. It is checked as the New VM sheet's
 //  settings are, made to fit this Mac (each change said), and what reaches
 //  into the Mac (shared folders, bridges, forwards into the Mac, the Mac
-//  and its network reachable, images it sends decoded on the Mac) stays out
-//  unless the user keeps it. A folder
+//  and its network reachable, images it sends decoded on the Mac) or out
+//  through a server the user signs in to (forwards through SSH hosts) stays
+//  out unless the user keeps it. A folder
 //  that needs the user's word is never brought in: the VM's settings ask.
 //
 
@@ -73,6 +74,9 @@ enum VMConfigFile {
         var agents: AgentAccess?
         /// Forwards that let the VM reach the Mac.
         var forwards: [ForwardRule] = []
+        /// Ports carried between the VM and SSH hosts: past the VM's
+        /// firewall, with the user's sign-in to the server.
+        var sshForwards: [SSHForward] = []
         /// The Mac and its local network reachable without a rule.
         var allowLAN = false
         /// Images the VM sends decoded on the Mac (inlineImages).
@@ -83,7 +87,7 @@ enum VMConfigFile {
 
         var isEmpty: Bool {
             shares.isEmpty && bridges.isEmpty && hostCommands.isEmpty && agents == nil && forwards.isEmpty && !allowLAN && !images
-                && firewallRules.isEmpty
+                && firewallRules.isEmpty && sshForwards.isEmpty
         }
 
         /// One line each, in the VM window's words.
@@ -96,6 +100,7 @@ enum VMConfigFile {
                 }
                 + (agents.map { ["Monad access (\($0.role.rawValue)): \($0.summary)"] } ?? [])
                 + forwards.map(VMSettingsDraft.describe)
+                + sshForwards.map(VMSettingsDraft.describe)
                 + (allowLAN ? ["The Mac and its local network are reachable from the VM"] : [])
                 + (images ? ["Images the VM sends are decoded on this Mac and shown in its tabs"] : [])
                 + firewallRules.map { "The firewall allows the VM " + ConnectionsModel.describe($0).dropFirst("Allow ".count) }
@@ -126,6 +131,7 @@ enum VMConfigFile {
             c.hostCommands = macAccess.hostCommands
             c.agents = macAccess.agents
             c.forwards = forwards
+            c.sshForwards = macAccess.sshForwards
             c.firewall.allowLAN = macAccess.allowLAN
             c.inlineImages = macAccess.images
             c.firewall.rules = rules
@@ -202,7 +208,7 @@ enum VMConfigFile {
 
         // What reaches into the Mac, set apart.
         var access = MacAccess(bridges: c.bridges, hostCommands: c.hostCommands, agents: c.agents,
-                               forwards: c.forwards.filter(\.needsConfirmation),
+                               forwards: c.forwards.filter(\.needsConfirmation), sshForwards: c.sshForwards,
                                allowLAN: c.firewall.allowLAN, images: c.inlineImages,
                                firewallRules: c.firewall.rules.filter(\.opensByAddress))
         if c.desktopAutofill != nil {
@@ -230,6 +236,7 @@ enum VMConfigFile {
         // A VM made from a file is nobody's child.
         c.parent = nil
         c.forwards.removeAll(where: \.needsConfirmation)
+        c.sshForwards = []
         c.firewall.allowLAN = false
         c.inlineImages = false
         return Imported(config: c, macAccess: access, notes: notes, forwards: forwards, rules: rules)
@@ -262,7 +269,7 @@ enum VMConfigFile {
     private static let keys: [String: Set<String>] = [
         "": ["version", "name", "distro", "release", "image", "user", "cpus", "memoryGiB", "memoryTargetGiB", "diskGiB", "disks",
              "networks", "firewall", "sharing", "forwards", "autoForward", "profiles", "theme", "ephemeral", "createdAt", "guestOS",
-             "startAtLaunch", "inlineImages", "attached", "copiedFrom", "bridges", "hostCommands", "agents", "parent",
+             "startAtLaunch", "inlineImages", "attached", "copiedFrom", "bridges", "sshForwards", "hostCommands", "agents", "parent",
              "systemIntegrityProtection", "fullDiskAccess", "autoLogin", "desktopAutofill", "bootToRecovery"],
         "agents": ["role", "guestPort", "maxChildren", "childCPUs", "childMemoryGiB"],
         "disks": ["name", "sizeGiB", "mount"],
@@ -273,6 +280,7 @@ enum VMConfigFile {
         "sharing.shares": ["hostPath", "guestPath", "readOnly", "confirmed"],
         "forwards": ["id", "kind", "hostAddress", "hostPort", "guestHost", "guestPort", "hostSocket", "guestSocket", "enabled"],
         "bridges": ["id", "name", "command", "guestPort", "guestSocket", "enabled"],
+        "sshForwards": ["id", "sshHost", "direction", "guestPort", "remoteHost", "remotePort", "enabled"],
         "hostCommands": ["id", "name", "summary", "program", "fixedArguments", "arguments", "workingDirectory",
                          "timeoutSeconds", "results", "environment", "guestPort", "guestSocket", "enabled"],
         "hostCommands.arguments": ["name", "pattern", "required", "summary"],
@@ -380,6 +388,7 @@ enum VMConfigFile {
         case .network?, .macAddress?: return "networks"
         case .profile?: return "profiles"
         case .bridgeName?, .bridgeCommand?, .bridgeEndpoint?, .tooManyBridges?, .duplicateGuestEndpoint?: return "bridges"
+        case .sshForward?, .tooManySSHForwards?: return "sshForwards"
         case .hostCommand?: return "hostCommands"
         case .agents?: return "agents"
         case .parent?: return "parent"
@@ -469,6 +478,7 @@ enum VMConfigFile {
         }
         let savedForwards = Set(saved.forwards.filter(\.needsConfirmation).map(forwardKey))
         access.forwards = new.forwards.filter { $0.needsConfirmation && !savedForwards.contains(forwardKey($0)) }
+        access.sshForwards = new.sshForwards.filter { f in !saved.sshForwards.contains { $0.sameRoute(f) } }
         access.allowLAN = new.firewall.allowLAN && !saved.firewall.allowLAN
         access.images = new.inlineImages && !saved.inlineImages
         let savedRules = Set(saved.firewall.rules.filter(\.opensByAddress))

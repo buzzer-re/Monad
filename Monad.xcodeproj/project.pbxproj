@@ -87,6 +87,8 @@
 				App/SavedSession.swift,
 				App/Settings.swift,
 				App/SettingsView.swift,
+				App/SSHHostsView.swift,
+				App/SSHPromptPanel.swift,
 				App/TabRouting.swift,
 				App/ThemeEditorView.swift,
 				App/VMAlerts.swift,

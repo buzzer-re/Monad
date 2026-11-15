@@ -1,8 +1,9 @@
 //
 //  CanvasModel.swift — the canvas (Phase 13): the Monad networks as frames
 //  and the VMs as nodes inside them, This Mac and the Internet beside them,
-//  and edges: traffic between VMs (netd's switch), forwards and bridges to
-//  this Mac, and the way out of NAT networks. A VM's network is the frame
+//  the SSH hosts (Monad/SSH) below them, and edges: traffic between VMs
+//  (netd's switch), forwards and bridges to this Mac, forwards through SSH
+//  hosts, and the way out of NAT networks. A VM's network is the frame
 //  it sits in: dropped into another, the canvas asks to move it there (the
 //  window confirms and saves). New networks and VMs are placed on their
 //  own; what the user moves stays where it is put, saved in
@@ -21,6 +22,8 @@ struct CanvasVM: Equatable {
     var running: Bool
     /// Forwards or bridges between it and this Mac.
     var linksToMac: Bool
+    /// The SSH hosts its forwards go through (those that are on), by name.
+    var sshHosts: [String] = []
 }
 
 extension CanvasVM {
@@ -28,7 +31,8 @@ extension CanvasVM {
     init(config: InstanceConfig, running: Bool, networks: [String]) {
         let network = config.networks.first.flatMap { $0.isAppleNAT || !networks.contains($0.network) ? nil : $0.network }
         let links = config.forwards.contains { $0.enabled } || config.bridges.contains { $0.enabled }
-        self.init(name: config.name, network: network, running: running, linksToMac: links)
+        let hosts = Set(config.sshForwards.filter(\.enabled).map(\.sshHost)).sorted()
+        self.init(name: config.name, network: network, running: running, linksToMac: links, sshHosts: hosts)
     }
 }
 
@@ -48,6 +52,20 @@ struct CanvasLayout: Codable, Equatable {
     /// the user puts them (absent in layouts saved before they were kept).
     var mac: CGPoint?
     var internet: CGPoint?
+    /// The SSH hosts' centres, by name (none in layouts saved before them).
+    var sshHosts: [String: CGPoint] = [:]
+}
+
+extension CanvasLayout {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        frames = try c.decode([String: CGRect].self, forKey: .frames)
+        nodes = try c.decode([String: CGPoint].self, forKey: .nodes)
+        mac = try c.decodeIfPresent(CGPoint.self, forKey: .mac)
+        internet = try c.decodeIfPresent(CGPoint.self, forKey: .internet)
+        sshHosts = try c.decodeIfPresent([String: CGPoint].self, forKey: .sshHosts) ?? [:]
+    }
 }
 
 enum CanvasLandmark { case mac, internet }
@@ -59,6 +77,8 @@ enum CanvasEdge: Equatable, Hashable {
     case mac(String)
     /// A NAT network's way out.
     case internet(String)
+    /// A VM with forwards through an SSH host.
+    case ssh(vm: String, host: String)
 }
 
 /// What a drop asks for; the window confirms and saves it.
@@ -68,6 +88,9 @@ enum CanvasIntent: Equatable {
 
 struct CanvasModel {
     static let node = CGSize(width: 240, height: 96)
+    /// An SSH host's card, and how far below the networks they first stand.
+    static let sshNode = CGSize(width: 220, height: 56)
+    static let sshRowGap: CGFloat = 90
     static let padding: CGFloat = 24
     static let header: CGFloat = 44
     static let gap: CGFloat = 20
@@ -85,6 +108,8 @@ struct CanvasModel {
     private(set) var layout: CanvasLayout
     private(set) var vms: [CanvasVM] = []
     private(set) var networks: [CanvasNetwork] = []
+    /// The SSH hosts there are, by name.
+    private(set) var sshHosts: [String] = []
     /// VMs dropped into another network, waiting for the answer: where to.
     private var pending: [String: String] = [:]
     /// Where a dragged node started, and where a node waiting for an
@@ -94,6 +119,7 @@ struct CanvasModel {
     /// Where something being made on the canvas goes once it exists.
     private var vmHints: [String: CGPoint] = [:]
     private var networkHints: [String: CGPoint] = [:]
+    private var sshHints: [String: CGPoint] = [:]
 
     init(layout: CanvasLayout = CanvasLayout()) {
         self.layout = layout
@@ -101,6 +127,14 @@ struct CanvasModel {
 
     func frame(_ network: String) -> CGRect? { layout.frames[network] }
     func position(_ vm: String) -> CGPoint? { layout.nodes[vm] }
+    func position(sshHost name: String) -> CGPoint? { layout.sshHosts[name] }
+
+    static func sshRect(at center: CGPoint) -> CGRect {
+        CGRect(x: center.x - sshNode.width / 2, y: center.y - sshNode.height / 2, width: sshNode.width, height: sshNode.height)
+    }
+
+    /// An SSH host's card.
+    func rect(ofSSHHost name: String) -> CGRect? { layout.sshHosts[name].map(Self.sshRect) }
 
     /// The Monad network whose frame holds `point`.
     func network(at point: CGPoint) -> String? {
@@ -129,6 +163,12 @@ struct CanvasModel {
         }
     }
 
+    /// An SSH host moved by the user.
+    mutating func moveSSHHost(_ name: String, to point: CGPoint) {
+        guard sshHosts.contains(name) else { return }
+        layout.sshHosts[name] = point
+    }
+
     // MARK: Keeping up with the VMs and networks
 
     /// A VM being made at `point`: it appears there if that is in its network.
@@ -141,11 +181,17 @@ struct CanvasModel {
         networkHints[network] = point
     }
 
-    /// The VMs and networks there are now: new ones placed, gone ones
-    /// dropped, frames grown to hold their VMs. Nothing else moves.
-    mutating func update(vms: [CanvasVM], networks: [CanvasNetwork]) {
+    /// An SSH host being made at `point`: its card's middle goes there.
+    mutating func hint(sshHost: String, at point: CGPoint) {
+        sshHints[sshHost] = point
+    }
+
+    /// The VMs, networks and SSH hosts there are now: new ones placed, gone
+    /// ones dropped, frames grown to hold their VMs. Nothing else moves.
+    mutating func update(vms: [CanvasVM], networks: [CanvasNetwork], sshHosts: [String] = []) {
         self.vms = vms
         self.networks = networks
+        self.sshHosts = sshHosts
         var keys = networks.map(\.name)
         if vms.contains(where: { $0.network == nil }) { keys.append(Self.outside) }
         layout.frames = layout.frames.filter { keys.contains($0.key) }
@@ -175,6 +221,25 @@ struct CanvasModel {
         if !layout.frames.isEmpty {
             if layout.internet == nil { layout.internet = internetPosition }
             if layout.mac == nil { layout.mac = macPosition }
+        }
+        layout.sshHosts = layout.sshHosts.filter { sshHosts.contains($0.key) }
+        for name in sshHosts where layout.sshHosts[name] == nil {
+            layout.sshHosts[name] = sshHints.removeValue(forKey: name) ?? freeSSHSlot()
+        }
+    }
+
+    /// The first place of the rows below the networks that no SSH host's
+    /// card covers.
+    private func freeSSHSlot() -> CGPoint {
+        let size = Self.sshNode
+        let perRow = max(1, Int((Self.rowWidth + Self.gap) / (size.width + Self.gap)))
+        var i = 0
+        while true {
+            let p = CGPoint(x: bounds.minX + size.width / 2 + CGFloat(i % perRow) * (size.width + Self.gap),
+                            y: bounds.maxY + Self.sshRowGap + size.height / 2 + CGFloat(i / perRow) * (size.height + Self.gap))
+            let room = Self.sshRect(at: p).insetBy(dx: -Self.gap / 4, dy: -Self.gap / 4)
+            if !layout.sshHosts.keys.contains(where: { rect(ofSSHHost: $0)?.intersects(room) == true }) { return p }
+            i += 1
         }
     }
 
@@ -235,7 +300,8 @@ struct CanvasModel {
     // MARK: Edges
 
     /// Traffic between VMs on the canvas (both ways in one edge), the VMs
-    /// linked to this Mac, and the NAT networks' way out.
+    /// linked to this Mac, the NAT networks' way out, and the VMs' forwards
+    /// through SSH hosts.
     func edges(traffic: [VMTraffic]) -> [CanvasEdge] {
         let names = Set(vms.map(\.name))
         var pairs: [String: (a: String, b: String, bytes: UInt64, last: Int)] = [:]
@@ -251,6 +317,9 @@ struct CanvasModel {
             .map { .traffic($0.a, $0.b, bytes: $0.bytes, live: $0.last <= Self.liveWithin) }
         out += vms.filter(\.linksToMac).map(\.name).sorted().map { .mac($0) }
         out += networks.filter { $0.kind == .nat }.map(\.name).sorted().map { .internet($0) }
+        for vm in vms.sorted(by: { $0.name < $1.name }) {
+            out += vm.sshHosts.sorted().filter(sshHosts.contains).map { .ssh(vm: vm.name, host: $0) }
+        }
         return out
     }
 
@@ -343,6 +412,7 @@ struct CanvasStore {
         let sane: (CGFloat) -> Bool = { $0.isFinite && abs($0) < 1e7 }
         layout.frames = layout.frames.filter { [$0.value.minX, $0.value.minY, $0.value.width, $0.value.height].allSatisfy(sane) }
         layout.nodes = layout.nodes.filter { sane($0.value.x) && sane($0.value.y) }
+        layout.sshHosts = layout.sshHosts.filter { sane($0.value.x) && sane($0.value.y) }
         if let p = layout.mac, !(sane(p.x) && sane(p.y)) { layout.mac = nil }
         if let p = layout.internet, !(sane(p.x) && sane(p.y)) { layout.internet = nil }
         return layout

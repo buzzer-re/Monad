@@ -26,6 +26,7 @@ final class TabRoutingTests: XCTestCase {
                        "the same VM, even once another one is the default")
         XCTAssertEqual(newTab(Tab(target: .defaultVM, vm: nil)), .defaultVM, "not resolved yet")
         XCTAssertEqual(newTab(Tab(target: .host, vm: nil)), .host)
+        XCTAssertEqual(newTab(Tab(target: .ssh("box"), vm: nil)), .ssh("box"), "another tab on the same SSH host")
         XCTAssertEqual(newTab(Tab(target: .ephemeralVM, vm: "tmp-1a2b3c")), .vm("tmp-1a2b3c"),
                        "the same ephemeral VM, not a new one")
         XCTAssertNil(newTab(Tab(target: .ephemeralVM, vm: nil)), "not made yet")
@@ -60,6 +61,7 @@ final class TabRoutingTests: XCTestCase {
         XCTAssertEqual(TabRouting.settingsVM(focused: Tab(target: .defaultVM, vm: "default")), "default")
         XCTAssertNil(TabRouting.settingsVM(focused: Tab(target: .ephemeralVM, vm: nil)), "not made yet")
         XCTAssertNil(TabRouting.settingsVM(focused: Tab(target: .host, vm: nil)))
+        XCTAssertNil(TabRouting.settingsVM(focused: Tab(target: .ssh("box"), vm: nil)), "an SSH host is no VM")
         XCTAssertNil(TabRouting.settingsVM(focused: nil))
         XCTAssertEqual(TabRouting.settingsTitle(focused: Tab(target: .vm("web"), vm: "web")), "“web” Settings…")
         XCTAssertEqual(TabRouting.settingsTitle(focused: nil), "VM Settings…")
@@ -76,6 +78,7 @@ final class TabRoutingTests: XCTestCase {
         XCTAssertEqual(title(Tab(target: .ephemeralVM, vm: "tmp-1a2b3c")), "New Tab in tmp-1a2b3c")
         XCTAssertEqual(title(Tab(target: .ephemeralVM, vm: nil)), "New Tab")
         XCTAssertEqual(title(Tab(target: .host, vm: nil)), "New Host Shell Tab")
+        XCTAssertEqual(title(Tab(target: .ssh("box"), vm: nil)), "New Tab on box")
         XCTAssertEqual(title(nil), "New Tab in default")
         XCTAssertEqual(title(nil, defaultVM: "web"), "New Tab in web")
     }

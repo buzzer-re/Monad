@@ -322,6 +322,9 @@ struct InstanceConfig: Equatable {
     /// Monad"); nil for VMs made from an image.
     var copiedFrom: AttachedDisk? = nil
     var bridges: [CommandBridge] = []
+    /// Ports carried between the VM and SSH hosts (Monad/SSH), each added
+    /// and confirmed by the user.
+    var sshForwards: [SSHForward] = []
     /// Mac commands the VM may run with arguments it varies under the
     /// user's patterns (agents phase).
     var hostCommands: [HostCommand] = []
@@ -506,7 +509,7 @@ extension InstanceConfig: Codable {
         case version, name, distro, release, image, user, cpus, memoryGiB, memoryTargetGiB, diskGiB, disks, networks, firewall
         case sharing
         case forwards, autoForward, profiles, theme, ephemeral, createdAt, startAtLaunch, attached
-        case copiedFrom, bridges, inlineImages, hostCommands, agents, parent, group, guestOS, restoreImage
+        case copiedFrom, bridges, sshForwards, inlineImages, hostCommands, agents, parent, group, guestOS, restoreImage
         case systemIntegrityProtection, fullDiskAccess, autoLogin, desktopAutofill, bootToRecovery
         // v1 only
         case network, macAddress, sharedDirectory, sharedReadOnly
@@ -537,6 +540,7 @@ extension InstanceConfig: Codable {
         attached = try c.decodeIfPresent(AttachedDisk.self, forKey: .attached)
         copiedFrom = try c.decodeIfPresent(AttachedDisk.self, forKey: .copiedFrom)
         bridges = try c.decodeIfPresent([CommandBridge].self, forKey: .bridges) ?? []
+        sshForwards = try c.decodeIfPresent([SSHForward].self, forKey: .sshForwards) ?? []
         hostCommands = try c.decodeIfPresent([HostCommand].self, forKey: .hostCommands) ?? []
         agents = try c.decodeIfPresent(AgentAccess.self, forKey: .agents)
         parent = try c.decodeIfPresent(String.self, forKey: .parent)
@@ -602,6 +606,7 @@ extension InstanceConfig: Codable {
         try c.encodeIfPresent(attached, forKey: .attached)
         try c.encodeIfPresent(copiedFrom, forKey: .copiedFrom)
         if !bridges.isEmpty { try c.encode(bridges, forKey: .bridges) }
+        if !sshForwards.isEmpty { try c.encode(sshForwards, forKey: .sshForwards) }
         if !hostCommands.isEmpty { try c.encode(hostCommands, forKey: .hostCommands) }
         try c.encodeIfPresent(agents, forKey: .agents)
         try c.encodeIfPresent(parent, forKey: .parent)
@@ -731,6 +736,8 @@ extension InstanceConfig {
         case parent(String)
         case group(String)
         case duplicateGuestEndpoint(String)
+        case sshForward(String)
+        case tooManySSHForwards
 
         var errorDescription: String? {
             switch self {
@@ -780,6 +787,8 @@ extension InstanceConfig {
             case .parent(let p): return "“\(p)” is not a VM name."
             case .group(let g): return "“\(g)” is not a group name: letters, digits, - and _, up to 32."
             case .duplicateGuestEndpoint(let e): return "\(e) in the VM is already used by another bridge or forward."
+            case .sshForward(let why): return why
+            case .tooManySSHForwards: return "A VM can have at most \(SSHForward.maxPerVM) forwards through SSH hosts."
             }
         }
     }
@@ -804,6 +813,12 @@ extension InstanceConfig {
             case .remote: if let p = rule.guestPort { taken.insert("tcp \(p)") }
             case .unixRemote: if let s = rule.guestSocket { taken.insert(s) }
             case .local, .socks, .unixLocal: break
+            }
+        }
+        // sshd in the VM listens there for a port brought in from an SSH host.
+        for forward in sshForwards where forward.direction == .intoVM {
+            guard taken.insert("tcp \(forward.guestPort)").inserted else {
+                throw ValidationError.duplicateGuestEndpoint("127.0.0.1:\(forward.guestPort)")
             }
         }
         for bridge in bridges {
@@ -975,6 +990,10 @@ extension InstanceConfig {
             }
         }
 
+        guard sshForwards.count <= SSHForward.maxPerVM else { throw ValidationError.tooManySSHForwards }
+        for forward in sshForwards {
+            if let why = forward.problem { throw ValidationError.sshForward(why) }
+        }
         try validateBridges()
 
         guard autoForward.minimumPort >= 1024 else { throw ValidationError.autoForwardMinimum(autoForward.minimumPort) }
@@ -1042,6 +1061,7 @@ enum ConfigChange {
             ("shared folders", { $0.sharing.shares == $1.sharing.shares }),
             ("forwards", { $0.forwards == $1.forwards }),
             ("bridges", { $0.bridges == $1.bridges }),
+            ("SSH forwards", { $0.sshForwards == $1.sshForwards }),
             ("host commands", { $0.hostCommands == $1.hostCommands }),
             ("agent access", { $0.agents == $1.agents }),
             ("parent", { $0.parent == $1.parent }),
@@ -1074,8 +1094,8 @@ enum ConfigChange {
 extension InstanceConfig {
     /// A copy's settings: the same, but for what was allowed for this VM
     /// alone (shared folders, bridges, host commands, forwards into the
-    /// Mac or open to other computers, an agent role), which is left out and
-    /// named. Its network cards
+    /// Mac or open to other computers, forwards through SSH hosts, an agent
+    /// role), which is left out and named. Its network cards
     /// get new addresses; it does not start with Monad.
     func copy(named name: String) -> (config: InstanceConfig, left: [String]) {
         var c = self
@@ -1086,11 +1106,13 @@ extension InstanceConfig {
         if !c.hostCommands.isEmpty { left.append("host commands") }
         if c.forwards.contains(where: \.reachesIntoHost) { left.append("forwards into the Mac") }
         if c.forwards.contains(where: \.opensToNetwork) { left.append("forwards open to other computers") }
+        if !c.sshForwards.isEmpty { left.append("forwards through SSH hosts") }
         if c.agents != nil { left.append("its agent role") }
         c.sharing.shares = []
         c.bridges = []
         c.hostCommands = []
         c.forwards.removeAll(where: \.needsConfirmation)
+        c.sshForwards = []
         c.agents = nil
         c.parent = nil
         c.ephemeral = false

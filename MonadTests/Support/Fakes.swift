@@ -12,6 +12,7 @@ final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
         let executable: String
         let arguments: [String]
         let stdin: Data?
+        var environment: [String: String] = [:]
     }
 
     typealias Handler = (Call) throws -> ProcessRunner.Result
@@ -52,9 +53,9 @@ final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
         return r
     }
 
-    func run(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) async throws
-        -> ProcessRunner.Result {
-        let call = Call(executable: executable, arguments: arguments, stdin: stdin)
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], stdin: Data?,
+             timeout: TimeInterval) async throws -> ProcessRunner.Result {
+        let call = Call(executable: executable, arguments: arguments, stdin: stdin, environment: environment)
         let h = lock.withLock { () -> Handler in
             _calls.append(call)
             return handler
@@ -489,6 +490,38 @@ final class TempDir {
     }
 }
 
+/// The Keychain stand-in: SSH hosts' passwords in a dictionary.
+final class FakeSecrets: SecretStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String: String] = [:]
+    /// Set: every write fails with it (a Keychain that cannot be used).
+    var writeError: Error?
+    private(set) var reads = 0
+
+    subscript(account: String) -> String? {
+        get { lock.withLock { items[account] } }
+        set { lock.withLock { items[account] = newValue } }
+    }
+
+    func password(for account: String) throws -> String? {
+        lock.withLock {
+            reads += 1
+            return items[account]
+        }
+    }
+
+    func setPassword(_ password: String, for account: String) throws {
+        if let writeError { throw writeError }
+        lock.withLock { items[account] = password }
+    }
+
+    func removePassword(for account: String) throws {
+        lock.withLock { items[account] = nil }
+    }
+
+    func hasPassword(for account: String) -> Bool { lock.withLock { items[account] != nil } }
+}
+
 /// Wait (cooperatively) until a condition on the main actor holds.
 @MainActor
 func eventually(timeout: TimeInterval = 5, _ condition: () -> Bool) async -> Bool {
@@ -646,6 +679,30 @@ final class ManualProcessWatcher: ProcessExitWatching {
     }
 
     func exit(_ pid: Int32) { handlers.removeValue(forKey: pid)?() }
+}
+
+/// The SSH hosts' side of VMs' forwards, recorded: each VM's legs as last applied.
+@MainActor
+final class FakeSSHLegs: SSHLegApplying {
+    private(set) var applied: [(vm: String, legs: [SSHLeg])] = []
+
+    func apply(_ legs: [SSHLeg], for vm: String) { applied.append((vm, legs)) }
+}
+
+/// A unix socket's file at `url`, as ssh leaves one where it listened (made
+/// under a short name and moved: a socket's path is 104 bytes at most).
+func makeSocketFile(at url: URL) throws {
+    let short = "/tmp/monad-\(UUID().uuidString.prefix(8)).sock"
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(short.utf8)) }
+    let bound = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+    }
+    guard bound == 0 else { throw TestError("cannot make a socket at \(short): errno \(errno)") }
+    if short != url.path { try FileManager.default.moveItem(atPath: short, toPath: url.path) }
 }
 
 /// ssh as seen through the command runner: a control master that can be

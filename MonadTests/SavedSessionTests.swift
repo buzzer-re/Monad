@@ -70,7 +70,8 @@ final class SavedSessionTests: XCTestCase {
         XCTAssertNil(store.load())
         let work = TabGroup(id: TabGroupID("g"), name: "work", color: .purple, collapsed: true)
         let session = SavedSession(windows: [window([tab(vm("web", "/home/dev/site"), group: "g"),
-                                                     tab(Context(kind: .host, vm: nil, directory: nil, theme: "Pro"))],
+                                                     tab(Context(kind: .host, vm: nil, directory: nil, theme: "Pro")),
+                                                     tab(Context(kind: .ssh, vm: "box", directory: "/srv/app", theme: nil))],
                                                     groups: [work], selected: 1)])
         try store.save(session)
         XCTAssertEqual(store.load(), session)
@@ -109,6 +110,19 @@ final class SavedSessionTests: XCTestCase {
         XCTAssertEqual(w.tabs.prefix(3).map { $0.panes.contexts["p"]?.first?.directory }, [nil, nil, nil])
         XCTAssertEqual(w.tabs[3].panes.contexts["p"], [vm("web", "/ok"), Context(kind: .host, vm: nil, directory: "/Users/dev", theme: nil)])
         XCTAssertEqual(w.selected, 3)
+    }
+
+    /// A tab on an SSH host comes back by the host's name, checked like a VM's.
+    func testAnSSHHostsTabIsKeptByItsName() throws {
+        let s = SavedSession(windows: [window([
+            tab(Context(kind: .ssh, vm: "box", directory: "/srv/app", theme: nil)),
+            tab(Context(kind: .ssh, vm: "box; rm -rf ~", directory: nil, theme: nil)),
+            tab(Context(kind: .ssh, vm: nil, directory: nil, theme: nil)),
+        ])]).sanitized
+        let w = try XCTUnwrap(s.windows.first)
+        XCTAssertEqual(w.tabs.map { $0.panes.contexts["p"] }, [[Context(kind: .ssh, vm: "box", directory: "/srv/app", theme: nil)]])
+        XCTAssertEqual(TerminalSessionViewController.target(of: Context(kind: .ssh, vm: "box", directory: nil, theme: nil)),
+                       .ssh("box"))
     }
 
     func testTooMuchIsCutShort() {

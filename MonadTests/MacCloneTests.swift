@@ -185,16 +185,19 @@ final class MacCloneTests: XCTestCase {
         c.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80),
                       ForwardRule(kind: .unixRemote, hostSocket: "/tmp/a.sock", guestSocket: "/tmp/a.sock"),
                       ForwardRule(kind: .local, hostAddress: "0.0.0.0", hostPort: 8443, guestPort: 443)]
+        c.sshForwards = [SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remotePort: 5432)]
         c.startAtLaunch = true
         c.group = "coding"
         let (copy, left) = c.copy(named: "mac-2")
         XCTAssertEqual(copy.name, "mac-2")
         XCTAssertEqual(copy.sharing.shares, [])
         XCTAssertEqual(copy.forwards.map(\.kind), [.local])
+        XCTAssertEqual(copy.sshForwards, [], "a copy does not reach what the original was let reach on a server")
         XCTAssertNil(copy.networks[0].macAddress)
         XCTAssertFalse(copy.startAtLaunch)
         XCTAssertEqual(copy.group, "coding", "a group is how it is listed")
-        XCTAssertEqual(left, ["shared folders", "forwards into the Mac", "forwards open to other computers"])
+        XCTAssertEqual(left, ["shared folders", "forwards into the Mac", "forwards open to other computers",
+                              "forwards through SSH hosts"])
         XCTAssertEqual(InstanceConfig.defaults(name: "x").copy(named: "y").left, [])
     }
 

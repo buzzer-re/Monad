@@ -1,9 +1,9 @@
 //
 //  PaneMenu.swift — a pane's context menu (Phase 11), on its header and in
 //  its terminal: switch to one of its contexts or to another running VM,
-//  open a new context on any VM, an ephemeral VM or a host shell, close the
-//  context, split the pane, close it. Pure; the window turns it into an
-//  NSMenu and carries out the actions.
+//  open a new context on any VM, an SSH host, an ephemeral VM or a host
+//  shell, close the context, split the pane, close it. Pure; the window
+//  turns it into an NSMenu and carries out the actions.
 //
 
 import Foundation
@@ -58,9 +58,9 @@ enum PaneMenu {
 
     /// The menu of `pane`. `names`: each context's title; `vms`: the VM of
     /// each context (none for host shells); `running`: the VMs that are on;
-    /// `all`: every VM to open a context on.
+    /// `all`: every VM to open a context on; `ssh`: every SSH host.
     static func items(for pane: PaneID, in layout: PaneLayout, names: [ContextID: String], vms: [ContextID: String],
-                      running: [String], all: [String]) -> [Item] {
+                      running: [String], all: [String], ssh: [String]) -> [Item] {
         let shown = layout.visible(in: pane)
         let switching = switching(pane, in: layout, vms: vms, running: running)
         var switchTo: [Item] = switching.contexts.map { .action(names[$0] ?? $0.value, .show($0), checked: $0 == shown) }
@@ -68,13 +68,19 @@ enum PaneMenu {
             switchTo.append(.separator)
             switchTo += switching.others.map { .action($0, .open(.vm($0))) }
         }
+        var newContext: [Item] = all.map { .action($0, .open(.vm($0))) }
+        if !ssh.isEmpty {
+            newContext.append(.separator)
+            newContext += ssh.map { .action("SSH: \($0)", .open(.ssh($0))) }
+        }
+        newContext += [
+            .separator,
+            .action("Ephemeral VM", .open(.ephemeralVM)),
+            .action("Host Shell (Unisolated)", .open(.host)),
+        ]
         var items: [Item] = [
             .submenu("Switch Context", switchTo),
-            .submenu("New Context", all.map { .action($0, .open(.vm($0))) } + [
-                .separator,
-                .action("Ephemeral VM", .open(.ephemeralVM)),
-                .action("Host Shell (Unisolated)", .open(.host)),
-            ]),
+            .submenu("New Context", newContext),
         ]
         if let shown { items.append(.action("Close Context", .closeContext(shown))) }
         items += [.separator, .action("Split Side by Side", .split(.horizontal)), .action("Split Stacked", .split(.vertical))]

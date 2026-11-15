@@ -40,6 +40,8 @@ Then find the code with the [code map](#code-map), and the tests next to it in `
 | Group, firewall tag | A group in the VM list also works as a firewall tag: a rule list every VM in it carries |
 | Tab, tab group | A terminal window's tabs are Monad's own (`TabStrip`), not the system's; a tab group is a named, coloured run of tabs. Not the VM list's groups |
 | Context, pane | A pane in a tab holds several contexts (VM sessions); one is visible at a time |
+| SSH host | A server reached over ssh, kept by MonadHost (`~/.monad/ssh-hosts/<name>/`): tabs open on it, and a VM's port can be carried to or from it (an SSH forward). Not a VM, and not trusted more than a guest for what it prints |
+| Askpass, ticket | ssh's questions about an SSH host go to MonadHost's own binary as `SSH_ASKPASS`, which relays them to the running MonadHost; a ticket in that ssh's environment says which host the question is about |
 
 ## Architecture
 
@@ -60,7 +62,7 @@ Then find the code with the [code map](#code-map), and the tests next to it in `
 - The app and MonadHost are separate processes so that VMs keep running when the app quits. MonadHost is started by launchd on the first XPC connection and exits after a grace period with nothing to do (`HostLifetime.swift`).
 - Every message between them is JSON defined in one place, `Monad/Host/HostProtocol.swift`: a `HostRequest` with an `op` (`create`, `start`, `update`, `attach`, `mcp`, …), a `HostResponse`, and `HostEvent`s the host pushes (a VM changed, approvals, canvas notes). `HostProtocol.version` is bumped on incompatible changes. XPC carries the bytes and pins the peer's code signature (`HostXPC.swift`).
 - MonadHost's side is `HostService.swift`, which owns the `VMManager`. The app's side is `HostClient.swift`, which mirrors every VM as a `RemoteVM` and reconnects if the host goes away.
-- The same MonadHost binary has four jobs, chosen by its first argument (`MonadHost/main.swift`): the VM service (no argument), `--netd`, `--guestd` (copied into macOS guests) and `--mcp`.
+- The same MonadHost binary has five jobs (`MonadHost/main.swift`): the VM service (no argument), `--netd`, `--guestd` (copied into macOS guests), `--mcp`, and ssh's askpass for SSH hosts (chosen by the ticket in its environment, since `SSH_ASKPASS` takes no arguments).
 
 ### What happens when a tab opens
 
@@ -81,6 +83,7 @@ Under `~/.monad` (Release) or `~/.monad-debug` (Debug), see `Monad/Support/Paths
 | `instances/<name>/` | One VM: `instance.json`, `disk.raw`, `disks/` (the disks added in its settings, `<name>.raw` each), `snapshots/` (a folder per snapshot: clones of the disks, `snapshot.json`, `memory.vzsave` when it was running; `current` names the one the VM is at), `cidata.iso`, `id_ed25519`, `ssh.config`, `ssh.sock`, `ctl.sock`, `serial.log` (and the boot before, `serial.log.1`), `health.log` (a Linux guest's health, from its health port, across boots), `vm.log`, `running` (while its machine runs; one left behind means MonadHost ended without seeing it stop), and for macOS guests the platform files (`aux.img`, `hardware-model.bin`, …) |
 | `instances/order.json` | The VMs' order; the default VM is chosen there |
 | `networks/`, `firewall-tags/` | Monad networks and firewall tags, one JSON file each |
+| `ssh-hosts/<name>/` | One SSH host: `host.json`, Monad's key pair for it (`id_ed25519`, when it signs in with one), its master's `ctl.sock` and `ssh-master.log` while forwards use it; `ssh-hosts/known_hosts` holds the host keys accepted in Monad |
 | `distros/`, `profiles/`, `themes/` | What the user added, next to the ones in the app bundle |
 | `session.json` | The app's terminal windows, tabs and tab groups, to open them again (`SavedSession`) |
 | `logs/` | Settings › Logs, when debug logging is on |
@@ -104,6 +107,7 @@ App and host state lives on the main actor (`VMInstance`, `VMManager`, `HostServ
 | `Monad/Profile`, `Monad/Profiles` | Profiles as data, turned into an idempotent sh script run over ssh | `ProfileConfig.swift`, `ProfileScript.swift` |
 | `Monad/Network` | Firewall rules and tags, Monad networks, the connection log, MonadHost's side of netd | `Firewall.swift`, `NetdSupervisor.swift` |
 | `Monad/Agents` | The MCP server: protocol, stdio and HTTP transports, tools, who may call what, host commands | `MonadTools.swift`, `MCPAccess.swift`, `HostCommand.swift` |
+| `Monad/SSH` | SSH hosts: their settings and ssh options, the askpass relay, tickets and questions, the Keychain, MonadHost's manager (key install, the hosts' side of forwards), forwards between a VM and a host | `SSHHost.swift`, `SSHHostManager.swift`, `SSHAskpass.swift`, `SSHForward.swift` |
 | `Monad/Canvas` | The canvas model (networks, VMs, edges) and what is written on it | `CanvasModel.swift`, `CanvasNotes.swift` |
 | `Monad/Lima` | Finding Lima VMs to boot in place | `LimaInstances.swift` |
 | `Monad/Support` | Paths, flavors, logging, process running, and the seams tests replace | `Seams.swift`, `Paths.swift`, `Flavor.swift` |
@@ -113,7 +117,7 @@ App and host state lives on the main actor (`VMInstance`, `VMManager`, `HostServ
 | `Monad/Backend/net` | The network stack and netd: frames, switch, gateway (ARP, DHCP, ICMP), DNS forwarder, NAT and TCP, firewall, connection log, control channel, event loop | `mnd_net.h`, `mnd_netd.h` |
 | `Monad/Guest` | Scripts that run inside VMs: the Linux and macOS agents, the guest's setup report, SELinux loading, macOS first boot and setup | `monad-agent.sh` |
 | `MonadHost` | MonadHost's entry point (it compiles most of `Monad/` too) | `main.swift` |
-| `MonadTests` | About 1,100 Swift tests, one file per area, with fakes | `Support/Fakes.swift` |
+| `MonadTests` | About 1,300 Swift tests, one file per area, with fakes | `Support/Fakes.swift` |
 | `CTests` | C tests, fuzzers and shell script tests; fixtures are generated by Python scripts at build time | `Makefile` |
 | `scripts` | `install.sh` (what users run), `release.sh` (Release builds and packages), `hygiene.sh` (CI's first checks) | |
 | `Tools`, `Design` | Generators: the Unicode width table, the app icon | |
@@ -136,6 +140,8 @@ Code that touches the outside world goes through protocols in `Monad/Support/Sea
 | `BaseImageProviding` | `ImagePipeline` | `FakeImageProvider` |
 | `NetworkAttaching` | `NetdSupervisor` | `FakeNetworkAttacher` |
 | `MacInstalling`, `MacSetupAuthorizing` | `VZMacInstaller`; `HostService`, which asks the app | `FakeMacInstaller`, `FakeMacSetup` |
+| `SecretStoring` (SSH hosts' passwords) | `KeychainSecrets` (the login Keychain) | `FakeSecrets`: a dictionary; no test touches the Keychain |
+| `SSHLegApplying` (the SSH hosts' side of a VM's forwards) | `SSHHostManager` | `FakeSSHLegs` |
 
 `TempDir` gives a test its own folder, and `ManagerFixture` wires a `VMManager` to fakes. New code that would reach the outside world needs a seam like these, not a real call in the test.
 
@@ -270,3 +276,4 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yml`:
 | [docs/CANVAS.md](docs/CANVAS.md) | The canvas: model, persistence, interactions, notes |
 | [docs/GROUPS.md](docs/GROUPS.md) | Groups and firewall tags |
 | [docs/TABS.md](docs/TABS.md) | Tabs, tab groups and the session Monad opens again |
+| [docs/SSH.md](docs/SSH.md) | SSH hosts: tabs on servers, how ssh's questions are asked, ports between a server and a VM |

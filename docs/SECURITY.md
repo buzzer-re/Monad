@@ -13,6 +13,9 @@ stated here as decisions.
   folders. Its goals: run code or read data on the Mac, reach the Mac's loopback or local network,
   reach another VM, or reach anything the user did not choose to share.
 - **The network** while images and profiles are downloaded.
+- **A server the user added as an SSH host**: it controls what it prints in a tab and the words of
+  some sign-in prompts. Its output is treated as a guest's; it gets nothing of the Mac's but the
+  sign-in the user chose for it.
 - **Other processes of the same macOS user**, only where Monad holds something they do not have
   (see "Same-user processes" below).
 
@@ -44,16 +47,21 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 | Guest-chosen names cannot fake the firewall prompt | Only plain names (letters, digits, `-`, `_`) are learned or shown | `test_net_dnsfwd.c`, `test_netd_ctl.c`, `FirewallTests` |
 | Rules by name hold however many names point at an address, and one VM's lookups do not change another's decisions | Names are per VM, every name of an address is matched, a full table evicts from the VM holding the most | `test_net_fw.c` |
 | Auto-forward cannot flood the Mac or take a Mac service's port | At most 32 auto-forwards per VM, guest port events at most once a second, ports a Mac program listens on are skipped, and the guest ports of bridges and forwards into the Mac are never forwarded back (a bridge would otherwise be a TCP port any local user reaches) | `ForwardManagerTests`, `ForwardPlanTests` |
-| Terminal output from a guest cannot run code or fake the UI | Bounded OSC 8 links, titles without C0/C1/bidirectional controls, replies that never echo guest-chosen text, clipboard writes capped | `test_vt.c`, `fuzz_vt.c`, `TerminalModelTests`, `ClipboardPolicyTests` |
+| Terminal output from a guest cannot run code or fake the UI | Bounded OSC 8 links, titles without C0/C1/bidirectional controls, replies that never echo guest-chosen text, clipboard writes capped. A tab on an SSH host goes through the same emulator with the same limits | `test_vt.c`, `fuzz_vt.c`, `TerminalModelTests`, `ClipboardPolicyTests` |
 | Images a guest sends are only decoded when its VM allows them | Inline images (OSC 1337) are off for every VM unless its settings turn them on, never from the boot console, never in host shells. The terminal core reads only the file's header (PNG, JPEG or GIF; at most 4 MB, 8192 pixels a side, 32 M pixels), never decodes it, and lays it out over at most 255 x 255 cells; ImageIO then decodes only a complete file of that same format, off the main thread, at most the size its cells show (4096 pixels), and a tab keeps at most 64. The text area's size in pixels (CSI 14 t, 16 t) is told only while images are on | `test_vt_images.c`, `fuzz_vt.c`, `TerminalImagesTests`, `TerminalModelTests`, `VMConfigFileTests` |
 | Keystrokes, pastes and clipboard writes involve only the context in front | In a window only the tab in front is in the view hierarchy, and of its split panes only the focused pane's visible context is first responder (hidden contexts leave the view hierarchy), and OSC 52 writes need the focused context in the key window | `PaneLayoutTests` (input goes to the visible context after every change), `ClipboardPolicyTests` |
-| The saved session (`~/.monad/session.json`) is not trusted with what guests put in it | It holds VM names and the directories shells reported (OSC 7), never output. Read back, a VM name must look like one, a directory must be absolute, printable and at most 4096 bytes, pane trees must hold together, and windows, tabs and contexts are bounded; the rest is left out. A directory reaches only the VM its tab is on, shell-quoted after `cd`, or a host shell's starting folder once it is seen to be a folder | `SavedSessionTests`, `TerminalWindowTests`, `TerminalSessionTests` (the ssh command) |
+| The saved session (`~/.monad/session.json`) is not trusted with what guests put in it | It holds VM names (SSH hosts' names for their tabs) and the directories shells reported (OSC 7), never output. Read back, a VM or SSH host name must look like one, a directory must be absolute, printable and at most 4096 bytes, pane trees must hold together, and windows, tabs and contexts are bounded; the rest is left out. A directory reaches only the VM or SSH host its tab is on, shell-quoted after `cd`, or a host shell's starting folder once it is seen to be a folder | `SavedSessionTests`, `TerminalWindowTests`, `TerminalSessionTests` (the ssh command) |
 | Paste and typed text cannot become ssh commands | `EscapeChar none` | `CloudInitTests` |
 | Settings files cannot steer MonadHost into running commands other than a bridge's | Every `instance.json` field validated on create, update and load; a bad file is listed but never started. A stdio bridge (Phase 12) is the one setting that names a Mac command: its program by full path and plain arguments, run without a shell | `ConfigV2Tests`, `HostServiceTests`, `ProvisioningFlowTests`, `CommandBridgeTests` |
 | Shared folders stay what the user chose | MonadHost resolves links and stores where a share really leads; `~/.monad` is never shared, a writable share may not hold it, and a folder above the home folder (`/`, `/Users`) is refused. The home folder itself (read-only, with the user's word) reaches the VM as its visible folders only: no dot folder (`~/.monad`, `~/.ssh`, `~/.aws`), no `~/Library`, no loose files, decided on the Mac so root in the guest cannot get around it. Outside the home folder, `~/.ssh` and `~/Library` need the user's word. A Lima VM's own folders (Lima's `~` mount too) go through the same rules, with one confirmation for those that need it | `SharePolicyTests`, `HostServiceTests`, `LimaListTests` |
 | Agents reach Monad only as allowed | MCP calls from the Mac come through `MonadHost --mcp` over the XPC peer check; a VM reaches only its own endpoint (a 0600 socket per VM, forwarded to its loopback) with a token only it has, no `Origin`; `MCPAccess.decide` allows, asks or refuses each call (risky tools ask from the Mac; a VM without a role gets nothing; host-commands VMs only their commands; an orchestrator freely only on its children); questions time out as refusals; every call is audited | `MCPAccessTests`, `MCPHTTPTests`, `MCPProtocolTests`, `HostServiceTests`, `VMLifecycleTests` |
 | A host command runs only what the user defined | The VM never names a program; values are parsed by Monad (no shell) and matched against anchored patterns before anything runs; the program runs in a folder the VM shares, in its own process group, with a time limit, one at a time | `HostCommandTests`, `HostCommandServerTests` |
-| A settings file cannot bring Mac access in unnoticed | Shares, bridges, host commands, forwards into the Mac or open to other computers, LAN access, images and an agent role are set aside on import and confirmed on edit | `VMConfigFileTests` |
+| A settings file cannot bring Mac access in unnoticed | Shares, bridges, host commands, forwards into the Mac or open to other computers, forwards through SSH hosts, LAN access, images and an agent role are set aside on import and confirmed on edit | `VMConfigFileTests` |
+| An SSH host's settings cannot steer ssh | Monad's ssh runs for an SSH host read no config file (`-F none`; `~/.ssh/config` is ignored) and get every option on the command line from validated fields: the host is a DNS name or an IP literal (never an option), the user a plain account name, a key file one absolute path passed as one quoted value, the host to connect through another SSH host of Monad's (one level). MonadHost checks them again on every request and when it loads `host.json` | `SSHHostTests`, `HostProtocolTests`, `SSHHostManagerTests` |
+| An SSH host's questions are asked by Monad, never in a tab | Every ssh Monad starts for an SSH host runs with `SSH_ASKPASS_REQUIRE=force` and MonadHost as its askpass: the question goes helper → XPC (the peer pinned as above) → MonadHost → a panel of the app's, with a secure field. MonadHost answers only a question that carries a ticket it issued for that ssh (32 random bytes, ten minutes). An answer is never in a process's arguments, the environment, a file or a log (the logs name the variables, never their values, and never a prompt's words). What a server words is shown as plain text under "ssh says:", at most 8 lines of 200 characters, without control or direction characters. Unanswered, a question ends after two minutes, and at most 16 wait | `SSHAskpassTests`, `SSHHostManagerTests`, `HostServiceTests` (`testNoSecretOfAnSSHHostIsLogged`), `DebugLogTests` |
+| A password in the Keychain answers only ssh's own password question | MonadHost alone reads the login Keychain item of an SSH host, and releases it only for ssh's two password prompts for exactly that user and host (ssh's formats; a prompt a server words, such as a code or a new password, always reaches the user), once per connection: asked again, the server refused it, and the user is asked. The app never gets a password back | `SSHAskpassTests`, `SSHHostManagerTests`, `HostServiceTests` |
+| An SSH host's key is checked before any sign-in | `StrictHostKeyChecking=ask`: a key Monad has not seen is accepted only in Monad's panel (Trust is not the default button, and only an exact yes reaches ssh); a changed key ends the connection. Accepted keys go to `~/.monad/ssh-hosts/known_hosts`; `~/.ssh/known_hosts` is honoured and never written | `SSHHostTests`, `SSHHostManagerTests` |
+| A forward through an SSH host joins only what its rule names | Two ssh forwards, one on the VM's master and one on the SSH host's, joined by a unix socket in the VM's folder (0600, the user's own), never a TCP port of the Mac. The VM reaches the one `remoteHost:remotePort` of the rule, or the server the one VM port; a port brought into the VM is never auto-forwarded back onto the Mac; a socket left behind is removed only if it is a socket | `SSHForwardTests`, `ConfigV2Tests`, `VMLifecycleTests`, `ForwardManagerTests`, `SSHHostManagerTests` |
 | Images are what the distro published | OpenPGP signatures with pinned keys where the distro signs, never an older signed checksum file than one seen before, unsigned checksums only from their own site over HTTPS, then the image's digest | `OpenPGPTests`, `ImagePipelineTests`, `ParserFuzzTests` |
 | A VM's disk cannot steer MonadHost when Monad reads it | `mnd_diskcheck` reads fixed places only (the GPT and its table, superblocks; 4 KiB at a time), bounds every count and offset it reads, reports printable text only, and reads a VM's disk only once the VM is off, read only | `test_diskcheck.c`, `fuzz_decoders.c`, `DiskCheckTests`, `VMLifecycleTests` |
 | Repair Disk opens a VM's disk only inside another VM | The disk goes to a temporary ephemeral VM of the same distribution (no shared folders, forwards or role), as a USB disk once that VM runs, never at boot (two disks of one cloud image share labels and UUIDs). Only commands Monad builds run there, on a device name it checked; the VM being repaired cannot start or be deleted meanwhile; a clone of the disk is kept first | `DiskRepairTests`, `DeviceModelTests` (only that VM has a USB controller) |
@@ -148,6 +156,52 @@ download, not a release or GitHub account that was taken over; an ad hoc signatu
 is intact, not who made it (as with install.sh). Between the checks and the swap the update sits
 in the user's temporary folder, where a hostile same-user process could change it (see Same-user
 processes).
+
+## SSH hosts (2026-11-14)
+
+A tab can be a shell on a server over ssh, and a port can be carried between such a server and a
+VM with Monad in the middle (docs/CONFIG.md, `sshForwards`). Decided with the user:
+
+- **`~/.ssh/config` is ignored.** Host, port, user, key and the host to connect through are fields
+  in Monad, validated; nothing a config file could add (a `ProxyCommand`, a `LocalCommand`) runs.
+- **Signing in** is by password (kept in the login Keychain by MonadHost, service `dev.monad.ssh`,
+  never in Monad's files, and only if the user says so), by a private key the user has (ssh's own
+  keys and agent, or one file; a passphrase is asked in Monad's panel), or by a key pair Monad
+  makes for that server alone (`~/.monad/ssh-hosts/<name>/id_ed25519`, 0600) and installs with
+  `ssh-copy-id`. The password `ssh-copy-id` may need is asked like any question and never kept.
+  A password host offers no key, and a host with Monad's key offers only that key.
+- **Forwards through SSH hosts are confirmed one by one.** They pass the VM's firewall with the
+  user's sign-in to the server, so each says what it lets happen and asks when it is added, is set
+  aside when a settings file is imported, is left behind by a copy of the VM and by an
+  orchestrator's children, and is a risky tool over MCP (`add_ssh_forward`). Agents may list the
+  SSH hosts (name, host, port, user, how they sign in: never a key's path or a password) and
+  nothing else about them.
+- **The canvas tells a VM nothing about SSH hosts.** The hosts are drawn on the canvas, and notes
+  can be written on them (`ssh:<name>`). An agent on the Mac sees them in `list_canvas` by name
+  and place. A VM's agent that was allowed `list_canvas` gets no SSH host, and the notes as if
+  the hosts were gone (labels and arrows on them left out, pinned notes unpinned, zones without
+  them); `add_note` and `edit_note` do not take an SSH host's plain name from a VM, so trying
+  names tells it nothing. Which servers there are stays behind `list_ssh_hosts`, which asks
+  (`MonadToolsTests`).
+- **A server is treated like a guest for what it prints.** Its tab has the same terminal limits;
+  inline images stay off (they are a VM's setting), and OSC 52 follows the same rule as for VMs.
+- **Dropped files and pasted pictures** go to `~/.monad/uploads` and `~/.monad/shots` on the
+  server over a connection of their own, by a name Monad made safe, only when the user drops or
+  pastes.
+
+Not promised:
+
+- **The server is the user's to trust.** It sees what is typed in its tab, and with a forward into
+  a VM it is the one that connects on. Agent forwarding and X11 forwarding are always off.
+- **A password is kept before the server has accepted it** (the user said to keep it as they typed
+  it). A wrong one is tried once at the next connection, refused, and asked again.
+- **The server keeps Monad's public key** in `authorized_keys` after the SSH host is deleted in
+  Monad; the delete says so.
+- **Same-user processes**: the askpass ticket is in the environment of the ssh Monad started,
+  which other processes of the same user can read while that ssh lives. With it they can put that
+  host's question to MonadHost for ten minutes: get the stored password released as that ssh
+  would, or make Monad's panel appear. And with an ad hoc signature macOS asks again for the
+  Keychain item after each Monad update (the access list names the code that made it).
 
 ## Decisions (2026-10-05)
 
@@ -256,8 +310,22 @@ Checked (2026-10-05, through the test suite on the development Mac):
 - A symbolic link a guest makes in a writable share is resolved by the guest (2026-10-06, by hand):
   `ln -s / share/root` shows the guest's own `/` inside the guest, and the Mac's `/` on the Mac.
   A guest cannot reach Mac files through a link; Mac programs that follow such a link can (F-14).
+- SSH hosts (2026-11-14, by hand, the system's OpenSSH 10.3 against an sshd of the user's own on
+  the loopback, key sign-in): with `SSH_ASKPASS_REQUIRE=force` and no terminal, ssh puts the host
+  key question (no hint; the prompt holds "(yes/no/[fingerprint])") and a key's passphrase to the
+  askpass program, writes the accepted key to the first known hosts file only, and asks nothing
+  the second time; a master takes `-L socket:host:port` and `-R address:port:socket` over its
+  control socket, both ways round a port crosses two masters joined by one socket (mode 0600);
+  `StreamLocalBindUnlink` binds over a file left in the socket's place; and ssh leaves a socket
+  it made where it was when the forward is cancelled or the master exits (so Monad removes it).
 
 To check by hand on the Mac:
+
+- **SSH hosts**, with the running app against a real server (docs/STATUS.md lists the steps):
+  that MonadHost, a launchd agent, reads and writes the login Keychain; that a server's password
+  and keyboard-interactive prompts reach the panel as ssh words them (`user@host's password:`,
+  `(user@host) Password:`; checked in the ssh binary's text, not against a server); and
+  `ssh-copy-id` installing Monad's key end to end.
 
 - **Auto-forward next to another user's server (F-03):** a server run by root or another user on
   a port the VM also listens on: `lsof` does not see it, so whether ssh's bind is refused (by the

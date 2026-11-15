@@ -1,9 +1,10 @@
 # The canvas: VMs and networks on one map
 
 The canvas (VM › Canvas) draws every Monad network as a frame with its VMs inside it, This Mac and
-the Internet beside them, and lines for what moves between them. Moving a VM into another frame
-moves it to that network. It is a view on the VMs' settings, never a second copy of them: what the
-canvas changes goes through the same update and validation as the VM window.
+the Internet beside them, the SSH hosts ([SSH.md](SSH.md)) below them, and lines for what moves
+between them. Moving a VM into another frame moves it to that network. It is a view on the VMs'
+settings, never a second copy of them: what the canvas changes goes through the same update and
+validation as the VM window.
 
 ## Data flow
 
@@ -16,7 +17,8 @@ MonadHost            NetdSupervisor.traffic(): every network's pages, ports name
    │  traffic request                     (HostProtocol, logged only when it fails)
    ▼
 Monad.app            HostClient.traffic() every 2 s while the canvas shows
-   │                 HostClient.instances (VM settings and state), NetworkStore (networks)
+   │                 HostClient.instances (VM settings and state), NetworkStore (networks),
+   │                 HostClient.sshHosts (SSH hosts: name, address, forwards; never a secret)
    ▼
 CanvasModel          frames, nodes, edges, drops → intents
    │
@@ -33,15 +35,17 @@ handed out, and traffic naming a VM the canvas does not show is left out.
 Geometry only, no UI, tested in `CanvasModelTests`.
 
 - **Inputs.** `CanvasVM` per VM (name, its Monad network or none, running, whether forwards or
-  bridges link it to this Mac), read from its settings; `CanvasNetwork` per network (name, kind);
-  `VMTraffic` from MonadHost.
+  bridges link it to this Mac, the SSH hosts its forwards that are on go through), read from its
+  settings; `CanvasNetwork` per network (name, kind); the SSH hosts' names; `VMTraffic` from
+  MonadHost.
 - **Frames and nodes.** Each network has a frame; VMs on no Monad network (no network device,
   Apple's NAT, a network that is gone) share an area of their own (`CanvasModel.outside`). Nodes
-  are VM cards of a fixed size. This Mac stands left of the frames, the Internet above them.
+  are VM cards of a fixed size. This Mac stands left of the frames, the Internet above them, the
+  SSH hosts (smaller cards, on no network of Monad's) in rows below them.
 - **Placement.** A new network's frame goes right of the others; a new VM takes the first free
-  slot of its frame (two columns). Frames grow to hold their nodes, and a frame that comes to
-  overlap another moves right with its nodes. Nothing the user placed moves by itself; what is
-  gone is dropped from the layout.
+  slot of its frame (two columns); a new SSH host the first free place below the frames. Frames
+  grow to hold their nodes, and a frame that comes to overlap another moves right with its
+  nodes. Nothing the user placed moves by itself; what is gone is dropped from the layout.
 - **Membership by containment.** A VM's network is the frame it sits in. Dropping a node:
   - in another network's frame: the drop returns `.moveVM(name, from:, to:)` and the node waits
     there for the answer (refreshes leave it be). Yes: the window saves the VM's network, and once
@@ -51,14 +55,17 @@ Geometry only, no UI, tested in `CanvasModelTests`.
 - **Moving a frame** moves its VMs with it.
 - **Edges.** Traffic between two VMs is one edge for both directions (bytes added up, live when
   seen in the last 10 s); VMs with forwards or bridges get an edge to This Mac; NAT networks get
-  an edge to the Internet (internal, host-only and switch-only networks have no way out).
+  an edge to the Internet (internal, host-only and switch-only networks have no way out); a VM
+  with forwards through an SSH host gets one edge to that host, when the host exists.
 
 ## Persistence
 
 `~/.monad/canvas.json` (0600, `CanvasStore`): a version, the frames by network, the node centres
-by VM, and where This Mac and the Internet stand. A file that cannot be read, or one from a newer Monad, starts the layout again; values that
-are not finite or absurdly large are dropped. Only positions are kept there; which network a VM is
-on always comes from its own settings.
+by VM, where This Mac and the Internet stand, and the SSH hosts' centres by name (absent in files
+from before them, which read as they did). A file that cannot be read, or one from a newer Monad,
+starts the layout again; values that are not finite or absurdly large are dropped. Only positions
+are kept there; which network a VM is on always comes from its own settings, and what an SSH host
+is from MonadHost.
 
 ## Interactions (the view, `Monad/App/CanvasView.swift`)
 
@@ -75,11 +82,20 @@ icon's ember for selection and live traffic), light and dark.
   Start, Restart, Shut Down), the machine, its network and firewall in words, forwards and bridges, and
   its traffic with other VMs; Connections… and Settings… open the VM window there. Esc or a click
   on the ground closes it.
-- **Making.** New (top right) makes a VM or a network in the middle of the view; a right-click on
-  the ground makes one where the pointer is ("New VM in lab" inside a network). A VM is made with
-  the New VM sheet, its network chosen; a network with Settings › Networks' model. Each appears
-  where it was made (`CanvasModel.hint`). A right-click on a group (or its label) edits it; a
-  network with VMs on it is not deleted.
+- **SSH hosts.** Each is a card (a teal tile, its name, `user@host`, a warning mark when one of
+  its forwards is not up), dragged where the user wants it. A click opens its inspector in the
+  VM inspector's place (one of the two shows): Terminal, Open Tab, Settings… (the SSH host's
+  sheet), its address and how Monad signs in, and the forwards carried through it by VM
+  (`SSHLinks`), in the VM window's words, each with a dot for its state and a way to that VM's
+  forwarding settings; Connect Forwards Again when one failed. Its right-click has the same,
+  and Add Label, Add Note and Arrow From Here. Delete does not remove an SSH host: that is done
+  in Virtual Machines › SSH hosts.
+- **Making.** New (top right) makes a VM, a network or an SSH host in the middle of the view; a
+  right-click on the ground makes one where the pointer is ("New VM in lab" inside a network). A
+  VM is made with the New VM sheet, its network chosen; a network with Settings › Networks'
+  model; an SSH host with its sheet from Virtual Machines › SSH hosts. Each appears where it was
+  made (`CanvasModel.hint`). A right-click on a group (or its label) edits it; a network with
+  VMs on it is not deleted.
 - **Moving VMs.** Drag a VM into another network's group: Monad asks "Move <vm> to <network>?",
   saves the VM's network (`CanvasModel.config(_:movedTo:)`: its MAC kept, nothing else changed),
   and offers to restart it when it runs (a network change applies at the next boot). No, or a
@@ -92,21 +108,24 @@ icon's ember for selection and live traffic), light and dark.
 - **Edges.** Traffic between VMs is a curve between the facing card edges, or an arc under two
   neighbours, its width from the bytes, labelled with them, and flowing in ember while live (seen
   in the last 10 s). Dotted curves go to This Mac, a thin blue one from each NAT network to the
-  Internet.
-- **Terminals in the canvas.** A VM's right-click "Terminal in the Canvas", or the inspector's
-  Terminal, opens a dock below the canvas with a terminal on that VM (`CanvasWindowController`).
-  The dock is the terminal window's panes (`TerminalPanes`, shared with `TerminalWindowController`):
-  a VM already docked is brought to front, another one opens as a new context in the focused pane,
+  Internet. A VM's forwards through an SSH host are one curve to its card: teal while they are
+  up, dashed orange when one failed, dotted while the VM is not running.
+- **Terminals in the canvas.** A VM's or an SSH host's right-click "Terminal in the Canvas", or
+  the inspector's Terminal, opens a dock below the canvas with a terminal on it
+  (`CanvasWindowController`). The dock is the terminal window's panes (`TerminalPanes`, shared
+  with `TerminalWindowController`): a VM or an SSH host already docked is brought to front,
+  another one opens as a new context in the focused pane,
   and the pane menu (on a pane's header and in the terminal's right-click) switches, opens and
   closes contexts and splits; a pane dragged by its header moves within the dock. The Shell menu's
   Split Side by Side (⇧⌘V), Split Stacked (⇧⌘H) and the pane moves (⌘ and an arrow) act on the
   dock while its terminal is in front, and ⌘W closes the context in front there. The divider
   resizes the dock; its bar shows the terminal in front and closes all its terminals (×); the
   last context closing hides it. Closing the window closes its terminals.
-- The map refreshes every 2 seconds while it shows, and at once when a VM is made, changed or
-  removed; it stops when its window closes. What appears while the canvas is open grows in (VMs
-  and their cards, network frames with a ring, notes, and arrows and ink drawn along). A preview
-  with sample VMs (`CanvasWindowModel.preview()`) shows every element without a MonadHost.
+- The map refreshes every 2 seconds while it shows, and at once when a VM or an SSH host is made,
+  changed or removed; it stops when its window closes. What appears while the canvas is open
+  grows in (VMs and their cards, network frames with a ring, notes, and arrows and ink drawn
+  along). A preview with sample VMs and SSH hosts (`CanvasWindowModel.preview()`) shows every
+  element without a MonadHost.
 
 ## Notes, labels, zones, arrows and ink (`Monad/Canvas/CanvasNotes.swift`)
 
@@ -116,37 +135,42 @@ pushes every change to every app (`HostEvent.notes`); the app asks for them with
 writes with `setNote` and `removeNote`. A note an app writes is "you"'s; one an agent writes says
 which ("mac", or "vm:<name>"), and an edit keeps who wrote it.
 
-- **Kinds.** A note is Markdown (inline) on a coloured card: free, or pinned beside a VM or
-  network (several stack down; moved away, a dotted thread still joins them). A label is a chip
-  on a VM (under its card) or a network (under its frame). A zone is a titled, tinted area: drawn
-  by hand, or wrapped around VMs and networks, following them as they move. An arrow joins any two
-  things (VMs, networks, notes, This Mac, the Internet), edge to edge, with words in the middle.
+- **Kinds.** A note is Markdown (inline) on a coloured card: free, or pinned beside a VM, a
+  network or an SSH host (several stack down; moved away, a dotted thread still joins them). A
+  label is a chip on a VM or an SSH host (under its card) or a network (under its frame). A zone
+  is a titled, tinted area: drawn by hand, or wrapped around VMs, networks and SSH hosts,
+  following them as they move. An arrow joins any two things (VMs, networks, SSH hosts, notes,
+  This Mac, the Internet), edge to edge, with words in the middle.
   Ink is a freehand stroke, simplified (Ramer–Douglas–Peucker) to at most 2,000 points.
-- **Things by name.** `vm:<name>`, `net:<name>`, `note:<id>`, `mac`, `internet`; the tools also
-  take a VM's or a network's plain name.
+- **Things by name.** `vm:<name>`, `net:<name>`, `ssh:<name>`, `note:<id>`, `mac`, `internet`;
+  the tools also take a VM's, a network's or an SSH host's plain name (in that order when two
+  share one). `list_canvas` lists the SSH hosts by name and place, with nothing about how to get
+  into one, and only for an agent on the Mac: a VM's agent gets no SSH host, the notes as if the
+  hosts were gone, and no SSH host by its plain name ([SECURITY.md](SECURITY.md) › SSH hosts).
 - **Checks.** Every note is checked like an agent's input wherever it comes from: ids of 1–16
   lowercase letters and digits, refs well formed, a label up to 80 characters and other text up
   to 4,000, no control characters, coordinates finite and within ±10⁷, sizes up to 20,000, a
   zone wrapping at most 16 things, at most 500 notes. A file note that fails is left out.
-- **Forgetting.** A VM deleted takes its labels and arrows along, notes pinned to it are
-  unpinned, and zones stop wrapping it (a zone that wrapped only it goes). A note removed takes
-  the arrows to it. Notes on a network that is gone are not drawn.
+- **Forgetting.** A VM deleted, or an SSH host removed, takes its labels and arrows along, notes
+  pinned to it are unpinned, and zones stop wrapping it (a zone that wrapped only it goes). A
+  note removed takes the arrows to it. Notes on a network that is gone are not drawn.
 - **Placement and hits** (`CanvasNotesLayout`, tested in `CanvasNotesTests`): a note without a
   place of its own sits right of what it is pinned to, or in a column right of everything; a
   click near an arrow or a stroke, or on a zone's edge or title, selects it, the inside of a zone
   being left to what is in it.
-- **Tools** (the palette, top middle): Select, Note (click the canvas, or a VM or a network to
-  pin it), Label (a VM or a network), Zone (drag an area, or click a network to wrap it), Arrow
-  (where it starts, then where it ends; a VM's right-click "Arrow From Here"), Pen; the colours,
+- **Tools** (the palette, top middle): Select, Note (click the canvas, or a VM, a network or an
+  SSH host to pin it), Label (one of those three), Zone (drag an area, or click a network to wrap
+  it), Arrow (where it starts, then where it ends; a card's right-click "Arrow From Here"), Pen;
+  the colours,
   for what is written next or the selection; Delete for the selection. A double-click edits a
   note, label, zone title or arrow's words; a note left empty goes. Notes move by a drag and
   resize from their corner, as do drawn zones by their title and corner. Esc goes back to Select.
-  VMs' and networks' right-click menus add a label, a note, or a zone around a network.
+  VMs', SSH hosts' and networks' right-click menus add a label, a note, or a zone around a network.
 - **Delete and undo.** Delete (⌫) removes the selected note, label, zone, arrow or stroke; on a
   selected VM it asks first ("Delete … and its disk?"), as that cannot be undone. Keys reach the
   canvas only while focus is on it, never from a text field being edited or the docked terminal.
   Edit › Undo and Redo (⌘Z, ⇧⌘Z) go through the window's undo manager: writing, editing,
   recolouring, moving and deleting what is written (a note deleted comes back with the arrows
-  that went with it), moving VMs, frames and landmarks by hand, and moving a VM to another
-  network (its network set back; a running VM picks it up when it starts again). Deleting a VM
-  is not undone.
+  that went with it), moving VMs, frames, SSH hosts and landmarks by hand, and moving a VM to
+  another network (its network set back; a running VM picks it up when it starts again).
+  Deleting a VM is not undone.

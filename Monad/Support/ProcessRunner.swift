@@ -46,15 +46,17 @@ enum ProcessRunner {
     }
 
     /// Run a process to completion off the main thread, optionally feeding stdin.
+    /// `environment` is added to `baseEnvironment` (and wins over it).
     /// `onOutput` gets each chunk as it is read (0: stdout, 1: stderr), on a
     /// reader thread; the result still holds the output (up to the limit).
-    static func run(_ executable: String, _ arguments: [String], stdin: Data? = nil,
-                    timeout: TimeInterval = 60, onOutput: (@Sendable (Int, Data) -> Void)? = nil) async throws -> Result {
+    static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+                    stdin: Data? = nil, timeout: TimeInterval = 60,
+                    onOutput: (@Sendable (Int, Data) -> Void)? = nil) async throws -> Result {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    cont.resume(returning: try runSync(executable, arguments, stdin: stdin, timeout: timeout,
-                                                       onOutput: onOutput))
+                    cont.resume(returning: try runSync(executable, arguments, environment: environment, stdin: stdin,
+                                                       timeout: timeout, onOutput: onOutput))
                 } catch {
                     cont.resume(throwing: error)
                 }
@@ -62,14 +64,16 @@ enum ProcessRunner {
         }
     }
 
-    static func runSync(_ executable: String, _ arguments: [String], stdin: Data? = nil,
-                        timeout: TimeInterval = 60, onOutput: (@Sendable (Int, Data) -> Void)? = nil) throws -> Result {
+    static func runSync(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+                        stdin: Data? = nil, timeout: TimeInterval = 60,
+                        onOutput: (@Sendable (Int, Data) -> Void)? = nil) throws -> Result {
         let name = (executable as NSString).lastPathComponent
         let out = try Pipe2(), err = try Pipe2()
         let input = stdin != nil ? try Pipe2() : nil
         let pid: pid_t
         do {
-            pid = try spawn(executable, arguments, stdin: input?.read, stdout: out.write, stderr: err.write)
+            pid = try spawn(executable, arguments, environment: environment, stdin: input?.read, stdout: out.write,
+                            stderr: err.write)
         } catch {
             [out, err, input].compactMap { $0 }.forEach { $0.closeBoth() }
             throw error
@@ -139,8 +143,8 @@ enum ProcessRunner {
         return sig == 0 ? (st >> 8) & 0xff : 128 + sig
     }
 
-    private static func spawn(_ executable: String, _ arguments: [String], stdin: Int32?, stdout: Int32,
-                              stderr: Int32) throws -> pid_t {
+    private static func spawn(_ executable: String, _ arguments: [String], environment: [String: String],
+                              stdin: Int32?, stdout: Int32, stderr: Int32) throws -> pid_t {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
@@ -167,7 +171,7 @@ enum ProcessRunner {
         posix_spawn_file_actions_adddup2(&actions, stderr, 2)
 
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
-        let envp = baseEnvironment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        let envp = baseEnvironment.merging(environment) { _, new in new }.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
             argv.forEach { free($0) }
             envp.forEach { free($0) }

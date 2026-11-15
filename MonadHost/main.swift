@@ -31,6 +31,23 @@ if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--guestd" {
     exit(mnd_guestd_main())
 }
 
+// ssh's askpass (SSH_ASKPASS): this same binary, started by an ssh Monad ran
+// for an SSH host. It relays the question to the running MonadHost and
+// prints the answer (SSHAskpass.swift). SSH_ASKPASS takes no arguments, so
+// the ticket in the environment is what selects this mode.
+if let ticket = ProcessInfo.processInfo.environment[SSHAskpass.ticketVariable],
+   CommandLine.arguments.count == 2, !CommandLine.arguments[1].hasPrefix("--") {
+    signal(SIGPIPE, SIG_IGN)
+    MainActor.assumeIsolated {
+        guard let requirement = HostXPCSecurity.peerRequirement() else {
+            FileHandle.standardError.write(Data("monad: this MonadHost has no readable code signature\n".utf8))
+            exit(EX_CONFIG)
+        }
+        SSHAskpass.relay(ticket: ticket, prompt: CommandLine.arguments[1],
+                         hint: ProcessInfo.processInfo.environment[SSHAskpass.hintVariable], requirement: requirement)
+    }
+}
+
 // An agent on the Mac: Monad's MCP server over stdio, relayed to the running
 // MonadHost (MCPStdio.swift). It never runs VMs itself.
 if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--mcp" {
@@ -61,7 +78,8 @@ MainActor.assumeIsolated {
     let manager = VMManager.shared
     manager.load()
     BootMessages.watch { manager.bootMessagesChanged() }
-    let service = HostService(manager: manager)
+    SSHHostManager.shared.endLeftoverMasters()
+    let service = HostService(manager: manager, sshHosts: .shared)
     service.openApp = HostService.openMonad
     // Clients are pinned to Monad's binaries as installed, read for each connection.
     let listener = HostXPCListener(listener: NSXPCListener(machServiceName: HostXPCSecurity.machServiceName),

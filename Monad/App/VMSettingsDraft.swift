@@ -376,6 +376,64 @@ struct VMSettingsDraft {
         return statuses.first { $0.flag == spec.flag && $0.spec == spec.value }
     }
 
+    // MARK: Forwards through SSH hosts (Monad/SSH)
+
+    /// One line per forward, in words.
+    static func describe(_ f: SSHForward) -> String {
+        let remote = "\(SSHMux.address(f.remoteHost)):\(f.remotePort)"
+        switch f.direction {
+        case .intoVM: return "\(remote) through the SSH host \(f.sshHost), in the VM at 127.0.0.1:\(f.guestPort)"
+        case .ontoHost: return "VM port \(f.guestPort), on the SSH host \(f.sshHost) at \(remote)"
+        }
+    }
+
+    /// A forward through `host` as typed: nil until both ports are numbers
+    /// and it can be one. An empty `vmPort` for a server port brought into
+    /// the VM means the same port; an empty `remoteHost` means 127.0.0.1.
+    static func sshForward(host: String, direction: SSHForward.Direction, vmPort: String, remoteHost: String,
+                           remotePort: String) -> SSHForward? {
+        let remote = Int(remotePort.trimmingCharacters(in: .whitespaces))
+        let typed = vmPort.trimmingCharacters(in: .whitespaces)
+        let vm = typed.isEmpty && direction == .intoVM ? remote : Int(typed)
+        guard let remote, let vm else { return nil }
+        let address = remoteHost.trimmingCharacters(in: .whitespaces)
+        let forward = SSHForward(sshHost: host, direction: direction, guestPort: vm,
+                                 remoteHost: address.isEmpty ? "127.0.0.1" : address, remotePort: remote)
+        return forward.problem == nil ? forward : nil
+    }
+
+    /// What adding a forward through an SSH host lets happen, asked before
+    /// each is added: it passes the VM's firewall, signed in as the user.
+    static func confirmation(for f: SSHForward) -> String {
+        let remote = "\(SSHMux.address(f.remoteHost)):\(f.remotePort)"
+        switch f.direction {
+        case .intoVM:
+            return "The VM will be able to connect to \(remote) as the SSH host “\(f.sshHost)” reaches it, "
+                + "signed in as you there, past the VM's firewall."
+        case .ontoHost:
+            return "Whoever reaches \(remote) on the SSH host “\(f.sshHost)” will be able to connect to port \(f.guestPort) in the VM."
+        }
+    }
+
+    static let sshForwardConfirmationTitle = "Connect the VM and the SSH host?"
+
+    /// A forward's state while the VM runs: both its halves. nil when the
+    /// VM's half is not set up (the VM is not running it); the VM's half
+    /// failed, that; else the SSH host's half, as its master reports it.
+    static func status(of f: SSHForward, in forwards: [ForwardStatus], hosts: [SSHHostSnapshot],
+                       paths: InstancePaths) -> ForwardStatus.State? {
+        let vm = f.vmSpec(in: paths)
+        guard let own = forwards.first(where: { $0.origin == .bridge && $0.flag == vm.flag && $0.spec == vm.value })?.state else {
+            return nil
+        }
+        if case .failed = own { return own }
+        guard let host = hosts.first(where: { $0.config.name == f.sshHost }) else {
+            return .failed("There is no SSH host named \(f.sshHost).")
+        }
+        let far = f.hostSpec(in: paths)
+        return (host.forwards ?? []).first { $0.flag == far.flag && $0.spec == far.value }?.state ?? .failed("Not set up yet.")
+    }
+
     private static func text(_ ports: [Int]) -> String {
         ports.map(String.init).joined(separator: ", ")
     }

@@ -38,6 +38,9 @@ enum CanvasStyle {
     static let wire = color(rgb(0x1A1714, 0.30), rgb(0xFFF6EE, 0.22))
     static let internet = color(rgb(0x2F6FD6, 0.55), rgb(0x6EA8FF, 0.5))
     static let panel = color(rgb(0xFBFAF8), rgb(0x18171B))
+    /// A forward through an SSH host that is up, and an SSH host's tile.
+    static let ssh = color(rgb(0x1F8A7A, 0.8), rgb(0x4FD1BD, 0.75))
+    static let sshTile = Color(nsColor: rgb(0x1F8A7A))
 
     /// A distribution's tile: its initial on its own colour.
     /// What a VM's tile shows: its distribution's letter, or a symbol.
@@ -65,18 +68,21 @@ enum CanvasStyle {
 
 /// The one sheet the canvas shows at a time (two sheet modifiers on one
 /// view do not both present on macOS): a VM being made in a network at a
-/// spot, or a network being made at a spot or edited.
+/// spot, a network being made at a spot or edited, or the same for an SSH
+/// host.
 enum CanvasSheet: Identifiable, Equatable {
     case newVM(network: String?, at: CGPoint)
     case network(editing: String?, at: CGPoint)
     /// Every forward and bridge between this Mac and the VMs.
     case macLinks
+    case sshHost(editing: String?, at: CGPoint)
 
     var id: String {
         switch self {
         case .newVM: return "vm"
         case .network(let editing, _): return "network " + (editing ?? "")
         case .macLinks: return "mac"
+        case .sshHost(let editing, _): return "ssh " + (editing ?? "")
         }
     }
 }
@@ -108,6 +114,27 @@ enum MacLinks {
     }
 }
 
+/// What goes through an SSH host (its inspector): per VM with any, its
+/// forwards through the host, on or off.
+enum SSHLinks {
+    struct Entry: Equatable {
+        var vm: String
+        var forwards: [SSHForward]
+    }
+
+    /// How the forwards between a VM and an SSH host are doing: not
+    /// carried now (the VM is not running), all up, or one of them failed.
+    enum State: Equatable { case idle, up, failed }
+
+    static func list(_ configs: [InstanceConfig], host: String) -> [Entry] {
+        configs.compactMap { c in
+            let forwards = c.sshForwards.filter { $0.sshHost == host }
+            return forwards.isEmpty ? nil : Entry(vm: c.name, forwards: forwards)
+        }
+        .sorted { $0.vm.localizedStandardCompare($1.vm) == .orderedAscending }
+    }
+}
+
 /// The one alert at a time: a restart to offer, or what went wrong.
 enum CanvasAlert: Equatable {
     case restart(CanvasMoveQuestion)
@@ -129,27 +156,36 @@ final class CanvasWindowModel: ObservableObject {
     @Published private(set) var definitions: [NetworkDefinition] = []
     @Published var zoom: CGFloat = 1
     @Published var pan = CGSize(width: 220, height: 180)
-    @Published var selected: String?
+    /// The VM whose inspector shows. A VM or an SSH host is selected, never
+    /// both: there is one inspector.
+    @Published var selected: String? {
+        didSet { if selected != nil, selectedSSHHost != nil { selectedSSHHost = nil } }
+    }
+    @Published var selectedSSHHost: String? {
+        didSet { if selectedSSHHost != nil, selected != nil { selected = nil } }
+    }
+    /// The card under the pointer: a VM's name, or "ssh:<name>".
     @Published var hovered: String?
     /// The pointer, on the canvas (for what a right-click makes).
     @Published var pointer = CGPoint.zero
     @Published var question: CanvasMoveQuestion?
     @Published var sheet: CanvasSheet?
     @Published var alert: CanvasAlert?
-    /// Docks a terminal on a VM in the canvas window (CanvasWindowController);
-    /// without one, a tab opens instead.
-    var onTerminal: ((String) -> Void)?
+    /// Docks a terminal on a VM or an SSH host in the canvas window
+    /// (CanvasWindowController); without one, a tab opens instead.
+    var onTerminal: ((SessionTarget) -> Void)?
     let host: HostClient
     /// Where the layout is kept (nil: nowhere, as in tests).
     private let store: CanvasStore?
-    /// Sample VMs, networks and traffic instead of MonadHost's (previews).
-    private var sample: (vms: [RemoteVM], networks: [NetworkDefinition], traffic: [VMTraffic])?
-    /// When each VM, network ("net:<name>") and note ("note:<id>")
-    /// appeared while the canvas was open: they grow in.
+    /// Sample VMs, networks, SSH hosts and traffic instead of MonadHost's (previews).
+    private var sample: (vms: [RemoteVM], networks: [NetworkDefinition], sshHosts: [SSHHostSnapshot], traffic: [VMTraffic])?
+    /// When each VM, network ("net:<name>"), SSH host ("ssh:<name>") and
+    /// note ("note:<id>") appeared while the canvas was open: they grow in.
     @Published private(set) var born: [String: Date] = [:]
     private var loaded = false
     private var hostObserver: AnyCancellable?
     private var notesObserver: AnyCancellable?
+    private var sshObserver: AnyCancellable?
 
     // MARK: Writing on the canvas
 
@@ -192,6 +228,7 @@ final class CanvasWindowModel: ObservableObject {
         model = CanvasModel(layout: store?.load() ?? CanvasLayout())
         // A VM made, changed or gone shows at once, not at the next poll.
         hostObserver = host.$instances.sink { [weak self] _ in self?.scheduleRefresh() }
+        sshObserver = host.$sshHosts.sink { [weak self] _ in self?.scheduleRefresh() }
         // Notes written anywhere (an agent, another window) show at once.
         notesObserver = host.$notes.sink { [weak self] list in
             DispatchQueue.main.async { self?.received(list) }
@@ -396,21 +433,28 @@ final class CanvasWindowModel: ObservableObject {
         sample.map { $0.vms.first { $0.name == name } } ?? host.vm(named: name)
     }
 
-    /// The VMs, networks and traffic again; the layout saved if placing
-    /// something new changed it.
+    /// The SSH hosts (MonadHost's, or the preview's samples).
+    var sshHosts: [SSHHostSnapshot] { sample?.sshHosts ?? host.sshHosts }
+
+    func sshHost(named name: String) -> SSHHostSnapshot? { sshHosts.first { $0.config.name == name } }
+
+    /// The VMs, networks, SSH hosts and traffic again; the layout saved if
+    /// placing something new changed it.
     func refresh() async {
         definitions = sample?.networks ?? (try? NetworkStore().all()) ?? []
         let names = definitions.map(\.name)
+        let hosts = sshHosts.map(\.config.name)
         let before = model.layout
         let vms = (sample?.vms ?? host.instances).map { CanvasVM(config: $0.config, running: $0.isRunning, networks: names) }
         if loaded {
             let now = Date()
             for vm in vms where !model.vms.contains(where: { $0.name == vm.name }) { born[vm.name] = now }
             for n in names where model.layout.frames[n] == nil { born["net:" + n] = now }
+            for h in hosts where model.position(sshHost: h) == nil { born["ssh:" + h] = now }
         }
         born = born.filter { Date().timeIntervalSince($0.value) < Self.growIn * 2 }
         withAnimation(loaded ? .spring(response: 0.55, dampingFraction: 0.78) : nil) {
-            model.update(vms: vms, networks: definitions.map { CanvasNetwork(name: $0.name, kind: $0.kind) })
+            model.update(vms: vms, networks: definitions.map { CanvasNetwork(name: $0.name, kind: $0.kind) }, sshHosts: hosts)
         }
         if !loaded, sample == nil {
             try? await host.loadNotes()
@@ -419,6 +463,7 @@ final class CanvasWindowModel: ObservableObject {
         loaded = true
         if model.layout != before { save() }
         if let selected, model.position(selected) == nil { self.selected = nil }
+        if let s = selectedSSHHost, model.position(sshHost: s) == nil { selectedSSHHost = nil }
         if let sample {
             traffic = sample.traffic
         } else if let latest = try? await host.traffic() {
@@ -433,26 +478,32 @@ final class CanvasWindowModel: ObservableObject {
     }
 
     #if DEBUG
-    /// A canvas of sample VMs: two networks, VMs in each state, live traffic.
+    /// A canvas of sample VMs: two networks, VMs in each state, live
+    /// traffic, and an SSH host one of them carries a port through.
     static func preview() -> CanvasWindowModel {
         let m = CanvasWindowModel(host: HostAgent.client)
         m.model = CanvasModel()
         func vm(_ name: String, _ distro: String, _ release: String, _ network: String?, _ state: VMState,
-                forwards: Int = 0) -> RemoteVM {
+                forwards: Int = 0, through sshHost: String? = nil) -> RemoteVM {
             var c = InstanceConfig.defaults(name: name)
             c.distro = distro
             c.release = release
             c.networks = network.map { [NetworkAttachment(network: $0, macAddress: nil)] } ?? []
             c.forwards = (0..<forwards).map { ForwardRule(kind: .local, hostPort: 8000 + $0, guestPort: 8000 + $0) }
+            c.sshForwards = sshHost.map { [SSHForward(sshHost: $0, direction: .intoVM, guestPort: 5432, remotePort: 5432)] } ?? []
             let snap = VMSnapshot(name: name, config: c, state: state, agent: state == .ready, ports: [], sessions: 1)
             return RemoteVM(snapshot: snap, root: FileManager.default.temporaryDirectory)
         }
         m.sample = (vms: [vm("default", "ubuntu", "24.04", "default", .ready, forwards: 1),
                           vm("lima-dev", "ubuntu", "26.04", "default", .stopped),
-                          vm("web", "debian", "13", "lab", .ready),
+                          vm("web", "debian", "13", "lab", .ready, through: "staging"),
                           vm("db", "fedora", "43", "lab", .booting),
                           vm("scratch", "debian", "13", nil, .stopped)],
                     networks: [.builtInDefault, NetworkDefinition(name: "lab", kind: .internal, subnet: "192.168.77.0/24")],
+                    sshHosts: [SSHHostSnapshot(config: SSHHost(name: "staging", host: "staging.example.com", user: "dev", auth: .key),
+                                               hasPassword: false),
+                               SSHHostSnapshot(config: SSHHost(name: "bastion", host: "192.0.2.10", port: 2222, user: "ops",
+                                                               auth: .password), hasPassword: true)],
                     traffic: [VMTraffic(network: "lab", from: "web", to: "db", frames: 900, bytes: 1_400_000, lastSeen: 1),
                               VMTraffic(network: "lab", from: "db", to: "web", frames: 700, bytes: 3_100_000, lastSeen: 2)])
         var zone = CanvasNote(id: "z1", kind: .zone, text: "Staging", tint: .purple)
@@ -495,10 +546,12 @@ final class CanvasWindowModel: ObservableObject {
     /// Everything in view.
     func fit(_ size: CGSize) {
         let frames = model.layout.frames.values.reduce(CGRect.null) { $0.union($1) }
-        guard !frames.isNull, size.width > 0, size.height > 0 else { return }
-        let all = frames.union(CGRect(origin: model.macPosition, size: .zero))
+        let hosts = model.layout.sshHosts.values.map(CanvasModel.sshRect).reduce(CGRect.null) { $0.union($1) }
+        guard !frames.union(hosts).isNull, size.width > 0, size.height > 0 else { return }
+        // This Mac and the Internet stand beside the networks: with none, they are not there.
+        let landmarks = frames.isNull ? CGRect.null : CGRect(origin: model.macPosition, size: .zero)
             .union(CGRect(origin: model.internetPosition, size: .zero))
-            .insetBy(dx: -140, dy: -90)
+        let all = frames.union(hosts).union(landmarks).insetBy(dx: -140, dy: -90)
         zoom = min(max(min(size.width / all.width, size.height / all.height), 0.25), 1.2)
         pan = CGSize(width: (size.width - all.width * zoom) / 2 - all.minX * zoom,
                      height: (size.height - all.height * zoom) / 2 - all.minY * zoom)
@@ -576,17 +629,60 @@ final class CanvasWindowModel: ObservableObject {
         sheet = .macLinks
     }
 
+    /// New SSH host; its card goes at `point`.
+    func makeSSHHost(at point: CGPoint) {
+        sheet = .sshHost(editing: nil, at: point)
+    }
+
+    func editSSHHost(_ name: String) {
+        sheet = .sshHost(editing: name, at: .zero)
+    }
+
+    func sshHostWillBeSaved(_ name: String, at point: CGPoint) {
+        model.hint(sshHost: name, at: point)
+    }
+
     /// A terminal on VM `name`, docked in the canvas.
     func openTerminal(_ name: String) {
         if let onTerminal {
-            onTerminal(name)
+            onTerminal(.vm(name))
         } else if let vm = host.vm(named: name) {
             (NSApp.delegate as? AppDelegate)?.openTab(in: vm)
         }
     }
 
+    /// The same on the SSH host `name`.
+    func openTerminal(sshHost name: String) {
+        if let onTerminal {
+            onTerminal(.ssh(name))
+        } else {
+            (NSApp.delegate as? AppDelegate)?.open(.ssh(name))
+        }
+    }
+
     func moveLandmark(_ landmark: CanvasLandmark, to point: CGPoint) {
         model.moveLandmark(landmark, to: point)
+    }
+
+    func moveSSHHost(_ name: String, to point: CGPoint) {
+        model.moveSSHHost(name, to: point)
+    }
+
+    /// How the forwards between a VM and an SSH host are doing (the edge
+    /// between their cards says it).
+    func sshLinkState(vm name: String, host: String) -> SSHLinks.State {
+        guard let vm = vm(named: name), vm.isRunning else { return .idle }
+        let states = vm.config.sshForwards.filter { $0.enabled && $0.sshHost == host }
+            .map { VMSettingsDraft.status(of: $0, in: vm.forwards, hosts: sshHosts, paths: vm.paths) }
+        if states.contains(where: { if case .failed? = $0 { return true } else { return false } }) { return .failed }
+        return states.contains(.active) ? .up : .idle
+    }
+
+    /// The SSH host's forwards tried again.
+    func reconnect(sshHost name: String) {
+        Task {
+            do { try await host.connectSSHHost(name) } catch { alert = .problem(HostAgent.describe(error)) }
+        }
     }
 
     /// The VMs' settings (MonadHost's, or the preview's samples).
@@ -619,6 +715,7 @@ struct CanvasView: View {
     @State private var panStart: CGSize?
     @State private var creating = false
     @State private var landmarkDragStart: CGPoint?
+    @State private var sshDragStart: [String: CGPoint] = [:]
 
     init(host: HostClient) {
         _canvas = StateObject(wrappedValue: CanvasWindowModel(host: host))
@@ -655,6 +752,7 @@ struct CanvasView: View {
                     landmark(.mac, symbol: "laptopcomputer", title: "This Mac", at: canvas.model.macPosition)
                     landmark(.internet, symbol: "globe.americas.fill", title: "Internet", at: canvas.model.internetPosition)
                     ForEach(canvas.model.vms, id: \.name) { card($0) }
+                    ForEach(canvas.sshHosts.filter { canvas.model.position(sshHost: $0.config.name) != nil }) { sshCard($0) }
                     labels
                     ForEach(canvas.notes.filter { $0.kind == .arrow && !$0.text.isEmpty || canvas.editingNote == $0.id && $0.kind == .arrow }) { n in
                         if let mid = arrowMiddle(n, places) { CanvasArrowWords(note: n, at: mid, canvas: canvas) }
@@ -662,7 +760,7 @@ struct CanvasView: View {
                     ForEach(canvas.notes.filter { $0.kind == .note }) { n in
                         if let r = places[n.id] { CanvasNoteCard(note: n, rect: r, canvas: canvas) }
                     }
-                    if canvas.model.vms.isEmpty && canvas.notes.isEmpty {
+                    if canvas.model.vms.isEmpty && canvas.model.sshHosts.isEmpty && canvas.notes.isEmpty {
                         emptyState.frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -691,12 +789,18 @@ struct CanvasView: View {
                 CanvasInspector(vm: vm, canvas: canvas)
                     .frame(width: 360)
                     .transition(.move(edge: .trailing))
+            } else if let name = canvas.selectedSSHHost, let snapshot = canvas.sshHost(named: name) {
+                CanvasSSHInspector(snapshot: snapshot, canvas: canvas)
+                    .frame(width: 360)
+                    .transition(.move(edge: .trailing))
             }
         }
         .background(CanvasStyle.ground)
         .animation(.snappy(duration: 0.22), value: canvas.selected)
+        .animation(.snappy(duration: 0.22), value: canvas.selectedSSHHost)
         .onExitCommand {
             canvas.selected = nil
+            canvas.selectedSSHHost = nil
             canvas.selectedNote = nil
             canvas.editingNote = nil
             canvas.cancelWriting()
@@ -751,6 +855,16 @@ struct CanvasView: View {
                                   if let vm = canvas.vm(named: name) { appDelegate?.showDetails(of: vm, page: .forwarding) }
                               },
                               done: { canvas.sheet = nil })
+            case .sshHost(let editing, let point):
+                SSHHostSheet(editing: editing.flatMap { canvas.sshHost(named: $0)?.config },
+                             hosts: canvas.sshHosts.map(\.config)) { config, password in
+                    // A new one goes where it was asked for; an edited one stays.
+                    if editing == nil { canvas.sshHostWillBeSaved(config.name, at: point) }
+                    try await canvas.host.saveSSHHost(config, password: password)
+                    return canvas.host.sshHost(named: config.name)?.config ?? config
+                } onInstallKey: { name in
+                    try await canvas.host.installSSHKey(name)
+                } onClose: { canvas.sheet = nil }
             }
         }
     }
@@ -816,6 +930,7 @@ struct CanvasView: View {
             break
         }
         canvas.selected = nil
+        canvas.selectedSSHHost = nil
         canvas.editingNote = nil
         canvas.selectedNote = CanvasNotesLayout.hit(p, canvas.notes, places: canvas.places, in: canvas.model,
                                                     tolerance: 8 / canvas.zoom)
@@ -860,15 +975,15 @@ struct CanvasView: View {
         }
     }
 
-    /// The labels, by what they are on: under a VM's card, along the top
-    /// of a network's frame after its title.
+    /// The labels, by what they are on: under a VM's or an SSH host's
+    /// card, along the top of a network's frame after its title.
     @ViewBuilder private var labels: some View {
         let byTarget = Dictionary(grouping: canvas.notes.filter { $0.kind == .label }, by: { $0.on ?? "" })
         ForEach(byTarget.keys.sorted(), id: \.self) { target in
             if let r = canvas.model.rect(of: target) {
-                let onVM: Bool = { if case .vm? = CanvasRef(target) { return true } else { return false } }()
+                let onCard: Bool = { if case .network? = CanvasRef(target) { return false } else { return true } }()
                 CanvasLabels(target: target, labels: byTarget[target] ?? [],
-                             origin: onVM ? CGPoint(x: r.minX + 4, y: r.maxY + 8) : CGPoint(x: r.minX + 14, y: r.maxY + 8),
+                             origin: onCard ? CGPoint(x: r.minX + 4, y: r.maxY + 8) : CGPoint(x: r.minX + 14, y: r.maxY + 8),
                              canvas: canvas)
             }
         }
@@ -885,6 +1000,7 @@ struct CanvasView: View {
         let network = canvas.model.network(at: spot)
         Button(network.map { "New VM in \($0)" } ?? "New VM Here") { canvas.makeVM(at: spot) }
         Button("New Network Here") { canvas.makeNetwork(at: spot) }
+        Button("New SSH Host Here") { canvas.makeSSHHost(at: spot) }
         Button("New Note Here") {
             let size = CanvasNotesLayout.size(of: "")
             canvas.write(.note, frame: CGRect(x: spot.x, y: spot.y, width: size.width, height: size.height))
@@ -906,6 +1022,18 @@ struct CanvasView: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Where a line between two cards leaves each: the middles of the edges
+    /// that face each other, along the longer axis (as `curve` bends).
+    private func facing(_ a: CGRect, _ b: CGRect) -> (CGPoint, CGPoint) {
+        let dx = b.midX - a.midX, dy = b.midY - a.midY
+        if abs(dx) >= abs(dy) {
+            return dx > 0 ? (CGPoint(x: a.maxX, y: a.midY), CGPoint(x: b.minX, y: b.midY))
+                : (CGPoint(x: a.minX, y: a.midY), CGPoint(x: b.maxX, y: b.midY))
+        }
+        return dy > 0 ? (CGPoint(x: a.midX, y: a.maxY), CGPoint(x: b.midX, y: b.minY))
+            : (CGPoint(x: a.midX, y: a.minY), CGPoint(x: b.midX, y: b.maxY))
     }
 
     /// A curve between two points: leaves and arrives along the longer axis.
@@ -1003,6 +1131,18 @@ struct CanvasView: View {
             case .internet(let network):
                 guard let f = m.frame(network) else { continue }
                 ctx.stroke(curve(m.internetPosition, CGPoint(x: f.midX, y: f.minY)), with: .color(CanvasStyle.internet), lineWidth: 1.5)
+            case .ssh(let vm, let host):
+                guard let p = m.position(vm), let r = m.rect(ofSSHHost: host) else { continue }
+                let (a, b) = facing(CanvasModel.nodeRect(at: p), r)
+                switch canvas.sshLinkState(vm: vm, host: host) {
+                case .up:
+                    ctx.stroke(curve(a, b), with: .color(CanvasStyle.ssh), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                case .failed:
+                    ctx.stroke(curve(a, b), with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [5, 4]))
+                case .idle:
+                    ctx.stroke(curve(a, b), with: .color(CanvasStyle.wire),
+                               style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 5]))
+                }
             }
         }
         CanvasNotesDrawing.strokes(&ctx, canvas, places: places, now: now)
@@ -1145,6 +1285,45 @@ struct CanvasView: View {
             .transition(.scale(scale: 0.2).combined(with: .opacity))
     }
 
+    /// An SSH host's card: dragged where the user wants it, a click shows
+    /// its inspector.
+    private func sshCard(_ snapshot: SSHHostSnapshot) -> some View {
+        let name = snapshot.config.name, ref = "ssh:" + name
+        let p = canvas.model.position(sshHost: name) ?? .zero
+        return CanvasSSHCard(snapshot: snapshot, selected: canvas.selectedSSHHost == name, hovered: canvas.hovered == ref)
+            .onHover { inside in canvas.hovered = inside ? ref : (canvas.hovered == ref ? nil : canvas.hovered) }
+            .onTapGesture { if !canvas.toolTap(ref) { canvas.selectedSSHHost = name } }
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("canvas"))
+                .onChanged { v in
+                    let start = sshDragStart[name] ?? p
+                    if sshDragStart[name] == nil { sshDragStart[name] = start }
+                    canvas.moveSSHHost(name, to: CGPoint(x: start.x + v.translation.width / canvas.zoom,
+                                                         y: start.y + v.translation.height / canvas.zoom))
+                }
+                .onEnded { _ in
+                    sshDragStart[name] = nil
+                    canvas.moved()
+                })
+            .contextMenu {
+                Button("Terminal in the Canvas") { canvas.openTerminal(sshHost: name) }
+                Button("Open Tab") { appDelegate?.open(.ssh(name)) }
+                Button("Settings…") { canvas.editSSHHost(name) }
+                if SSHHostDraft.failedForwards(snapshot) > 0 {
+                    Button("Connect Forwards Again") { canvas.reconnect(sshHost: name) }
+                }
+                Divider()
+                Button("Add Label") { canvas.write(.label, on: ref) }
+                Button("Add Note") { canvas.write(.note, on: ref) }
+                Button("Arrow From Here") {
+                    canvas.tool = .arrow
+                    canvas.arrowStart = ref
+                }
+            }
+            .scaleEffect(canvas.zoom)
+            .position(canvas.screen(p))
+            .transition(.scale(scale: 0.2).combined(with: .opacity))
+    }
+
     // MARK: Chrome
 
     private var titleChip: some View {
@@ -1174,7 +1353,7 @@ struct CanvasView: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("Make a VM or a network. Right-click the canvas to make one where the pointer is.")
+        .help("Make a VM, a network or an SSH host. Right-click the canvas to make one where the pointer is.")
         .popover(isPresented: $creating, arrowEdge: .bottom) {
             CreatePalette { choice in
                 creating = false
@@ -1184,6 +1363,7 @@ struct CanvasView: View {
                     switch choice {
                     case .vm: canvas.makeVM(at: middle)
                     case .network: canvas.makeNetwork(at: middle)
+                    case .sshHost: canvas.makeSSHHost(at: middle)
                     }
                 }
             }
@@ -1298,7 +1478,7 @@ private struct CanvasCard: View {
 // MARK: - Inspector
 
 /// The selected VM: what it is, what it does, and its controls.
-private struct CanvasInspector: View {
+private struct CanvasInspector: View, InspectorParts {
     @ObservedObject var vm: RemoteVM
     @ObservedObject var canvas: CanvasWindowModel
 
@@ -1356,6 +1536,13 @@ private struct CanvasInspector: View {
                             }
                         }
                     }
+                    if !c.sshForwards.isEmpty {
+                        section("SSH hosts") {
+                            ForEach(c.sshForwards.prefix(4)) { forward in
+                                Text(VMSettingsDraft.describe(forward)).font(.system(size: 12)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                     let peers = traffic
                     if !peers.isEmpty {
                         section("Traffic with other VMs") {
@@ -1396,19 +1583,160 @@ private struct CanvasInspector: View {
             : f.allowLAN ? "Open, this Mac included" : "Open, this Mac and its network blocked"
         return rules == 0 ? mode : "\(mode) · \(f.rules.count) rules, \(f.tags.count) tags"
     }
+}
 
-    private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+/// What both inspectors are built from.
+private protocol InspectorParts {}
+
+extension InspectorParts {
+    func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).kerning(0.6).foregroundStyle(.secondary)
             content()
         }
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.system(size: 12, weight: .medium)).multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+// MARK: - An SSH host
+
+/// An SSH host's tile, `side` points square.
+private struct SSHTile: View {
+    let side: CGFloat
+
+    var body: some View {
+        Image(systemName: "server.rack").font(.system(size: side / 2.2, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: side, height: side)
+            .background(RoundedRectangle(cornerRadius: side / 3.8).fill(CanvasStyle.sshTile))
+    }
+}
+
+private struct CanvasSSHCard: View {
+    let snapshot: SSHHostSnapshot
+    let selected: Bool
+    let hovered: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SSHTile(side: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snapshot.config.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                Text(SSHHostDraft.summary(snapshot)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            if SSHHostDraft.failedForwards(snapshot) > 0 {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(.orange)
+                    .help("A forward through this host is not up")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(width: CanvasModel.sshNode.width, height: CanvasModel.sshNode.height)
+        .background(RoundedRectangle(cornerRadius: 12).fill(CanvasStyle.card))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(selected ? CanvasStyle.ember : (hovered ? CanvasStyle.cardLineHover : CanvasStyle.cardLine),
+                    lineWidth: selected ? 2 : 1))
+        .shadow(color: selected ? CanvasStyle.ember.opacity(0.35) : .black.opacity(0.18), radius: selected ? 10 : 3, y: 1)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .help("An SSH host: click for what goes through it")
+    }
+}
+
+/// The selected SSH host: where it is, how Monad signs in, the forwards the
+/// VMs carry through it, and its controls.
+private struct CanvasSSHInspector: View, InspectorParts {
+    let snapshot: SSHHostSnapshot
+    @ObservedObject var canvas: CanvasWindowModel
+
+    private var appDelegate: AppDelegate? { NSApp.delegate as? AppDelegate }
+    private var name: String { snapshot.config.name }
+
+    var body: some View {
+        let links = SSHLinks.list(canvas.configs, host: name)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                SSHTile(side: 38)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name).font(.system(size: 17, weight: .bold)).lineLimit(1)
+                    Text("SSH host").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { canvas.selectedSSHHost = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Close (Esc)")
+            }
+            .padding(18)
+            HStack(spacing: 8) {
+                Button { canvas.openTerminal(sshHost: name) } label: { Label("Terminal", systemImage: "terminal") }
+                    .buttonStyle(.borderedProminent).tint(CanvasStyle.ember)
+                    .help("A terminal on this SSH host, docked below the canvas")
+                Button("Open Tab") { appDelegate?.open(.ssh(name)) }
+                Button("Settings…") { canvas.editSSHHost(name) }
+            }
+            .controlSize(.regular)
+            .padding(.horizontal, 18).padding(.bottom, 14)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    section("Server") {
+                        row("Address", SSHHostDraft.summary(snapshot))
+                        row("Sign-in", SSHHostDraft.signIn(snapshot))
+                    }
+                    section("Forwards") {
+                        if links.isEmpty {
+                            Text("No VM carries a port through this host. Add one in a VM's settings, under Forwarding.")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        ForEach(links, id: \.vm) { entry in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Button(entry.vm) {
+                                    if let vm = canvas.vm(named: entry.vm) { appDelegate?.showDetails(of: vm, page: .forwarding) }
+                                }
+                                .buttonStyle(.link).font(.system(size: 12, weight: .medium))
+                                .help("Open this VM's forwarding settings")
+                                ForEach(entry.forwards) { forward in line(forward, in: entry.vm) }
+                            }
+                        }
+                    }
+                    if SSHHostDraft.failedForwards(snapshot) > 0 {
+                        Button("Connect Forwards Again") { canvas.reconnect(sshHost: name) }
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .background(CanvasStyle.panel)
+        .overlay(alignment: .leading) { Rectangle().fill(CanvasStyle.cardLine).frame(width: 1) }
+    }
+
+    /// A forward in the VM window's words, with a dot for how it is doing.
+    private func line(_ forward: SSHForward, in vmName: String) -> some View {
+        let state = state(of: forward, in: vmName)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(state.color).frame(width: 6, height: 6)
+            Text(VMSettingsDraft.describe(forward)).font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .help(state.words)
+    }
+
+    private func state(of forward: SSHForward, in vmName: String) -> (color: Color, words: String) {
+        let idle = Color.secondary.opacity(0.4)
+        guard forward.enabled else { return (idle, "Off") }
+        guard let vm = canvas.vm(named: vmName), vm.isRunning else { return (idle, "Starts with the VM") }
+        switch VMSettingsDraft.status(of: forward, in: vm.forwards, hosts: canvas.sshHosts, paths: vm.paths) {
+        case .active?: return (CanvasStyle.ssh, "Up")
+        case .failed(let why)?: return (.orange, why)
+        case nil: return (idle, "Not set up yet")
         }
     }
 }
@@ -1472,7 +1800,7 @@ private struct MacLinksSheet: View {
 
 /// What New makes: a row each, Railway's "what would you like to create".
 private struct CreatePalette: View {
-    enum Choice { case vm, network }
+    enum Choice { case vm, network, sshHost }
     var onChoose: (Choice) -> Void
     @State private var hovered: Choice?
 
@@ -1483,6 +1811,8 @@ private struct CreatePalette: View {
             row(.vm, symbol: "server.rack", title: "Virtual Machine", detail: "A Linux system with its own disk")
             row(.network, symbol: "point.3.filled.connected.trianglepath.dotted", title: "Network",
                 detail: "NAT, host-only, internal or a plain switch")
+            row(.sshHost, symbol: "externaldrive.connected.to.line.below", title: "SSH Host",
+                detail: "A server for tabs and forwards from VMs")
         }
         .padding(6)
         .frame(width: 290)

@@ -83,6 +83,11 @@ final class MCPAccessTests: XCTestCase {
         XCTAssertEqual(decide(.vm("boss"), "delete_vm", .risky, name: "boss"), .ask, "not itself")
         XCTAssertEqual(decide(.vm("boss"), "exec", .normal, name: "boss"), .ask, "its own shell is its own: through Monad, ask")
         XCTAssertEqual(decide(.vm("boss"), "add_share", .risky, name: "kid"), .ask, "nothing that reaches the Mac")
+        XCTAssertEqual(decide(.vm("boss"), "add_ssh_forward", .risky, name: "kid"), .ask,
+                       "nor a server the user signs in to, even for its own child")
+        XCTAssertEqual(decide(.vm("boss"), "list_ssh_hosts", .read), .ask, "which servers there are is the user's to tell")
+        XCTAssertEqual(decide(.vm("boss"), "remove_ssh_forward", .normal, name: "kid"), .ask)
+        XCTAssertEqual(decide(.mac, "add_ssh_forward", .risky, name: "other"), .ask)
         XCTAssertEqual(decide(.vm("boss"), "add_distro", .risky), .ask)
         var g = MCPGrants()
         g.add(.vm("boss"), tool: "add_distro")

@@ -350,6 +350,7 @@ final class VMInstance: ObservableObject, Identifiable {
         if newConfig.hostCommands != old.hostCommands { applyHostCommands() }
         if newConfig.agents != old.agents { applyAgents() } else if newConfig.bridges != old.bridges
             || newConfig.hostCommands != old.hostCommands { refreshDiscovery() }
+        if newConfig.sshForwards != old.sshForwards { removeSSHForwardSockets(keeping: newConfig.sshForwards.filter(\.enabled)) }
         applyForwards()
         if isRunning, newConfig.memoryTargetGiB != old.memoryTargetGiB { applyMemoryTarget() }
         let addedProfiles = Set(newConfig.profiles).subtracting(old.profiles)
@@ -1418,15 +1419,24 @@ final class VMInstance: ObservableObject, Identifiable {
     private func applyForwards(guestEvent: Bool = false) {
         guard let forwarding, state == .ready else { return }
         let (rules, auto, ports) = (config.forwards, config.autoForward, guestPorts)
+        // A port carried between the VM and an SSH host (SSHForward): this
+        // end on the VM's master, the other on the SSH host's. Its port in
+        // the VM is never forwarded back onto the Mac.
+        let ssh = config.sshForwards.filter(\.enabled)
         let bridges = config.bridges.compactMap { bridgeServers[$0.id]?.bridge }
             .map { ForwardPlan.Bridge(spec: $0.spec(in: paths), guestPort: $0.guestPort) }
             + config.hostCommands.compactMap { hostCommandServers[$0.id]?.command }
             .map { ForwardPlan.Bridge(spec: $0.spec(in: paths), guestPort: $0.guestPort) }
             + (mcpEndpoint.map { [ForwardPlan.Bridge(spec: Self.mcpSpec(port: $0.port, paths: paths), guestPort: $0.port)] } ?? [])
+            + ssh.map {
+                ForwardPlan.Bridge(spec: $0.vmSpec(in: paths), guestPort: $0.direction == .intoVM ? $0.guestPort : nil,
+                                   bindsSocket: $0.vmBoundSocket(in: paths))
+            }
         debug("forwards: \(DebugLog.count(rules.count, "configured forward")), \(DebugLog.count(bridges.count, "bridge")), "
               + "auto-forward \(auto.enabled ? "on" : "off"), "
               + "guest listening on \(ports.isEmpty ? "nothing" : ports.map { "\($0.address):\($0.port)" }.sorted().joined(separator: " "))")
         Task { await forwarding.apply(configured: rules, autoForward: auto, ports: ports, bridges: bridges, guestEvent: guestEvent) }
+        env.sshLegs?.apply(ssh.map { SSHLeg(host: $0.sshHost, spec: $0.hostSpec(in: paths)) }, for: name)
     }
 
     // MARK: Connections
@@ -1576,6 +1586,19 @@ final class VMInstance: ObservableObject, Identifiable {
         forwarding = nil
         forwards = []
         portsOverLimit = 0
+        env.sshLegs?.apply([], for: name)
+        removeSSHForwardSockets(keeping: [])
+    }
+
+    /// ssh leaves a forward's socket file where it made it when the
+    /// forward is cancelled or its master exits: those of forwards that are
+    /// off or gone are removed from the VM's folder.
+    private func removeSSHForwardSockets(keeping: [SSHForward]) {
+        let keep = Set(keeping.map { $0.socket(in: paths).lastPathComponent })
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: paths.dir.path)) ?? []
+        for file in files where file.hasPrefix("sshfwd-") && file.hasSuffix(".sock") && !keep.contains(file) {
+            ForwardManager.removeStaleSocket(paths.dir.appendingPathComponent(file))
+        }
     }
 
     // MARK: Shared folders

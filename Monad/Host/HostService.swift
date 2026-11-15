@@ -45,6 +45,8 @@ final class HostService {
     /// What is written on the canvas, kept in `notesStore`.
     private(set) var notes: [CanvasNote]
     let notesStore: CanvasNoteStore
+    /// The SSH hosts, their passwords and ssh's questions about them (Monad/SSH).
+    let sshHosts: SSHHostManager
     /// Brings Monad forward to ask the user (an agent's question); set by
     /// MonadHost (`openMonad`), nothing in tests.
     var openApp: () -> Void = {}
@@ -169,6 +171,14 @@ final class HostService {
         notesChanged()
     }
 
+    /// `ref` ("vm:<name>", "ssh:<name>") is gone: what was written on it goes.
+    func forgetNotes(on ref: String) {
+        let kept = CanvasNote.forget(ref, in: notes)
+        guard kept != notes else { return }
+        notes = kept
+        notesChanged()
+    }
+
     private func notesChanged() {
         try? notesStore.save(notes)
         broadcast(.notes(notes))
@@ -217,7 +227,9 @@ final class HostService {
     init(manager: VMManager, limits: Limits = .host, build: String? = HostBuild.current,
          tags: FirewallTagStore = FirewallTagStore(), debugLog: DebugLog = .shared,
          sharePlaces: SharePolicy.Places = .mac, agents: URL = Paths.root.appendingPathComponent("agents"),
-         approvals: Approvals? = nil) {
+         approvals: Approvals? = nil, sshHosts: SSHHostManager? = nil) {
+        self.sshHosts = sshHosts
+            ?? SSHHostManager(root: agents.deletingLastPathComponent().appendingPathComponent("ssh-hosts"))
         grantsFile = agents.appendingPathComponent("grants.json")
         grants = MCPGrants.load(agents.appendingPathComponent("grants.json"))
         audit = MCPAudit(url: agents.appendingPathComponent("audit.log"))
@@ -244,6 +256,9 @@ final class HostService {
         MCPRouter.handler = { [weak self] vm, data in await self?.mcp.handle(data, caller: .vm(vm)) }
         self.approvals.onAsk = { [weak self] in self?.openApp() }
         manager.macSetupAsker = self
+        self.sshHosts.onChange = { [weak self] list in self?.broadcast(.sshHosts(list)) }
+        self.sshHosts.prompts.onChange = { [weak self] list in self?.broadcast(.sshPrompts(list)) }
+        self.sshHosts.prompts.onAsk = { [weak self] in self?.openApp() }
     }
 
     var connectionCount: Int { connections.count }
@@ -309,11 +324,7 @@ final class HostService {
             last[gone] = nil
             for c in connections.values { c.forget(gone) }
             broadcast(.removed(gone))
-            let kept = CanvasNote.forget("vm:" + gone, in: notes)
-            if kept != notes {
-                notes = kept
-                notesChanged()
-            }
+            forgetNotes(on: "vm:" + gone)
         }
         for vm in list where observed[vm.name] == nil {
             let name = vm.name
@@ -382,6 +393,11 @@ final class HostService {
             debugLog.log("host", "event notes: \(DebugLog.count(list.count, "note")) on the canvas")
         case .defaultVM(let name):
             debugLog.log("host", "event default VM: \(name ?? "none")")
+        // Never a prompt's words or an answer.
+        case .sshHosts(let list):
+            debugLog.log("host", "event ssh hosts: \(list.count)")
+        case .sshPrompts(let list):
+            debugLog.log("host", "event ssh questions: \(list.count) waiting")
         }
     }
 }
@@ -470,6 +486,7 @@ final class HostConnection {
             greeted = true
             // Questions asked before this app came (it was opened for them).
             if !service.approvals.pending.isEmpty { send(.approvals(service.approvals.pending)) }
+            if !service.sshHosts.prompts.pending.isEmpty { send(.sshPrompts(service.sshHosts.prompts.pending)) }
             var reply = HostResponse(id: r.id, version: HostProtocol.version)
             reply.build = service.build
             return reply
@@ -639,6 +656,36 @@ final class HostConnection {
             var reply = HostResponse(id: r.id)
             reply.notes = service.notes
             return reply
+
+        case .sshHosts, .setSSHHost, .removeSSHHost, .forgetSSHPassword, .installSSHKey, .connectSSHHost:
+            let hosts = service.sshHosts
+            switch r.op {
+            case .setSSHHost: try await hosts.set(r.sshHost!, password: r.secret)
+            case .removeSSHHost:
+                try await hosts.remove(r.name!)
+                service.forgetNotes(on: "ssh:" + r.name!)
+            case .forgetSSHPassword: try hosts.forgetPassword(r.name!)
+            case .installSSHKey: try await hosts.installKey(r.name!)
+            case .connectSSHHost: try hosts.reconnect(r.name!)
+            default: break
+            }
+            var reply = HostResponse(id: r.id)
+            reply.sshHosts = hosts.snapshots
+            return reply
+
+        case .sshTicket:
+            var reply = HostResponse(id: r.id)
+            reply.ticket = try service.sshHosts.ticket(for: r.name!)
+            return reply
+
+        case .askSSH:
+            var reply = HostResponse(id: r.id)
+            reply.secret = try await service.sshHosts.ask(ticket: r.ticket!, prompt: r.prompt!, hint: r.promptHint)
+            return reply
+
+        case .answerSSHPrompt:
+            try service.sshHosts.answer(r.promptID!, r.secret, remember: r.remember ?? false)
+            return HostResponse(id: r.id)
 
         case .attach:
             let target = try vm(r.name)

@@ -11,9 +11,10 @@ final class PaneMenuTests: XCTestCase {
     private let p1 = PaneID("p1"), p2 = PaneID("p2")
     private let c1 = ContextID("c1"), c2 = ContextID("c2"), c3 = ContextID("c3")
 
-    private func items(_ pane: PaneID, _ l: PaneLayout, running: [String] = ["web", "db", "api"]) -> [PaneMenu.Item] {
+    private func items(_ pane: PaneID, _ l: PaneLayout, running: [String] = ["web", "db", "api"],
+                       ssh: [String] = []) -> [PaneMenu.Item] {
         PaneMenu.items(for: pane, in: l, names: [c1: "web", c2: "db", c3: "web"], vms: [c1: "web", c2: "db", c3: "web"],
-                       running: running, all: ["api", "db", "old", "web"])
+                       running: running, all: ["api", "db", "old", "web"], ssh: ssh)
     }
 
     func testThePaneMenu() {
@@ -45,6 +46,21 @@ final class PaneMenuTests: XCTestCase {
             .action("Split Stacked", .split(.vertical)),
             .separator,
             .action("Close Pane", .closePane),
+        ])
+    }
+
+    /// SSH hosts (Virtual Machines › SSH) open as contexts too, after the
+    /// VMs and marked as what they are; with none there is no such part.
+    func testSSHHostsAreOfferedAsNewContexts() {
+        let l = PaneLayout(context: c1, pane: p1)
+        guard case .submenu("New Context", let offered)? = items(p1, l, ssh: ["bastion", "box"]).dropFirst().first else {
+            return XCTFail("no New Context")
+        }
+        XCTAssertEqual(offered, [
+            .action("api", .open(.vm("api"))), .action("db", .open(.vm("db"))), .action("old", .open(.vm("old"))),
+            .action("web", .open(.vm("web"))), .separator,
+            .action("SSH: bastion", .open(.ssh("bastion"))), .action("SSH: box", .open(.ssh("box"))), .separator,
+            .action("Ephemeral VM", .open(.ephemeralVM)), .action("Host Shell (Unisolated)", .open(.host)),
         ])
     }
 

@@ -312,6 +312,7 @@ final class TerminalWindowTests: XCTestCase {
         let db = c.addTab(.vm("db"))
         c.addTab(.ephemeralVM)
         c.addTab(.host)
+        c.addTab(.ssh("box"))
         db.panes.split(.horizontal)
         let work = TabGroupID.make()
         c.newGroup(work, name: "work", color: .orange, tabs: [first.id, db.id])
@@ -320,12 +321,13 @@ final class TerminalWindowTests: XCTestCase {
         c.window?.setFrame(NSRect(x: 140, y: 160, width: 900, height: 520), display: false)
 
         let saved = try XCTUnwrap(c.saved)
-        XCTAssertEqual(saved.tabs.count, 3, "the ephemeral VM's tab is not kept")
+        XCTAssertEqual(saved.tabs.count, 4, "the ephemeral VM's tab is not kept")
         XCTAssertEqual(saved.selected, 1)
         let data = try JSONEncoder().encode(SavedSession(windows: [saved]))
         let read = try XCTUnwrap(JSONDecoder().decode(SavedSession.self, from: data).sanitized.windows.first)
         let back = try XCTUnwrap(TerminalWindowController(restoring: read, host: host))
-        XCTAssertEqual(back.orderedTabs.map { $0.panes.allSessions.map(\.target) }, [[.vm("web")], [.vm("db"), .vm("db")], [.host]])
+        XCTAssertEqual(back.orderedTabs.map { $0.panes.allSessions.map(\.target) },
+                       [[.vm("web")], [.vm("db"), .vm("db")], [.host], [.ssh("box")]])
         XCTAssertEqual(back.orderedTabs.first?.panes.focusedSession?.startDirectory, "/home/dev/site")
         let group = try XCTUnwrap(back.strip.groups.first)
         XCTAssertEqual([group.name, group.color.rawValue], ["work", "orange"])

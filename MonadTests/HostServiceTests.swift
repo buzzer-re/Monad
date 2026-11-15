@@ -795,6 +795,129 @@ final class HostServiceTests: XCTestCase {
         ch.agentSays("hello monad-agent 1\nport+ tcp 0.0.0.0 8000\n")
         await assertEventually { log.latest("default")?.ports == [ListeningPort(address: "0.0.0.0", port: 8000)] }
     }
+
+    // MARK: SSH hosts
+
+    /// The service with SSH hosts in the fixture's folder, a dictionary for
+    /// the Keychain and no real ssh.
+    private func withSSHHosts(debugLog: DebugLog = .shared) -> FakeSecrets {
+        let secrets = FakeSecrets()
+        var env = SSHHostManager.Environment()
+        env.runner = fixture.runner
+        env.secrets = secrets
+        let hosts = SSHHostManager(root: fixture.tmp.url.appendingPathComponent("ssh-hosts"), environment: env)
+        service = HostService(manager: fixture.manager, limits: .init(maxCPUs: 8, maxMemoryGiB: 16), debugLog: debugLog,
+                              agents: fixture.tmp.url.appendingPathComponent("agents"), sshHosts: hosts)
+        return secrets
+    }
+
+    private let box = SSHHost(name: "box", host: "example.com", user: "dev", auth: .password)
+
+    @discardableResult
+    private func send(_ c: HostConnection, _ op: HostRequest.Op, name: String? = nil,
+                      _ edit: (inout HostRequest) -> Void) async -> HostResponse {
+        nextID += 1
+        return await c.handle(HostRequest(id: nextID, op: op, name: name).with(edit))
+    }
+
+    func testAnSSHHostSetOverTheProtocolIsSavedAndEveryAppIsTold() async throws {
+        let secrets = withSSHHosts()
+        let (a, _) = await connect()
+        let (_, logB) = await connect()
+        var r = await send(a, .setSSHHost) { $0.sshHost = self.box; $0.secret = "pw" }
+        XCTAssertTrue(r.ok, r.error ?? "")
+        let expected = [SSHHostSnapshot(config: box, hasPassword: true)]
+        XCTAssertEqual(r.sshHosts, expected)
+        XCTAssertNil(r.secret, "a password never comes back")
+        XCTAssertEqual(secrets["box"], "pw")
+        XCTAssertTrue(logB.events.contains(.sshHosts(expected)), "every app is told")
+        XCTAssertEqual(SSHHostStore(root: fixture.tmp.url.appendingPathComponent("ssh-hosts")).all(), [box])
+
+        r = await send(a, .sshHosts)
+        XCTAssertEqual(r.sshHosts, expected)
+        r = await send(a, .setSSHHost) { $0.sshHost = self.box; $0.sshHost?.user = "a b" }
+        XCTAssertFalse(r.ok, "checked on the way in")
+        r = await send(a, .forgetSSHPassword, name: "box")
+        XCTAssertEqual(r.sshHosts?.map(\.hasPassword), [false])
+        XCTAssertNil(secrets["box"])
+        r = await send(a, .installSSHKey, name: "box")
+        XCTAssertEqual(r.error, "box does not use a key pair of Monad's.")
+        // What is written on it on the canvas goes with it.
+        r = await send(a, .setNote) { $0.note = CanvasNote(id: "l9", kind: .label, text: "prod", on: "ssh:box") }
+        XCTAssertEqual(r.notes?.map(\.id), ["l9"], r.error ?? "")
+        r = await send(a, .removeSSHHost, name: "box")
+        XCTAssertEqual(r.sshHosts, [])
+        XCTAssertEqual(service.notes, [], "its label went with it")
+        r = await send(a, .removeSSHHost, name: "box")
+        XCTAssertEqual(r.error, "No SSH host named box.")
+    }
+
+    /// The askpass helper's question: answered from the Keychain when it is
+    /// ssh's own password question, else asked of the apps (also one that
+    /// connects later) and completed by the user's answer.
+    func testAnSSHQuestionIsAnsweredFromTheKeychainOrByTheUser() async throws {
+        let secrets = withSSHHosts()
+        let (app, log) = await connect()
+        await send(app, .setSSHHost) { $0.sshHost = self.box; $0.secret = "pw" }
+        let issued = await send(app, .sshTicket, name: "box")
+        let ticket = try XCTUnwrap(issued.ticket)
+        let (helper, _) = await connect()
+
+        var r = await send(helper, .askSSH) { $0.ticket = ticket; $0.prompt = "dev@example.com's password: " }
+        XCTAssertEqual(r.secret, "pw")
+        XCTAssertFalse(log.events.contains { if case .sshPrompts = $0 { return true } else { return false } }, "nobody was asked")
+
+        // A stranger (no ticket of MonadHost's) learns nothing.
+        r = await send(helper, .askSSH) { $0.ticket = String(repeating: "0", count: 64); $0.prompt = "dev@example.com's password: " }
+        XCTAssertEqual(r.error, "This question did not come from a connection Monad started.")
+        XCTAssertNil(r.secret)
+
+        // A code is the user's to give.
+        let asking = Task { await self.send(helper, .askSSH) { $0.ticket = ticket; $0.prompt = "Verification code: " } }
+        await assertEventually { if case .sshPrompts(let l)? = log.events.last { return l.count == 1 } else { return false } }
+        guard case .sshPrompts(let asked)? = log.events.last else { return XCTFail() }
+        XCTAssertEqual(asked[0].host, "box")
+        XCTAssertEqual(asked[0].prompt, "Verification code: ")
+        XCTAssertFalse(asked[0].canRemember)
+
+        // An app opened for the question gets it with its hello.
+        let (late, lateLog) = await connect()
+        XCTAssertEqual(lateLog.events, [.sshPrompts(asked)])
+        r = await send(late, .answerSSHPrompt) { $0.promptID = asked[0].id; $0.secret = "123456"; $0.remember = true }
+        XCTAssertTrue(r.ok, r.error ?? "")
+        let answered = await asking.value
+        XCTAssertEqual(answered.secret, "123456")
+        XCTAssertEqual(secrets["box"], "pw", "a code is never kept as the password")
+        await assertEventually { log.events.last == .sshPrompts([]) }
+        r = await send(late, .answerSSHPrompt) { $0.promptID = asked[0].id; $0.secret = "again" }
+        XCTAssertEqual(r.error, "That question is no longer waiting (it was answered, or two minutes passed).")
+    }
+
+    /// Settings › Logs never holds a password, an answer, a ticket or what a server said.
+    func testNoSecretOfAnSSHHostIsLogged() async throws {
+        let tmp = TempDir()
+        let debugLog = DebugLog(process: "MonadHost", directory: tmp.url, settings: tmp.url.appendingPathComponent("l.json"))
+        debugLog.setEnabled(true)
+        _ = withSSHHosts(debugLog: debugLog)
+        let (app, log) = await connect()
+        await send(app, .setSSHHost) { $0.sshHost = self.box; $0.secret = "hunter2-stored" }
+        let issued = await send(app, .sshTicket, name: "box")
+        let ticket = try XCTUnwrap(issued.ticket)
+        await send(app, .askSSH) { $0.ticket = ticket; $0.prompt = "dev@example.com's password: " }
+        let asking = Task { await self.send(app, .askSSH) { $0.ticket = ticket; $0.prompt = "Secret word of the day: " } }
+        await assertEventually { if case .sshPrompts(let l)? = log.events.last { return l.count == 1 } else { return false } }
+        guard case .sshPrompts(let asked)? = log.events.last else { return XCTFail() }
+        await send(app, .answerSSHPrompt) { $0.promptID = asked[0].id; $0.secret = "hunter2-typed" }
+        _ = await asking.value
+        debugLog.flush()
+        let t = (try? String(contentsOf: debugLog.currentFile, encoding: .utf8)) ?? ""
+        XCTAssertTrue(t.contains("setSSHHost"), t)
+        XCTAssertTrue(t.contains("askSSH"), t)
+        XCTAssertTrue(t.contains("event ssh questions: 1 waiting"), t)
+        for secret in ["hunter2-stored", "hunter2-typed", ticket, "Secret word", "password:"] {
+            XCTAssertFalse(t.contains(secret), "\(secret) in: \(t)")
+        }
+    }
 }
 
 extension HostRequest {

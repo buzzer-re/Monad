@@ -18,6 +18,12 @@ struct SSHMux {
     let host: String
     /// The VM's ssh options (`CloudInit.sshArguments`): never its ssh.config.
     let options: [String]
+    /// The master may ask (an SSH host's, through Monad's askpass): no
+    /// BatchMode. A VM's never asks.
+    var interactive = false
+    /// How long the master may take to start (an SSH host's waits for the
+    /// user's answers).
+    var startTimeout: TimeInterval = 60
 
     /// "[addr]" for IPv6 literals, the address otherwise.
     static func address(_ a: String) -> String { a.contains(":") ? "[\(a)]" : a }
@@ -55,8 +61,8 @@ struct SSHMux {
     /// /dev/null: the caller's pipes close when the parent exits.
     var startMaster: (executable: String, arguments: [String]) {
         ("/bin/sh", ["-c", "exec \"$@\" </dev/null >/dev/null 2>&1", "sh", "/usr/bin/ssh"] + config
-            + ["-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-o", "BatchMode=yes",
-               "-E", masterLog.path, "-f", "-N", host])
+            + ["-o", "ControlMaster=yes", "-o", "ControlPersist=yes"] + (interactive ? [] : ["-o", "BatchMode=yes"])
+            + ["-E", masterLog.path, "-f", "-N", host])
     }
 
     /// PID from "Master running (pid=N)".

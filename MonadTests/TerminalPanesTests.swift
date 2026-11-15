@@ -206,3 +206,8 @@ final class CanvasDockTests: XCTestCase {
         XCTAssertEqual(controller.dockedVMs, ["web"])
     }
 }
+        // An SSH host's terminal docks beside the VMs', once.
+        controller.canvas.openTerminal(sshHost: "box")
+        controller.openTerminal(sshHost: "box")
+        XCTAssertEqual(controller.dockedSSHHosts, ["box"], "shown again, not a second one")
+        XCTAssertEqual(controller.dockedVMs, ["web"])

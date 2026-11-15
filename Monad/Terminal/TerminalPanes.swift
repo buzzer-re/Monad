@@ -106,6 +106,16 @@ final class TerminalPanes: NSObject {
         return seen
     }
 
+    /// The SSH hosts the contexts are on, pane by pane (once each).
+    var sshHosts: [String] {
+        var seen: [String] = []
+        for s in allSessions {
+            guard case .ssh(let name) = s.target, !seen.contains(name) else { continue }
+            seen.append(name)
+        }
+        return seen
+    }
+
     private static func vmName(_ s: TerminalSessionViewController) -> String? {
         if case .vm(let name) = s.target { return name }
         return s.vm?.name
@@ -209,7 +219,17 @@ final class TerminalPanes: NSObject {
     /// The context on VM `name` brought to front, if there is one.
     @discardableResult
     func show(vm name: String) -> Bool {
-        guard let id = layout.allContexts.first(where: { sessions[$0].flatMap(Self.vmName) == name }) else { return false }
+        show { Self.vmName($0) == name }
+    }
+
+    /// The context on the SSH host `name` brought to front, if there is one.
+    @discardableResult
+    func show(sshHost name: String) -> Bool {
+        show { $0.target == .ssh(name) }
+    }
+
+    private func show(where matches: (TerminalSessionViewController) -> Bool) -> Bool {
+        guard let id = layout.allContexts.first(where: { sessions[$0].map(matches) == true }) else { return false }
         layout.show(id)
         refreshPanes()
         focusTerminal()
@@ -342,7 +362,8 @@ final class TerminalPanes: NSObject {
         for (id, session) in sessions { names[id] = titles[id] ?? session.displayName }
         let items = PaneMenu.items(
             for: pane, in: layout, names: names, vms: contextVMs, running: turnedOn(),
-            all: client.instances.filter { !$0.config.ephemeral }.map(\.name))
+            all: client.instances.filter { !$0.config.ephemeral }.map(\.name),
+            ssh: client.sshHosts.map(\.config.name))
         return items.map { menuItem($0, pane: pane) }
     }
 

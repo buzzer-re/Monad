@@ -1,8 +1,8 @@
 //
 //  CanvasNotes.swift — what the user and agents write on the canvas: notes
-//  (Markdown on a coloured card, free or pinned beside a VM or network),
-//  labels (chips on a VM or network), zones (a titled area drawn by hand,
-//  or wrapped around networks and VMs and following them), arrows with
+//  (Markdown on a coloured card, free or pinned beside a VM, network or SSH
+//  host), labels (chips on one of those), zones (a titled area drawn by
+//  hand, or wrapped around them and following them), arrows with
 //  words between any two things, and ink. MonadHost keeps them in
 //  ~/.monad/canvas-notes.json (0600) and tells every app when they change;
 //  agents write them through the MCP tools, the user on the canvas. Each
@@ -13,10 +13,11 @@ import CoreGraphics
 import Foundation
 
 /// A thing on the canvas, by name: "vm:<name>", "net:<name>",
-/// "note:<id>", "mac" or "internet".
+/// "ssh:<name>" (an SSH host), "note:<id>", "mac" or "internet".
 enum CanvasRef: Equatable {
     case vm(String)
     case network(String)
+    case ssh(String)
     case note(String)
     case mac
     case internet
@@ -30,6 +31,8 @@ enum CanvasRef: Equatable {
                 self = .vm(String(text.dropFirst(3)))
             } else if text.hasPrefix("net:"), NetworkDefinition.isValidName(String(text.dropFirst(4))) {
                 self = .network(String(text.dropFirst(4)))
+            } else if text.hasPrefix("ssh:"), SSHHost.isValidName(String(text.dropFirst(4))) {
+                self = .ssh(String(text.dropFirst(4)))
             } else if text.hasPrefix("note:"), CanvasNote.isID(String(text.dropFirst(5))) {
                 self = .note(String(text.dropFirst(5)))
             } else {
@@ -38,18 +41,21 @@ enum CanvasRef: Equatable {
         }
     }
 
-    /// `text` as a ref: one already, else a VM's name, else a network's.
-    static func resolve(_ text: String, vms: [String], networks: [String]) -> String? {
+    /// `text` as a ref: one already, else a VM's name, else a network's,
+    /// else an SSH host's.
+    static func resolve(_ text: String, vms: [String], networks: [String], sshHosts: [String]) -> String? {
         if CanvasRef(text) != nil { return text }
         if vms.contains(text) { return "vm:" + text }
         if networks.contains(text) { return "net:" + text }
+        if sshHosts.contains(text) { return "ssh:" + text }
         return nil
     }
 
-    /// A VM or a network (what labels, pinned notes and zones are on).
+    /// A VM, a network or an SSH host (what labels, pinned notes and zones
+    /// are on).
     var isPlace: Bool {
         switch self {
-        case .vm, .network: return true
+        case .vm, .network, .ssh: return true
         default: return false
         }
     }
@@ -118,17 +124,17 @@ struct CanvasNote: Codable, Equatable, Sendable, Identifiable {
         let toRef = try to.map(Self.ref)
         switch kind {
         case .note:
-            if let onRef, !onRef.isPlace { throw MonadError("A note is pinned to a VM or a network.") }
+            if let onRef, !onRef.isPlace { throw MonadError("A note is pinned to a VM, a network or an SSH host.") }
         case .label:
-            guard let onRef, onRef.isPlace else { throw MonadError("A label is on a VM or a network.") }
+            guard let onRef, onRef.isPlace else { throw MonadError("A label is on a VM, a network or an SSH host.") }
         case .arrow:
             guard on != nil, to != nil else { throw MonadError("An arrow goes from one thing to another.") }
             guard onRef != toRef else { throw MonadError("An arrow goes to something else.") }
         case .zone:
             let refs = try (around ?? []).map(Self.ref)
             guard refs.count <= Self.maxAround else { throw MonadError("A zone wraps at most \(Self.maxAround) things.") }
-            guard refs.allSatisfy(\.isPlace) else { throw MonadError("A zone wraps VMs and networks.") }
-            guard frame != nil || !refs.isEmpty else { throw MonadError("A zone has a place, or wraps VMs or networks.") }
+            guard refs.allSatisfy(\.isPlace) else { throw MonadError("A zone wraps VMs, networks and SSH hosts.") }
+            guard frame != nil || !refs.isEmpty else { throw MonadError("A zone has a place, or wraps VMs, networks or SSH hosts.") }
         case .ink:
             guard let points, (2...Self.maxPoints).contains(points.count),
                   points.allSatisfy({ Self.sane($0.x) && Self.sane($0.y) }) else {
@@ -139,7 +145,7 @@ struct CanvasNote: Codable, Equatable, Sendable, Identifiable {
 
     private static func ref(_ s: String) throws -> CanvasRef {
         guard let r = CanvasRef(s) else {
-            throw MonadError("“\(s.prefix(40))” is not a thing on the canvas (vm:<name>, net:<name>, note:<id>, mac or internet).")
+            throw MonadError("“\(s.prefix(40))” is not a thing on the canvas (vm:<name>, net:<name>, ssh:<name>, note:<id>, mac or internet).")
         }
         return r
     }
@@ -169,6 +175,15 @@ struct CanvasNote: Codable, Equatable, Sendable, Identifiable {
             }
             return n
         }
+    }
+
+    /// The notes with nothing that names an SSH host, as if each were gone:
+    /// what a VM's agents are shown (which servers there are is the user's
+    /// to tell).
+    static func hidingSSHHosts(_ notes: [CanvasNote]) -> [CanvasNote] {
+        let named = notes.flatMap { [$0.on, $0.to].compactMap { $0 } + ($0.around ?? []) }
+            .filter { if case .ssh? = CanvasRef($0) { return true } else { return false } }
+        return Set(named).reduce(notes) { forget($1, in: $0) }
     }
 
     /// A stroke with the points that add nothing left out (Ramer–Douglas–
@@ -208,12 +223,13 @@ extension CanvasModel {
         CGRect(x: center.x - node.width / 2, y: center.y - node.height / 2, width: node.width, height: node.height)
     }
 
-    /// Where a VM, network, This Mac or the Internet is (notes are placed by
-    /// CanvasNotesLayout); nil for what is not on the canvas.
+    /// Where a VM, network, SSH host, This Mac or the Internet is (notes are
+    /// placed by CanvasNotesLayout); nil for what is not on the canvas.
     func rect(of ref: String) -> CGRect? {
         switch CanvasRef(ref) {
         case .vm(let name)?: return position(name).map(Self.nodeRect)
         case .network(let name)?: return frame(name)
+        case .ssh(let name)?: return rect(ofSSHHost: name)
         case .mac?: return CGRect(x: macPosition.x - 65, y: macPosition.y - 22, width: 130, height: 44)
         case .internet?: return CGRect(x: internetPosition.x - 60, y: internetPosition.y - 22, width: 120, height: 44)
         case .note?, nil: return nil
@@ -243,7 +259,8 @@ enum CanvasNotesLayout {
     static func place(_ notes: [CanvasNote], in m: CanvasModel) -> [String: CGRect] {
         var out: [String: CGRect] = [:]
         let landmarks = [m.rect(of: "mac"), m.rect(of: "internet")].compactMap { $0 }
-        let everything = (Array(m.layout.frames.values) + landmarks).reduce(CGRect.null) { $0.union($1) }
+        let hosts = m.layout.sshHosts.keys.compactMap { m.rect(ofSSHHost: $0) }
+        let everything = (Array(m.layout.frames.values) + landmarks + hosts).reduce(CGRect.null) { $0.union($1) }
         let column = everything.isNull ? CGPoint.zero : CGPoint(x: everything.maxX + 60, y: everything.minY)
         var below: [String: CGFloat] = [:]
         var freeY = column.y

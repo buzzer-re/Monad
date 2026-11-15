@@ -113,6 +113,46 @@ final class TerminalSessionTests: XCTestCase {
                        ["ssh", "-F", "none", "-t", "web", "cd '/home/dev/it'\\''s here' 2>/dev/null; exec \"$SHELL\" -l"])
     }
 
+    /// On an SSH host the command goes through sh: a server's login shell
+    /// may be one that does not read `exec "$SHELL"`.
+    func testAnSSHHostsSplitStartsInItsDirectoryThroughSh() {
+        typealias T = TerminalSessionViewController
+        XCTAssertEqual(T.sshCommand(options: ["-F", "none"], host: "example.com", startIn: nil, throughSh: true),
+                       ["ssh", "-F", "none", "example.com"])
+        XCTAssertEqual(T.sshCommand(options: ["-F", "none"], host: "example.com", startIn: "/srv/my app", throughSh: true),
+                       ["ssh", "-F", "none", "-t", "example.com",
+                        "sh -c 'cd '\\''/srv/my app'\\'' 2>/dev/null; exec \"$SHELL\" -l'"])
+    }
+
+    /// A tab on an SSH host that is not there (removed since the tab was
+    /// saved) says so and waits for Return, which tries again; it never
+    /// takes a VM's path.
+    func testATabOnAMissingSSHHostSaysSoAndReturnTriesAgain() async throws {
+        let host = try FakeHost()
+        let client = HostClient(connect: { try host.connect() }, clock: TestClock(realDelay: 0.001),
+                                instanceRoot: host.fixture.root)
+        client.start()
+        defer { client.stop() }
+        let tab = TerminalSessionViewController(target: .ssh("missing"), host: client)
+        _ = tab.view
+        tab.start()
+        defer { tab.close() }
+        XCTAssertEqual(tab.displayName, "missing")
+        await assertEventually("tab phase \(tab.phase)") { tab.phase == .exited }
+        XCTAssertNil(tab.vm)
+        XCTAssertFalse(tab.canRestartVM)
+        XCTAssertEqual(host.manager.instances.count, 0, "no VM was made for it")
+        let text = screenText(tab.model)
+        XCTAssertTrue(text.contains("Connecting to SSH host missing"), text)
+        XCTAssertTrue(text.contains("No SSH host named missing."), text)
+        XCTAssertTrue(text.contains("Press Return to retry."), text)
+
+        tab.terminalView(tab.terminalView, send: Data([0x0D]))
+        await assertEventually { self.screenText(tab.model).components(separatedBy: "No SSH host named missing.").count == 3 }
+        XCTAssertEqual(tab.phase, .exited)
+        XCTAssertEqual(tab.savedContext, SavedSession.Context(kind: .ssh, vm: "missing", directory: nil, theme: nil))
+    }
+
     /// A title set by a program in the VM (a shell, a code agent) always
     /// comes after the VM's name, so a tab never loses which VM it is on.
     func testTheTitleAlwaysStartsWithTheVM() {

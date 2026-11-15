@@ -18,18 +18,21 @@ final class NewVMRequest: ObservableObject {
 }
 
 struct VMManagerView: View {
-    enum Tab: Hashable { case monad, lima }
+    enum Tab: Hashable { case monad, lima, ssh }
 
     /// One sheet at a time (two sheet modifiers on one view do not both
     /// present on macOS).
     enum Sheet: Identifiable {
         case create
         case importing(VMConfigFile.Imported, file: String)
+        /// New SSH Host (nil), or an SSH host's settings.
+        case sshHost(SSHHost?)
 
         var id: String {
             switch self {
             case .create: return "create"
             case .importing(_, let file): return "import " + file
+            case .sshHost(let host): return "ssh " + (host?.name ?? "+")
             }
         }
     }
@@ -80,6 +83,8 @@ struct VMManagerView: View {
             }
             if tab == .lima {
                 LimaTab(host: host, look: limaLook, onError: { errorMessage = $0 })
+            } else if tab == .ssh {
+                SSHHostsTab(host: host, onEdit: { sheet = .sshHost($0) }, onError: { errorMessage = $0 })
             } else if host.instances.isEmpty {
                 ContentUnavailableView {
                     Label("No Virtual Machines", systemImage: "shippingbox")
@@ -154,6 +159,13 @@ struct VMManagerView: View {
                     sheet = nil
                     (NSApp.delegate as? AppDelegate)?.showDetails(of: vm)
                 } onCancel: { sheet = nil }
+            case .sshHost(let editing):
+                SSHHostSheet(editing: editing, hosts: host.sshHosts.map(\.config)) { config, password in
+                    try await host.saveSSHHost(config, password: password)
+                    return host.sshHost(named: config.name)?.config ?? config
+                } onInstallKey: { name in
+                    try await host.installSSHKey(name)
+                } onClose: { sheet = nil }
             }
         }
         .alert(naming?.renaming.map { "Rename “\($0)”" } ?? "New Group", isPresented: Binding(
@@ -219,6 +231,7 @@ struct VMManagerView: View {
             Picker("", selection: $tab) {
                 Text("Monad").tag(Tab.monad)
                 Text("Lima").tag(Tab.lima)
+                Text("SSH").tag(Tab.ssh)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
@@ -230,6 +243,14 @@ struct VMManagerView: View {
                     Label("Look Again", systemImage: "arrow.clockwise")
                 }
                 .controlSize(.large)
+            } else if tab == .ssh {
+                Button {
+                    sheet = .sshHost(nil)
+                } label: {
+                    Label("New SSH Host", systemImage: "plus")
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
             } else {
                 Button {
                     groupName = ""
@@ -556,6 +577,9 @@ struct VMManagerView: View {
 
     private var countLine: String {
         if tab == .lima { return "Managed by Lima. Monad can boot one where it is while Lima has it stopped." }
+        if tab == .ssh {
+            return "Servers reached over ssh. Tabs open on them, and ports are carried between them and your VMs."
+        }
         let total = host.instances.count
         let running = host.instances.filter(\.isRunning).count
         if total == 0 { return "Each VM is an isolated Linux system." }
@@ -1149,7 +1173,7 @@ final class SheetSubmission: ObservableObject {
 }
 
 /// Where a sheet says why its action failed, above its buttons.
-private struct SubmissionError: View {
+struct SubmissionError: View {
     let message: String?
 
     var body: some View {

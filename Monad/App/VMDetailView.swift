@@ -227,8 +227,11 @@ struct VMDetailView: View {
             Text(turning.flatMap(VMSettingsDraft.confirmation(for:)) ?? "")
         }
         .sheet(isPresented: $addingForward) {
-            ForwardEditor { rule in
+            ForwardEditor(sshHosts: host.sshHosts.map(\.config.name)) { rule in
                 draft.config.forwards.append(rule)
+                addingForward = false
+            } onAddSSH: { forward in
+                draft.config.sshForwards.append(forward)
                 addingForward = false
             } onCancel: { addingForward = false }
         }
@@ -787,7 +790,7 @@ struct VMDetailView: View {
     private var forwarding: some View {
         Form {
             Section {
-                if draft.config.forwards.isEmpty {
+                if draft.config.forwards.isEmpty && draft.config.sshForwards.isEmpty {
                     Text("No forwards. Add a Mac port to use a program on this Mac from the VM. Ports the VM opens are forwarded by themselves (below).")
                         .foregroundStyle(.secondary)
                 }
@@ -808,6 +811,23 @@ struct VMDetailView: View {
                         Toggle("", isOn: $rule.enabled).labelsHidden().toggleStyle(.switch).controlSize(.small)
                         Button(role: .destructive) {
                             draft.config.forwards.removeAll { $0.id == rule.id }
+                        } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 3)
+                }
+                // Ports carried between the VM and an SSH host (Virtual Machines › SSH).
+                ForEach($draft.config.sshForwards) { $forward in
+                    HStack(spacing: 12) {
+                        IconTile(symbol: "server.rack", color: .teal, size: 28)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(VMSettingsDraft.describe(forward)).font(Design.rowTitle)
+                            forwardStatus(forward).font(Design.caption)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $forward.enabled).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        Button(role: .destructive) {
+                            draft.config.sshForwards.removeAll { $0.id == forward.id }
                         } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
                     }
@@ -997,6 +1017,21 @@ struct VMDetailView: View {
             Text("Starts with the VM").foregroundStyle(.secondary)
         } else if let status = VMSettingsDraft.status(of: rule, in: vm.forwards) {
             stateText(status.state)
+        } else {
+            Text("Not saved yet").foregroundStyle(.secondary)
+        }
+    }
+
+    /// A forward through an SSH host: both its halves (the VM's master's
+    /// and the SSH host's).
+    @ViewBuilder
+    private func forwardStatus(_ forward: SSHForward) -> some View {
+        if !forward.enabled {
+            Text("Off").foregroundStyle(.secondary)
+        } else if !vm.isRunning {
+            Text("Starts with the VM").foregroundStyle(.secondary)
+        } else if let state = VMSettingsDraft.status(of: forward, in: vm.forwards, hosts: host.sshHosts, paths: vm.paths) {
+            stateText(state)
         } else {
             Text("Not saved yet").foregroundStyle(.secondary)
         }
@@ -1298,7 +1333,7 @@ private struct JSONEditor: NSViewRepresentable {
 /// Sheet for one new forward.
 private struct ForwardEditor: View {
     enum Kind: String, CaseIterable, Identifiable {
-        case macPort, vmPort, socks, socket
+        case macPort, vmPort, socks, socket, sshHost
         var id: String { rawValue }
 
         var title: String {
@@ -1307,6 +1342,7 @@ private struct ForwardEditor: View {
             case .vmPort: return "VM Port"
             case .socks: return "SOCKS"
             case .socket: return "Socket"
+            case .sshHost: return "SSH Host"
             }
         }
 
@@ -1316,11 +1352,37 @@ private struct ForwardEditor: View {
             case .vmPort: return "A program in the VM, used from this Mac. Ports the VM opens are usually forwarded by themselves (below)."
             case .socks: return "A SOCKS5 proxy on this Mac. Connections leave from the VM."
             case .socket: return "A Unix socket in the VM, used from this Mac (e.g. Docker)."
+            case .sshHost: return "A port carried between the VM and a server added under Virtual Machines › SSH, with Monad in the middle."
             }
         }
     }
 
+    /// What waits for the user's word: a forward into the Mac or open to
+    /// other computers, or any forward through an SSH host. (One dialog:
+    /// two on one view do not both present.)
+    enum Pending {
+        case rule(ForwardRule)
+        case ssh(SSHForward)
+
+        var title: String {
+            switch self {
+            case .rule(let rule): return VMSettingsDraft.confirmationTitle(for: rule)
+            case .ssh: return VMSettingsDraft.sshForwardConfirmationTitle
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .rule(let rule): return VMSettingsDraft.confirmation(for: rule) ?? ""
+            case .ssh(let forward): return VMSettingsDraft.confirmation(for: forward)
+            }
+        }
+    }
+
+    /// The SSH hosts there are, by name.
+    var sshHosts: [String]
     var onAdd: (ForwardRule) -> Void
+    var onAddSSH: (SSHForward) -> Void
     var onCancel: () -> Void
 
     @State private var kind: Kind = .macPort
@@ -1330,8 +1392,12 @@ private struct ForwardEditor: View {
     @State private var guestSocket = ""
     /// Where a VM port or SOCKS proxy listens on the Mac (the loopback when empty).
     @State private var address = ""
-    /// A forward into the Mac, or one open to other computers, waiting for the user's word.
-    @State private var confirming: ForwardRule?
+    /// Through an SSH host: which one, which way, and the server's end.
+    @State private var sshHost = ""
+    @State private var direction = SSHForward.Direction.intoVM
+    @State private var remoteHost = ""
+    @State private var remotePort = ""
+    @State private var pending: Pending?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1356,6 +1422,31 @@ private struct ForwardEditor: View {
                 case .socket:
                     TextField("Mac socket", text: $hostSocket, prompt: Text("~/.monad/docker.sock"))
                     TextField("VM socket", text: $guestSocket, prompt: Text("/run/docker.sock"))
+                case .sshHost:
+                    if sshHosts.isEmpty {
+                        Notice(symbol: "info.circle.fill", color: .blue, text: "Add an SSH host first, under Virtual Machines › SSH.")
+                            .font(Design.caption)
+                    } else {
+                        Picker("SSH host", selection: $sshHost) {
+                            ForEach(sshHosts, id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Direction", selection: $direction) {
+                            Text("Server port into the VM").tag(SSHForward.Direction.intoVM)
+                            Text("VM port onto the server").tag(SSHForward.Direction.ontoHost)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        switch direction {
+                        case .intoVM:
+                            TextField("The server reaches", text: $remoteHost, prompt: Text("127.0.0.1"))
+                            TextField("at port", text: $remotePort, prompt: Text("5432"))
+                            TextField("In the VM at port", text: $guestPort, prompt: Text(remotePort.isEmpty ? "the same" : remotePort))
+                        case .ontoHost:
+                            TextField("VM port", text: $guestPort, prompt: Text("8080"))
+                            TextField("On the server at port", text: $remotePort, prompt: Text("8080"))
+                            TextField("The server listens on", text: $remoteHost, prompt: Text("127.0.0.1"))
+                        }
+                    }
                 }
                 switch kind {
                 case .macPort:
@@ -1374,6 +1465,14 @@ private struct ForwardEditor: View {
                     }
                 case .socket:
                     Notice(symbol: "lock.fill", color: .green, text: "Only this Mac can connect.").font(Design.caption)
+                case .sshHost:
+                    if !sshHosts.isEmpty {
+                        Notice(symbol: "exclamationmark.shield", color: .orange,
+                               text: direction == .intoVM
+                                   ? "Programs in the VM will reach that address through the server, past the VM's firewall."
+                                   : "Whoever reaches that port on the server reaches the VM.")
+                            .font(Design.caption)
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -1382,25 +1481,33 @@ private struct ForwardEditor: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { onCancel() }.keyboardShortcut(.cancelAction)
                 Button("Add") {
-                    guard let rule else { return }
-                    if VMSettingsDraft.confirmation(for: rule) != nil { confirming = rule } else { onAdd(rule) }
+                    if kind == .sshHost {
+                        // Always asked: it passes the VM's firewall with the user's sign-in to the server.
+                        if let sshForward { pending = .ssh(sshForward) }
+                    } else if let rule {
+                        if VMSettingsDraft.confirmation(for: rule) != nil { pending = .rule(rule) } else { onAdd(rule) }
+                    }
                 }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(rule == nil)
+                    .disabled(kind == .sshHost ? sshForward == nil : rule == nil)
             }
             .controlSize(.large)
             .padding(.horizontal, 24).padding(.vertical, 14)
         }
-        .frame(width: 500, height: 440)
-        .confirmationDialog(confirming.map(VMSettingsDraft.confirmationTitle(for:)) ?? "",
-                            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+        .frame(width: 540, height: 480)
+        .onAppear { if sshHost.isEmpty { sshHost = sshHosts.first ?? "" } }
+        .confirmationDialog(pending?.title ?? "", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
             Button("Add Forward") {
-                if let rule = confirming { onAdd(rule) }
-                confirming = nil
+                switch pending {
+                case .rule(let rule)?: onAdd(rule)
+                case .ssh(let forward)?: onAddSSH(forward)
+                case nil: break
+                }
+                pending = nil
             }
         } message: {
-            Text(confirming.flatMap(VMSettingsDraft.confirmation(for:)) ?? "")
+            Text(pending?.message ?? "")
         }
     }
 
@@ -1416,7 +1523,16 @@ private struct ForwardEditor: View {
             let h = (hostSocket as NSString).expandingTildeInPath
             guard h.hasPrefix("/"), guestSocket.hasPrefix("/") else { return nil }
             return ForwardRule(kind: .unixLocal, hostSocket: h, guestSocket: guestSocket)
+        case .sshHost:
+            return nil
         }
+    }
+
+    /// The forward through an SSH host as typed, once it can be one.
+    private var sshForward: SSHForward? {
+        guard kind == .sshHost, sshHosts.contains(sshHost) else { return nil }
+        return VMSettingsDraft.sshForward(host: sshHost, direction: direction, vmPort: guestPort, remoteHost: remoteHost,
+                                          remotePort: remotePort)
     }
 }
 

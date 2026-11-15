@@ -1,10 +1,10 @@
 //
 //  CanvasWindowController.swift — the canvas window (VM › Canvas): the
-//  canvas on top and, once a VM's terminal is asked for there (a VM's
-//  right-click or the inspector), a dock of terminal panes below it that
-//  can be resized (TerminalPanes: splits, contexts, the pane menu, panes
-//  dragged by their header). The Shell menu's splits and pane moves, and
-//  ⌘W, act on the dock while its terminal is in front; its last context
+//  canvas on top and, once a terminal on a VM or an SSH host is asked for
+//  there (its right-click or the inspector), a dock of terminal panes below
+//  it that can be resized (TerminalPanes: splits, contexts, the pane menu,
+//  panes dragged by their header). The Shell menu's splits and pane moves,
+//  and ⌘W, act on the dock while its terminal is in front; its last context
 //  going hides it. Phase 13's last step (docs/CANVAS.md).
 //
 
@@ -56,7 +56,10 @@ final class CanvasWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.delegate = self
         window.contentViewController = splitController
         window.setContentSize(CanvasView.size)
-        canvas.onTerminal = { [weak self] name in self?.openTerminal(vm: name) }
+        canvas.onTerminal = { [weak self] target in
+            if case .ssh(let name) = target { self?.openTerminal(sshHost: name) }
+            if case .vm(let name) = target { self?.openTerminal(vm: name) }
+        }
         // ⌘Z and ⇧⌘Z (Edit › Undo, Redo) go through the window.
         canvas.undoManager = window.undoManager
     }
@@ -112,13 +115,25 @@ final class CanvasWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// The VMs with a terminal in the dock, pane by pane.
     var dockedVMs: [String] { dock?.vms ?? [] }
 
+    /// The SSH hosts with a terminal in the dock, pane by pane.
+    var dockedSSHHosts: [String] { dock?.sshHosts ?? [] }
+
     /// A terminal on VM `name` in the dock: the one there is brought to
     /// front, else a new context in the focused pane.
     func openTerminal(vm name: String) {
+        openTerminal(.vm(name)) { $0.show(vm: name) }
+    }
+
+    /// The same on the SSH host `name`.
+    func openTerminal(sshHost name: String) {
+        openTerminal(.ssh(name)) { $0.show(sshHost: name) }
+    }
+
+    private func openTerminal(_ target: SessionTarget, show: (TerminalPanes) -> Bool) {
         if let dock {
-            if !dock.show(vm: name) { dock.addContext(.vm(name)) }
+            if !show(dock) { dock.addContext(target) }
         } else {
-            let panes = TerminalPanes(target: .vm(name), host: host)
+            let panes = TerminalPanes(target: target, host: host)
             panes.onTitle = { [weak self] title, grid in
                 self?.dockTitle.stringValue = grid.map { "\(title) — \($0.cols)×\($0.rows)" } ?? title
             }

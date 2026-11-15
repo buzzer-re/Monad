@@ -15,12 +15,19 @@ final class MonadToolsTests: XCTestCase {
     private var tmp: TempDir!
     private var store: DistroStore!
 
+    private let secrets = FakeSecrets()
+
     override func setUp() async throws {
         fixture = try ManagerFixture()
         tmp = TempDir()
+        // SSH hosts in the test's folder, with no Keychain and no real ssh.
+        var ssh = SSHHostManager.Environment()
+        ssh.runner = FakeCommandRunner()
+        ssh.secrets = secrets
         service = HostService(manager: fixture.manager, limits: .init(maxCPUs: 8, maxMemoryGiB: 16),
                               sharePlaces: SharePolicy.Places(home: "/Users/dev", monad: "/Users/dev/.monad"),
-                              agents: tmp.url.appendingPathComponent("agents"))
+                              agents: tmp.url.appendingPathComponent("agents"),
+                              sshHosts: SSHHostManager(root: tmp.url.appendingPathComponent("ssh-hosts"), environment: ssh))
         store = DistroStore(directory: tmp.url.appendingPathComponent("distros"), bundled: try DistroCatalog.bundled())
         tools = MonadTools(service: service, distros: { [store] in store! },
                            networks: NetworkStore(directory: tmp.url.appendingPathComponent("networks")),
@@ -128,10 +135,10 @@ final class MonadToolsTests: XCTestCase {
         let risky = Set(all.filter { $0.risk == .risky }.map(\.name))
         XCTAssertEqual(risky, ["delete_vm", "remove_disk", "restore_snapshot", "delete_snapshot", "add_distro", "remove_distro", "add_mac_forward", "allow_destination",
                                "add_share", "add_bridge", "add_host_command", "set_agent_role", "set_firewall", "set_group",
-                               "set_macos_security"])
+                               "set_macos_security", "add_ssh_forward"])
         XCTAssertEqual(Set(all.filter { $0.risk == .read }.map(\.name)),
                        ["list_vms", "get_vm", "list_distros", "list_networks", "list_connections", "list_canvas",
-                        "read_vm_log", "read_recovery_screens"])
+                        "read_vm_log", "read_recovery_screens", "list_ssh_hosts"])
     }
 
     /// A VM's log (what Monad did with it), its last lines; read only.
@@ -363,6 +370,28 @@ final class MonadToolsTests: XCTestCase {
         XCTAssertEqual(service.notes.first { $0.id == mine.id }?.author, "mac", "the words are the agent's now")
         try await call("remove_note", ["id": .string(mine.id)])
 
+        // SSH hosts are on the canvas too: named plainly or as ssh:<name>,
+        // and listed with nothing about how to get into them.
+        try await service.sshHosts.set(SSHHost(name: "bastion", host: "example.com", user: "dev", auth: .password), password: "hunter2")
+        try await call("add_note", ["kind": .string("label"), "text": .string("prod"), "on": .string("bastion")])
+        try await call("add_note", ["kind": .string("arrow"), "text": .string("deploys"), "on": .string("web"), "to": .string("ssh:bastion")])
+        XCTAssertEqual(service.notes.suffix(2).map(\.on), ["ssh:bastion", "vm:web"])
+        XCTAssertEqual(service.notes.last?.to, "ssh:bastion")
+        let canvas = try object(try await call("list_canvas"))
+        let hosts = try XCTUnwrap(canvas["ssh_hosts"] as? [[String: Any]])
+        XCTAssertEqual(hosts.map { $0["name"] as? String }, ["bastion"])
+        XCTAssertTrue(Set(hosts.flatMap(\.keys)).isSubset(of: ["name", "x", "y", "width", "height"]), "where it is, no more")
+        // Which servers there are is the user's to tell (list_ssh_hosts): a
+        // VM allowed the canvas gets it without them, and none by a plain name.
+        let shown = try await tool("list_canvas").run(MCPCall(caller: .vm("web"), arguments: [:]))
+        XCTAssertFalse(shown.text.contains("bastion"), shown.text)
+        XCTAssertEqual((try object(shown)["notes"] as? [[String: Any]])?.count, 3, "the label and the arrow on it are left out")
+        do {
+            _ = try await tool("add_note").run(MCPCall(caller: .vm("web"), arguments: [
+                "kind": .string("label"), "text": .string("x"), "on": .string("bastion")]))
+            XCTFail("a VM learns no SSH host's name by trying it")
+        } catch {}
+
         for (name, args) in [("add_note", ["kind": JSONValue.string("label"), "text": .string("x"), "on": .string("ghost")]),
                              ("add_note", ["kind": .string("ink")]),
                              ("add_note", ["color": .string("chartreuse")]),
@@ -411,6 +440,62 @@ final class MonadToolsTests: XCTestCase {
             try await call("start_vm", ["name": .string("ghost")])
             XCTFail("no such VM")
         } catch {}
+    }
+
+    /// Agents see which SSH hosts there are (never how to get into one)
+    /// and carry a VM's port to or from one: through the VM's settings, as
+    /// its window does, and only after the user's word (it is risky).
+    func testSSHHostsAreListedAndAPortIsCarriedThroughOne() async throws {
+        var box = SSHHost(name: "box", host: "example.com", port: 2222, user: "dev", auth: .key)
+        box.keyPath = "/Users/dev/.ssh/id_work"
+        try await service.sshHosts.set(box, password: nil)
+        try await service.sshHosts.set(SSHHost(name: "vault", host: "192.0.2.9", user: "ops", auth: .password), password: "hunter2")
+        let listed = try await call("list_ssh_hosts")
+        XCTAssertEqual(try object(listed)["ssh_hosts"] as? [[String: AnyHashable]], [
+            ["name": "box", "host": "example.com", "port": 2222, "user": "dev", "auth": "key"],
+            ["name": "vault", "host": "192.0.2.9", "port": 22, "user": "ops", "auth": "password"],
+        ])
+        XCTAssertFalse(listed.text.contains("id_work") || listed.text.contains("hunter2"), listed.text)
+
+        let vm = try await made("web")
+        try await call("add_ssh_forward", ["name": .string("web"), "ssh_host": .string("box"), "direction": .string("intoVM"),
+                                           "guest_port": .number(15432), "remote_port": .number(5432),
+                                           "remote_host": .string("db.internal")])
+        try await call("add_ssh_forward", ["name": .string("web"), "ssh_host": .string("vault"), "direction": .string("ontoHost"),
+                                           "guest_port": .number(8000), "remote_port": .number(18000)])
+        XCTAssertEqual(vm.config.sshForwards.map(VMSettingsDraft.describe), [
+            "db.internal:5432 through the SSH host box, in the VM at 127.0.0.1:15432",
+            "VM port 8000, on the SSH host vault at 127.0.0.1:18000",
+        ])
+        func refused(_ arguments: [String: JSONValue]) async -> String? {
+            do {
+                try await call("add_ssh_forward", arguments)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        var why = await refused(["name": .string("web"), "ssh_host": .string("ghost"), "direction": .string("intoVM"),
+                                 "guest_port": .number(9000), "remote_port": .number(9000)])
+        XCTAssertEqual(why, "There is no SSH host called ghost. list_ssh_hosts names them.")
+        why = await refused(["name": .string("web"), "ssh_host": .string("box"), "direction": .string("sideways"),
+                             "guest_port": .number(9000), "remote_port": .number(9000)])
+        XCTAssertEqual(why, "direction is intoVM or ontoHost.")
+        why = await refused(["name": .string("web"), "ssh_host": .string("box"), "direction": .string("intoVM"),
+                             "guest_port": .number(80), "remote_port": .number(80)])
+        XCTAssertEqual(why, "The port in the VM is from 1024 to 65535.", "checked as the window's are")
+        XCTAssertEqual(vm.config.sshForwards.count, 2)
+
+        try await call("remove_ssh_forward", ["name": .string("web"), "index": .number(0)])
+        XCTAssertEqual(vm.config.sshForwards.map(\.sshHost), ["vault"])
+        do {
+            try await call("remove_ssh_forward", ["name": .string("web"), "index": .number(4)])
+            XCTFail("no such forward")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "There is no SSH forward 4.")
+        }
+        XCTAssertEqual(try tool("add_ssh_forward").risk, .risky)
+        XCTAssertEqual(try tool("remove_ssh_forward").risk, .normal)
     }
 
     /// Settings through `update`: forwards, firewall, bridges, host

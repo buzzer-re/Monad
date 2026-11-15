@@ -121,6 +121,42 @@ final class VMConfigFileTests: XCTestCase {
         XCTAssertTrue(try VMConfigFile.read(try VMConfigFile.export(plain), on: mac()).macAccess.isEmpty)
     }
 
+    /// A forward through an SSH host passes the VM's firewall with the
+    /// user's sign-in to a server: a file does not bring one in unasked, and
+    /// a new one in edited settings is confirmed.
+    func testForwardsThroughSSHHostsStayOutUnlessKeptAndAreConfirmedOnEdit() throws {
+        var c = full()
+        let db = SSHForward(sshHost: "box", direction: .intoVM, guestPort: 15432, remoteHost: "db.internal", remotePort: 5432)
+        c.sshForwards = [db]
+        let imported = try VMConfigFile.read(try VMConfigFile.export(c), on: mac())
+        XCTAssertEqual(imported.macAccess.sshForwards, [db])
+        XCTAssertTrue(imported.macAccess.lines.contains("db.internal:5432 through the SSH host box, in the VM at 127.0.0.1:15432"),
+                      "\(imported.macAccess.lines)")
+        XCTAssertEqual(imported.config(named: "web", keepingMacAccess: false).sshForwards, [])
+        XCTAssertEqual(imported.config(named: "web", keepingMacAccess: true).sshForwards, [db])
+        var only = InstanceConfig.defaults(name: "plain")
+        only.distro = "debian"
+        only.sshForwards = [db]
+        XCTAssertFalse(try VMConfigFile.read(try VMConfigFile.export(only), on: mac()).macAccess.isEmpty)
+
+        // Edited settings: a new route is confirmed; one saved already, turned off or on, is not.
+        let added = VMConfigFile.check(try edited(c) { o in
+            var list = o["sshForwards"] as? [[String: Any]] ?? []
+            list[0]["enabled"] = false
+            list.append(["sshHost": "edge", "direction": "ontoHost", "guestPort": 8000, "remotePort": 18000])
+            o["sshForwards"] = list
+        }, against: c, on: mac())
+        XCTAssertEqual(added.problems, [])
+        XCTAssertEqual(added.changes, ["SSH forwards"])
+        XCTAssertEqual(added.reachesIntoMac, ["VM port 8000, on the SSH host edge at 127.0.0.1:18000"])
+        XCTAssertEqual(added.config?.sshForwards.map(\.enabled), [false, true])
+
+        let bad = VMConfigFile.check(try edited(c) { o in
+            o["sshForwards"] = [["sshHost": "box", "direction": "intoVM", "guestPort": 80, "remotePort": 80, "remoteHots": "x"]]
+        }, against: c, on: mac())
+        XCTAssertEqual(Set(bad.problems.map(\.path)), ["sshForwards", "sshForwards[0].remoteHots"], "\(bad.problems)")
+    }
+
     /// A file's allow rules by address open the Mac and its network even
     /// without allowLAN (an address the user typed may): they are set aside
     /// with the rest of the Mac's access, back in their place when kept.
@@ -499,6 +535,8 @@ final class VMConfigFileTests: XCTestCase {
         c.copiedFrom = c.attached
         c.forwards.append(ForwardRule(kind: .unixLocal, hostSocket: "/tmp/a.sock", guestSocket: "/run/a.sock"))
         c.bridges.append(CommandBridge(name: "s", command: ["/bin/cat"], guestSocket: "/run/cat.sock"))
+        c.sshForwards = [SSHForward(sshHost: "box", direction: .intoVM, guestPort: 15432, remoteHost: "db.internal",
+                                    remotePort: 5432)]
         c.hostCommands[0].fixedArguments = ["-s"]
         c.agents = AgentAccess(role: .orchestrator, childCPUs: 2, childMemoryGiB: 2)
         c.parent = "boss"

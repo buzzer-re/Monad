@@ -776,6 +776,55 @@ final class TransferTests: XCTestCase {
         }
     }
 
+    /// Runs what ssh would hand the remote login shell, on this Mac in `home`.
+    private func remoteShell(home: URL) -> FakeCommandRunner {
+        FakeCommandRunner { call in
+            try ProcessRunner.runSync("/bin/sh", ["-c", call.arguments.last ?? ""], environment: ["HOME": home.path],
+                                      stdin: call.stdin, timeout: 10)
+        }
+    }
+
+    /// A VM's upload rides its ssh master and asks nothing.
+    func testAnUploadToAVMIsBatchedAndLandsUnderAFreeName() async throws {
+        let home = TempDir()
+        let runner = remoteShell(home: home.url)
+        let vm = SSHTarget(options: ["-F", "none", "-o", "User=dev"], host: "monad-web")
+        let first = try await FileUploader.upload(Data("one".utf8), name: "notes.txt", directory: .uploads, to: vm, runner: runner)
+        let second = try await FileUploader.upload(Data("two".utf8), name: "notes.txt", directory: .uploads, to: vm, runner: runner)
+        XCTAssertTrue(first.hasSuffix("/.monad/uploads/notes.txt"), first)
+        XCTAssertTrue(second.hasSuffix("/.monad/uploads/notes-1.txt"), second)
+        XCTAssertEqual(try String(contentsOfFile: first, encoding: .utf8), "one")
+        XCTAssertEqual(try String(contentsOfFile: second, encoding: .utf8), "two", "the first is not written over")
+        let call = try XCTUnwrap(runner.calls.first)
+        XCTAssertEqual(call.executable, "/usr/bin/ssh")
+        XCTAssertEqual(Array(call.arguments.prefix(11)), ["-F", "none", "-o", "User=dev", "-o", "BatchMode=yes", "-o",
+                                                          "ControlMaster=no", "-o", "ConnectTimeout=10", "monad-web"])
+        XCTAssertEqual(call.environment, [:])
+        XCTAssertTrue(call.arguments.last?.hasPrefix("set -e; d=~/.monad/uploads;") ?? false)
+    }
+
+    /// An SSH host's upload is a connection of its own: ssh may ask (in
+    /// Monad's panel, through the askpass variables), and the script goes
+    /// through sh whatever the server's login shell is.
+    func testAnUploadToAnSSHHostMayAskAndGoesThroughSh() async throws {
+        let home = TempDir()
+        let runner = remoteShell(home: home.url)
+        let askpass = ["SSH_ASKPASS": "/Applications/Monad.app/Contents/MacOS/MonadHost", "SSH_ASKPASS_REQUIRE": "force",
+                       "MONAD_ASKPASS_TICKET": "abc"]
+        let box = SSHTarget(options: ["-F", "none", "-o", "User=dev"], host: "example.com", environment: askpass,
+                            batch: false, throughSh: true)
+        let path = try await FileUploader.upload(Data([1, 2, 3]), name: "shot it's.png", directory: .screenshots, to: box,
+                                                 runner: runner)
+        XCTAssertTrue(path.hasSuffix("/.monad/shots/shot_it_s.png"), path)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data([1, 2, 3]))
+        let call = try XCTUnwrap(runner.calls.first)
+        XCTAssertFalse(call.arguments.contains("BatchMode=yes"))
+        XCTAssertEqual(Array(call.arguments.prefix(9)), ["-F", "none", "-o", "User=dev", "-o", "ControlMaster=no", "-o",
+                                                         "ConnectTimeout=10", "example.com"])
+        XCTAssertEqual(call.environment, askpass)
+        XCTAssertTrue(call.arguments.last?.hasPrefix("sh -c 'set -e; d=~/.monad/shots;") ?? false, call.arguments.last ?? "")
+    }
+
     func testShellQuote() {
         XCTAssertEqual(ShellQuote.quote("/home/dev/.monad/shots/a.png"), "/home/dev/.monad/shots/a.png")
         XCTAssertEqual(ShellQuote.quote("/tmp/a b"), "'/tmp/a b'")

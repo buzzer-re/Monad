@@ -366,6 +366,68 @@ final class VMSettingsDraftTests: XCTestCase {
         XCTAssertNil(VMSettingsDraft.status(of: ForwardRule(kind: .socks, hostPort: 1080), in: statuses))
     }
 
+    // MARK: Forwards through SSH hosts
+
+    private func sshForward(_ direction: SSHForward.Direction, guest: Int, host: String = "127.0.0.1", remote: Int) -> SSHForward {
+        SSHForward(sshHost: "box", direction: direction, guestPort: guest, remoteHost: host, remotePort: remote)
+    }
+
+    /// As typed in the Add Forward sheet: nothing until it can be one.
+    func testAForwardThroughAnSSHHostIsMadeFromWhatIsTyped() throws {
+        func typed(_ direction: SSHForward.Direction, vm: String, host: String, remote: String) -> SSHForward? {
+            VMSettingsDraft.sshForward(host: "box", direction: direction, vmPort: vm, remoteHost: host, remotePort: remote)
+        }
+        let same = try XCTUnwrap(typed(.intoVM, vm: "", host: "", remote: " 5432 "))
+        XCTAssertTrue(same.sameRoute(sshForward(.intoVM, guest: 5432, remote: 5432)), "the same port, the server's loopback")
+        let other = try XCTUnwrap(typed(.intoVM, vm: "15432", host: " db.internal ", remote: "5432"))
+        XCTAssertTrue(other.sameRoute(sshForward(.intoVM, guest: 15432, host: "db.internal", remote: 5432)))
+        let onto = try XCTUnwrap(typed(.ontoHost, vm: "8000", host: "", remote: "18000"))
+        XCTAssertTrue(onto.sameRoute(sshForward(.ontoHost, guest: 8000, remote: 18000)))
+        XCTAssertNil(typed(.ontoHost, vm: "", host: "", remote: "18000"), "which VM port?")
+        XCTAssertNil(typed(.intoVM, vm: "", host: "", remote: ""))
+        XCTAssertNil(typed(.intoVM, vm: "", host: "", remote: "80"), "the VM cannot listen below 1024")
+        XCTAssertNil(typed(.intoVM, vm: "8080", host: "db:5432", remote: "80"))
+        XCTAssertNil(typed(.ontoHost, vm: "8000", host: "example.com", remote: "8000"), "the server listens on an address")
+    }
+
+    /// Always confirmed, in words that say who reaches what.
+    func testAForwardThroughAnSSHHostSaysWhoReachesWhat() {
+        let db = sshForward(.intoVM, guest: 15432, host: "db.internal", remote: 5432)
+        XCTAssertEqual(VMSettingsDraft.describe(db), "db.internal:5432 through the SSH host box, in the VM at 127.0.0.1:15432")
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: db),
+                       "The VM will be able to connect to db.internal:5432 as the SSH host “box” reaches it, "
+                       + "signed in as you there, past the VM's firewall.")
+        let web = sshForward(.ontoHost, guest: 8000, host: "::", remote: 18000)
+        XCTAssertEqual(VMSettingsDraft.describe(web), "VM port 8000, on the SSH host box at [::]:18000")
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: web),
+                       "Whoever reaches [::]:18000 on the SSH host “box” will be able to connect to port 8000 in the VM.")
+    }
+
+    /// Its state is both halves': the VM's master's, then the SSH host's.
+    func testAForwardThroughAnSSHHostIsUpWhenBothHalvesAre() {
+        let paths = InstancePaths(name: "dev", root: URL(fileURLWithPath: "/Users/x/.monad/instances"))
+        let f = sshForward(.intoVM, guest: 15432, host: "db.internal", remote: 5432)
+        let near = f.vmSpec(in: paths), far = f.hostSpec(in: paths)
+        func status(_ spec: SSHMux.Spec, _ state: ForwardStatus.State) -> ForwardStatus {
+            ForwardStatus(flag: spec.flag, spec: spec.value, origin: .bridge, state: state)
+        }
+        func host(_ forwards: [ForwardStatus]?) -> SSHHostSnapshot {
+            SSHHostSnapshot(config: SSHHost(name: "box", host: "example.com", user: "dev", auth: .key), hasPassword: false,
+                            forwards: forwards)
+        }
+        func state(vm: [ForwardStatus], hosts: [SSHHostSnapshot]) -> ForwardStatus.State? {
+            VMSettingsDraft.status(of: f, in: vm, hosts: hosts, paths: paths)
+        }
+        XCTAssertNil(state(vm: [], hosts: [host(nil)]), "not set up: the VM does not run it")
+        XCTAssertEqual(state(vm: [status(near, .active)], hosts: [host([status(far, .active)])]), .active)
+        XCTAssertEqual(state(vm: [status(near, .failed("remote port forwarding failed"))], hosts: [host([status(far, .active)])]),
+                       .failed("remote port forwarding failed"))
+        XCTAssertEqual(state(vm: [status(near, .active)], hosts: [host([status(far, .failed("Permission denied"))])]),
+                       .failed("Permission denied"))
+        XCTAssertEqual(state(vm: [status(near, .active)], hosts: [host(nil)]), .failed("Not set up yet."))
+        XCTAssertEqual(state(vm: [status(near, .active)], hosts: []), .failed("There is no SSH host named box."))
+    }
+
     func testRestartIsOfferedOnlyWhenARunningVMNeedsIt() {
         XCTAssertNil(VMSettingsDraft.restartPrompt(vm: "dev", pending: [], isRunning: true))
         XCTAssertNil(VMSettingsDraft.restartPrompt(vm: "dev", pending: ["CPUs"], isRunning: false))

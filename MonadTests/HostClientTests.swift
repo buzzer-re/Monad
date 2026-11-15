@@ -75,14 +75,25 @@ final class FakeHost {
     /// Build a restarted host reports (a new binary after an update).
     var nextBuild: String?
     private(set) var shutdowns = 0
+    /// The Keychain's stand-in for the host's SSH hosts.
+    let secrets = FakeSecrets()
 
     init(build: String? = nil) throws {
         fixture = try ManagerFixture()
         manager = fixture.manager
         service = HostService(manager: manager, limits: .init(maxCPUs: 8, maxMemoryGiB: 16), build: build,
-                              agents: fixture.tmp.url.appendingPathComponent("agents"))
+                              agents: fixture.tmp.url.appendingPathComponent("agents"),
+                              sshHosts: Self.sshHosts(fixture, secrets))
         nextBuild = build
         wire()
+    }
+
+    /// SSH hosts in the fixture's folder, with no Keychain and no real ssh.
+    private static func sshHosts(_ fixture: ManagerFixture, _ secrets: FakeSecrets) -> SSHHostManager {
+        var env = SSHHostManager.Environment()
+        env.runner = FakeCommandRunner()
+        env.secrets = secrets
+        return SSHHostManager(root: fixture.tmp.url.appendingPathComponent("ssh-hosts"), environment: env)
     }
 
     /// An accepted shutdown makes launchd start the (possibly newer) host.
@@ -118,7 +129,8 @@ final class FakeHost {
         manager = fixture.makeManager()
         manager.load()
         service = HostService(manager: manager, limits: .init(maxCPUs: 8, maxMemoryGiB: 16), build: nextBuild,
-                              agents: fixture.tmp.url.appendingPathComponent("agents"))
+                              agents: fixture.tmp.url.appendingPathComponent("agents"),
+                              sshHosts: Self.sshHosts(fixture, secrets))
         wire()
         // Clients notice only now, so they can only reach the new host.
         for t in old { t.kill() }
@@ -180,6 +192,81 @@ final class HostClientTests: XCTestCase {
         XCTAssertTrue(t.contains("client: connected to the VM service"), t)
         XCTAssertTrue(t.range(of: #"client: ensureDefault → ok after \d+\.\d\d s"#, options: .regularExpression) != nil, t)
         XCTAssertTrue(t.range(of: #"client: start nope → error after \d+\.\d\d s: "#, options: .regularExpression) != nil, t)
+    }
+
+    /// The SSH hosts are MonadHost's: the app mirrors them from the moment
+    /// it connects, follows every change, and never holds a password.
+    func testSSHHostsAreMirroredAndFollowed() async throws {
+        let box = SSHHost(name: "box", host: "example.com", user: "dev", auth: .password)
+        try await host.service.sshHosts.set(box, password: "pw")
+        let c = makeClient()
+        await assertEventually { c.status == .connected }
+        XCTAssertEqual(c.sshHosts, [SSHHostSnapshot(config: box, hasPassword: true)], "known on connect")
+        XCTAssertEqual(c.sshHost(named: "box")?.config.host, "example.com")
+
+        let alpha = SSHHost(name: "alpha", host: "192.0.2.7", port: 2222, user: "ops", auth: .key)
+        try await c.saveSSHHost(alpha, password: nil)
+        XCTAssertEqual(c.sshHosts.map(\.config.name), ["alpha", "box"])
+        XCTAssertEqual(host.service.sshHosts.hosts, [alpha, box])
+
+        // A change made elsewhere (another app, MonadHost itself) arrives as an event.
+        try host.service.sshHosts.forgetPassword("box")
+        await assertEventually { c.sshHost(named: "box")?.hasPassword == false }
+
+        let ticket = try await c.sshTicket("box")
+        XCTAssertTrue(SSHAskpass.isTicket(ticket), ticket)
+        let known = try await c.existingSSHHost("alpha")
+        XCTAssertEqual(known.config, alpha)
+        do {
+            _ = try await c.existingSSHHost("missing")
+            XCTFail("no such host")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "No SSH host named missing.")
+        }
+        try await c.removeSSHHost("alpha")
+        XCTAssertEqual(c.sshHosts.map(\.config.name), ["box"])
+    }
+
+    /// A question of ssh's reaches the app as it is asked, and the answer
+    /// goes back through MonadHost.
+    func testAnSSHQuestionReachesTheAppAndItsAnswerGoesBack() async throws {
+        try await host.service.sshHosts.set(SSHHost(name: "box", host: "example.com", user: "dev", auth: .password),
+                                            password: nil)
+        let c = makeClient()
+        await assertEventually { c.status == .connected }
+        let ticket = try await c.sshTicket("box")
+        let hosts = host.service.sshHosts
+        let asking = Task { @MainActor in try await hosts.ask(ticket: ticket, prompt: "dev@example.com's password: ", hint: nil) }
+        await assertEventually { c.sshPrompts.count == 1 }
+        XCTAssertEqual(c.sshPrompts.first?.host, "box")
+        try await c.answerSSHPrompt(try XCTUnwrap(c.sshPrompts.first).id, secret: "pw", remember: true)
+        let answer = try await asking.value
+        XCTAssertEqual(answer, "pw")
+        await assertEventually { c.sshPrompts.isEmpty && c.sshHost(named: "box")?.hasPassword == true }
+        XCTAssertEqual(host.secrets["box"], "pw")
+    }
+
+    /// A host from an older Monad (kept while its VMs run) has no SSH hosts.
+    func testAnOlderHostHasNoSSHHostsAndSaysSo() async throws {
+        host = try FakeHost(build: "old")
+        host.nextBuild = "new"
+        let other = host.service.connect { _ in }
+        _ = await other.handle(HostRequest(id: 1, op: .hello, version: HostProtocol.version))
+        _ = await other.handle(HostRequest(id: 2, op: .ensureDefault))
+        await assertEventually { self.host.manager.existing("default")?.state == .stopped }
+        _ = await other.handle(HostRequest(id: 3, op: .start, name: "default"))
+        await assertEventually { self.host.manager.existing("default")?.state == .ready }
+        other.close()
+        let c = makeClient(expectedBuild: "new")
+        await assertEventually { c.status == .connected && c.hostIsOutdated }
+        do {
+            try await c.saveSSHHost(SSHHost(name: "box", host: "example.com", user: "dev", auth: .key), password: nil)
+            XCTFail("an older host cannot keep SSH hosts")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "The VM service is from an older Monad and has no SSH hosts yet. "
+                           + "It is updated once no VM is running.")
+        }
+        XCTAssertEqual(c.sshHosts, [])
     }
 
     /// "Start VM at boot": when Monad opens it starts the VMs marked for it

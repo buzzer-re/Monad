@@ -202,6 +202,25 @@ final class DebugLogTests: XCTestCase {
         XCTAssertTrue(t.contains("no such program"), t)
     }
 
+    /// A variable may carry a secret's ticket (SSH_ASKPASS): its name is
+    /// logged, never its value.
+    func testExtraVariablesAreLoggedByNameOnly() async throws {
+        let morning = self.morning
+        let log = makeLog { morning }
+        log.setEnabled(true)
+        let inner = FakeCommandRunner()
+        let runner = LoggingCommandRunner(inner, log: log)
+        _ = try await runner.run("/usr/bin/ssh", ["example.com"],
+                                 environment: ["SSH_ASKPASS": "/x/MonadHost", "MONAD_ASKPASS_TICKET": "feedface"],
+                                 stdin: nil, timeout: 5)
+        XCTAssertEqual(inner.calls.first?.environment["MONAD_ASKPASS_TICKET"], "feedface", "passed through")
+        log.flush()
+        let t = text()
+        XCTAssertTrue(t.contains("cmd: #1 /usr/bin/ssh example.com env MONAD_ASKPASS_TICKET,SSH_ASKPASS (no stdin, timeout 5 s)"), t)
+        XCTAssertFalse(t.contains("feedface"), t)
+        XCTAssertFalse(t.contains("/x/MonadHost"), t)
+    }
+
     func testNothingIsFormattedWhileOff() async throws {
         let morning = self.morning
         let log = makeLog { morning }

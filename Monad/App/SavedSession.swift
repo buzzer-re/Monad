@@ -25,10 +25,13 @@ struct SavedSession: Codable, Equatable {
         case host
         /// The default VM, when the tab had not found which one yet.
         case defaultVM = "default"
+        /// An SSH host (Monad/SSH).
+        case ssh
     }
 
     struct Context: Codable, Equatable {
         var kind: Kind
+        /// The VM's name; for `.ssh`, the SSH host's.
         var vm: String?
         var directory: String?
         var theme: String?
@@ -37,7 +40,7 @@ struct SavedSession: Codable, Equatable {
         var sanitized: Context? {
             var c = self
             switch kind {
-            case .vm:
+            case .vm, .ssh:
                 guard let vm, vm.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", options: .regularExpression) != nil else { return nil }
             case .host, .defaultVM:
                 c.vm = nil

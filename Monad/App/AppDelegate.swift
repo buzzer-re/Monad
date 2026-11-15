@@ -16,9 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// Monitor-mode questions from the VMs' firewalls.
     private var firewallPrompts: FirewallPromptController?
     private var approvalPrompts: ApprovalPromptController?
+    private var sshPrompts: SSHPromptController?
     private var macSetupPrompts: MacSetupPromptController?
     private var vmAlerts: VMAlertCenter?
     private var vmTabMenu = NSMenu(title: "Open VM")
+    private var sshTabMenu = NSMenu(title: "Open SSH Host")
     private var themeMenu = NSMenu(title: "Theme")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -59,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         }
         firewallPrompts = FirewallPromptController(host: HostAgent.client)
         approvalPrompts = ApprovalPromptController(host: HostAgent.client)
+        sshPrompts = SSHPromptController(host: HostAgent.client)
         macSetupPrompts = MacSetupPromptController(host: HostAgent.client)
         AppUpdater.shared.start()
         vmAlerts = VMAlertCenter(host: HostAgent.client) { [weak self] name in
@@ -287,6 +290,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         open(.vm(choice.name), from: choice.owner)
     }
 
+    /// Open SSH Host ▸ <name>: a tab on it in the window it was chosen in.
+    @objc func newTabOnSSHHost(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? OpenVMChoice else { return }
+        open(.ssh(choice.name), from: choice.owner)
+    }
+
     func openTab(in vm: RemoteVM) {
         open(.vm(vm.name))
     }
@@ -447,6 +456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             fillTabMenu(menu, owner: (menu as? TerminalTabMenu)?.owner)
             return
         }
+        if menu === sshTabMenu {
+            fillSSHMenu(menu, owner: nil)
+            return
+        }
         guard menu === vmTabMenu else { return }
         fillVMMenu(menu, owner: nil)
     }
@@ -466,6 +479,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         }
     }
 
+    /// Open SSH Host ▸: each SSH host (Virtual Machines › SSH), opened in a
+    /// new tab like a VM.
+    private func fillSSHMenu(_ menu: NSMenu, owner: TerminalWindowController?) {
+        menu.removeAllItems()
+        let hosts = HostAgent.client.sshHosts
+        if hosts.isEmpty {
+            menu.addItem(withTitle: "No SSH hosts", action: nil, keyEquivalent: "").isEnabled = false
+        }
+        for host in hosts {
+            let item = menu.addItem(withTitle: host.config.name, action: #selector(newTabOnSSHHost(_:)), keyEquivalent: "")
+            item.representedObject = OpenVMChoice(name: host.config.name, owner: owner)
+            item.target = self
+        }
+    }
+
     /// A "…" (in a tab or the titlebar): the Shell menu's tab and VM items,
     /// a new tab on `owner`'s VM. Shortcuts stay in the Shell menu.
     private func fillTabMenu(_ menu: NSMenu, owner: TerminalWindowController?) {
@@ -480,6 +508,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let vms = NSMenu(title: "Open VM")
         fillVMMenu(vms, owner: owner)
         menu.addItem(withTitle: "Open VM", action: nil, keyEquivalent: "").submenu = vms
+        let ssh = NSMenu(title: "Open SSH Host")
+        fillSSHMenu(ssh, owner: owner)
+        menu.addItem(withTitle: "Open SSH Host", action: nil, keyEquivalent: "").submenu = ssh
         menu.addItem(.separator())
         add("New Ephemeral VM", #selector(newEphemeralTab(_:)))
         add("New Host Shell (Unisolated)", #selector(newHostTab(_:)))
@@ -558,6 +589,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let inVM = shell.addItem(withTitle: "Open VM", action: nil, keyEquivalent: "")
         vmTabMenu.delegate = self
         inVM.submenu = vmTabMenu
+        let onSSH = shell.addItem(withTitle: "Open SSH Host", action: nil, keyEquivalent: "")
+        sshTabMenu.delegate = self
+        onSSH.submenu = sshTabMenu
         shell.addItem(.separator())
         let eph = shell.addItem(withTitle: "New Ephemeral VM", action: #selector(newEphemeralTab(_:)), keyEquivalent: "t")
         eph.keyEquivalentModifierMask = [.command, .shift]
@@ -671,7 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
 }
 
-/// An Open VM ▸ item: the VM, and the window whose "…" it is in.
+/// An Open VM ▸ or Open SSH Host ▸ item: the VM or SSH host, and the window whose "…" it is in.
 private final class OpenVMChoice: NSObject {
     let name: String
     weak var owner: TerminalWindowController?

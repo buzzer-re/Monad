@@ -389,6 +389,55 @@ final class ForwardManagerTests: XCTestCase {
         }
     }
 
+    /// An SSH host's master (Monad/SSH): started with what lets ssh ask
+    /// Monad, a new ticket each start, and named in what a failure says.
+    func testAnSSHHostsMasterIsStartedWithItsAskpassAndNamedWhenItFails() async {
+        var starts = 0
+        let host = ForwardManager(mux: SSHMux(paths: paths, host: "example.com", options: ["-F", "none"], interactive: true),
+                                  runner: runner, watcher: watcher, clock: clock, target: "the SSH host box")
+        host.masterEnvironment = {
+            starts += 1
+            return ["SSH_ASKPASS_REQUIRE": "force", "MONAD_ASKPASS_TICKET": "ticket-\(starts)"]
+        }
+        let leg = ForwardPlan.Bridge(spec: SSHMux.Spec(flag: "-L", value: "/x/sshfwd-1.sock:127.0.0.1:5432"), guestPort: nil)
+        await host.apply(configured: [], autoForward: AutoForwardSettings(enabled: false), ports: [], bridges: [leg])
+        let start = runner.calls.first { $0.executable == "/bin/sh" }
+        XCTAssertEqual(start?.environment, ["SSH_ASKPASS_REQUIRE": "force", "MONAD_ASKPASS_TICKET": "ticket-1"])
+        XCTAssertEqual(start?.arguments.contains("BatchMode=yes"), false)
+        XCTAssertEqual(host.statuses.map(\.state), [.active])
+        XCTAssertTrue(runner.calls.filter { $0.executable == "/usr/bin/ssh" }.allSatisfy { $0.environment.isEmpty },
+                      "only the start may ask")
+
+        ssh.kill()
+        ssh.masterStartFails = true
+        watcher.exit(100)
+        await assertEventually { host.statuses.map(\.state) != [.active] }
+        XCTAssertEqual(host.statuses.map(\.state),
+                       [.failed("The SSH connection to the SSH host box is not available (no details).")])
+        XCTAssertEqual(starts, 2)
+    }
+
+    /// A socket of Monad's own that the master makes on the Mac: one left
+    /// by a master that died is in the way of the next, and is removed
+    /// before the forward is added. Only a socket is ever removed.
+    func testASocketLeftBehindIsRemovedBeforeItsForwardIsAdded() async throws {
+        let stale = URL(fileURLWithPath: "/tmp/monad-\(UUID().uuidString.prefix(8)).sock")
+        let file = URL(fileURLWithPath: "/tmp/monad-\(UUID().uuidString.prefix(8)).txt")
+        defer {
+            try? FileManager.default.removeItem(at: stale)
+            try? FileManager.default.removeItem(at: file)
+        }
+        try makeSocketFile(at: stale)
+        try Data("keep".utf8).write(to: file)
+        await manager.apply(configured: [], autoForward: AutoForwardSettings(enabled: false), ports: [], bridges: [
+            ForwardPlan.Bridge(spec: SSHMux.Spec(flag: "-L", value: "\(stale.path):127.0.0.1:8000"), guestPort: nil, bindsSocket: stale),
+            ForwardPlan.Bridge(spec: SSHMux.Spec(flag: "-L", value: "\(file.path):127.0.0.1:8001"), guestPort: nil, bindsSocket: file),
+        ])
+        XCTAssertEqual(manager.statuses.map(\.state), [.active, .active])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "keep")
+    }
+
     func testConcurrentAppliesDoNotDuplicateForwards() async {
         async let a: Void = manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 3000)])
         async let b: Void = manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 3000)])

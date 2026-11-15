@@ -49,8 +49,8 @@ Settings › Terminal › Open the tabs of last time (on by default). While it i
 - each terminal window's place on the screen, its tabs in order, its groups (name, colour,
   collapsed) and the tab in front;
 - each tab's panes (the split tree and its shares) and each pane's contexts;
-- for each context the VM by name (or that it is a host shell), the directory its shell is in, and
-  the theme chosen for that tab.
+- for each context the VM by name (or the SSH host, or that it is a host shell), the directory its
+  shell is in, and the theme chosen for that tab.
 
 Nothing a program printed is kept, and no scrollback. Tabs on ephemeral VMs are left out: those
 VMs are discarded when Monad quits. The file is written a second after something in it changes and
@@ -61,8 +61,8 @@ When Monad starts, each saved window opens where it was (in the middle of the sc
 place is on a display that is gone). A tab starts its sessions when it first comes to front, so a
 session with many tabs does not start every VM they are on at once: the tab in front of each
 window starts, the others wait. A VM's shell starts with `cd <directory>` and then the login shell
-(the home folder if the directory is gone); a host shell starts in the directory while it is still
-a folder on the Mac.
+(the home folder if the directory is gone); a tab on an SSH host does the same on the server
+(docs/SSH.md); a host shell starts in the directory while it is still a folder on the Mac.
 
 ### Where a shell is
 
@@ -81,7 +81,8 @@ Mac knows its directory.
 ### What the file is trusted with
 
 The directories in it came from guests (OSC 7), so the file is read as untrusted
-(`SavedSession.sanitized`, `SavedSessionTests`): VM names must look like names, directories must
-be absolute, printable and at most 4096 bytes, a pane tree must hold together, and windows, tabs
-and contexts are bounded; what does not fit is left out. A directory is only ever passed quoted to
-the VM that the tab is on, or checked to be a folder before a host shell starts there.
+(`SavedSession.sanitized`, `SavedSessionTests`): VM and SSH host names must look like names,
+directories must be absolute, printable and at most 4096 bytes, a pane tree must hold together, and
+windows, tabs and contexts are bounded; what does not fit is left out. A directory is only ever
+passed quoted to the VM or SSH host that the tab is on, or checked to be a folder before a host
+shell starts there.

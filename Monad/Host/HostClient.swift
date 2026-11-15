@@ -117,6 +117,10 @@ final class HostClient: ObservableObject {
     @Published private(set) var approvals: [ApprovalRequest] = []
     /// What is written on the canvas (MonadHost's, kept up to date).
     @Published private(set) var notes: [CanvasNote] = []
+    /// The SSH hosts (MonadHost's, kept up to date), by name.
+    @Published private(set) var sshHosts: [SSHHostSnapshot] = []
+    /// ssh's questions waiting for the user (SSHAskpass).
+    @Published private(set) var sshPrompts: [SSHPromptRequest] = []
     /// The host's order of the persistent VMs (empty from an older host).
     private var order: [String] = []
     /// The default VM (Make Default; the top one until one is chosen). An
@@ -294,6 +298,9 @@ final class HostClient: ObservableObject {
                 if let snap = r.instance { upsert(snap) }
             }
         }
+        if !hostIsOutdated, let r = try? await roundTrip(HostRequest(id: takeID(), op: .sshHosts), on: t), r.ok {
+            setSSHHosts(r.sshHosts ?? [])
+        }
         guard transport === t else { throw HostClientError.unavailable }
         status = .connected
         Log.host.notice("connected to MonadHost")
@@ -463,6 +470,8 @@ final class HostClient: ObservableObject {
         case .defaultVM(let name):
             hostSaysDefault = true
             defaultName = name.flatMap { InstanceConfig.isValidName($0) ? $0 : nil }
+        case .sshHosts(let list): setSSHHosts(list)
+        case .sshPrompts(let list): sshPrompts = Array(list.prefix(SSHPrompts.maxPending))
         }
     }
 
@@ -740,6 +749,84 @@ final class HostClient: ObservableObject {
 
     func removeNote(_ id: String) async throws {
         setNotes(try await request(.removeNote) { $0.noteID = id }.notes ?? [])
+    }
+
+    // MARK: SSH hosts
+
+    /// The host's SSH hosts, as far as they pass their checks.
+    private func setSSHHosts(_ list: [SSHHostSnapshot]) {
+        let checked = Array(list.filter { (try? $0.config.validate()) != nil }.prefix(SSHHost.maxHosts))
+        if checked != sshHosts { sshHosts = checked }
+    }
+
+    func sshHost(named name: String) -> SSHHostSnapshot? { sshHosts.first { $0.config.name == name } }
+
+    /// An SSH host op, and the mirror brought up to date with its answer.
+    @discardableResult
+    private func sshRequest(_ op: HostRequest.Op, name: String? = nil,
+                            edit: (inout HostRequest) -> Void = { _ in }) async throws -> HostResponse {
+        guard !hostIsOutdated else {
+            throw MonadError("The VM service is from an older Monad and has no SSH hosts yet. "
+                + "It is updated once no VM is running.")
+        }
+        let r = try await request(op, name: name, edit: edit)
+        if let list = r.sshHosts { setSSHHosts(list) }
+        return r
+    }
+
+    /// The SSH host called `name`, once connected.
+    func existingSSHHost(_ name: String) async throws -> SSHHostSnapshot {
+        try await connected()
+        if let known = sshHost(named: name) { return known }
+        // The mirror may be a moment behind (a host just added elsewhere).
+        try await sshRequest(.sshHosts)
+        guard let host = sshHost(named: name) else { throw MonadError("No SSH host named \(name).") }
+        return host
+    }
+
+    /// Adds an SSH host or changes the one of this name. `password`, typed
+    /// by the user, goes to MonadHost for the Keychain.
+    func saveSSHHost(_ host: SSHHost, password: String?) async throws {
+        try await sshRequest(.setSSHHost) {
+            $0.sshHost = host
+            $0.secret = password
+        }
+    }
+
+    func removeSSHHost(_ name: String) async throws {
+        try await sshRequest(.removeSSHHost, name: name)
+    }
+
+    func forgetSSHPassword(_ name: String) async throws {
+        try await sshRequest(.forgetSSHPassword, name: name)
+    }
+
+    /// Monad's key onto the server (ssh-copy-id). It waits for the user's
+    /// answers to what the server asks, so it may take minutes.
+    func installSSHKey(_ name: String) async throws {
+        try await sshRequest(.installSSHKey, name: name)
+    }
+
+    /// The host's forwards tried again.
+    func connectSSHHost(_ name: String) async throws {
+        try await sshRequest(.connectSSHHost, name: name)
+    }
+
+    /// A ticket for one ssh this app starts to the host (SSHAskpass.environment).
+    func sshTicket(_ name: String) async throws -> String {
+        guard let ticket = try await sshRequest(.sshTicket, name: name).ticket else {
+            throw HostClientError.unexpectedResponse
+        }
+        return ticket
+    }
+
+    /// The user's answer to a question of ssh's (nil: cancelled).
+    func answerSSHPrompt(_ id: UUID, secret: String?, remember: Bool) async throws {
+        try await sshRequest(.answerSSHPrompt) {
+            $0.promptID = id
+            $0.secret = secret
+            $0.remember = remember
+        }
     }
 
     func stopAll() async throws {

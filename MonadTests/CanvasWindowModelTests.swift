@@ -1,8 +1,9 @@
 //
-//  CanvasWindowModelTests.swift — the canvas window: making a VM or a
-//  network opens one sheet at a time (two sheet modifiers on one view do
-//  not both present on macOS, and New did nothing), for the network under
-//  the pointer.
+//  CanvasWindowModelTests.swift — the canvas window: making a VM, a
+//  network or an SSH host opens one sheet at a time (two sheet modifiers
+//  on one view do not both present on macOS, and New did nothing), for the
+//  network under the pointer; a VM or an SSH host is selected, never both;
+//  and what goes through an SSH host is listed by VM.
 //
 
 import XCTest
@@ -24,6 +25,10 @@ final class CanvasWindowModelTests: XCTestCase {
                        "outside every network: the default one")
         c.editNetwork("lab", at: .zero)
         XCTAssertEqual(c.sheet, .network(editing: "lab", at: .zero))
+        c.makeSSHHost(at: CGPoint(x: 3, y: 4))
+        XCTAssertEqual(c.sheet, .sshHost(editing: nil, at: CGPoint(x: 3, y: 4)))
+        c.editSSHHost("box")
+        XCTAssertEqual(c.sheet, .sshHost(editing: "box", at: .zero))
         c.sheet = nil
         XCTAssertNil(c.sheet)
     }
@@ -124,6 +129,29 @@ final class CanvasWindowModelTests: XCTestCase {
         c.selected = "web"
         c.deleteSelection()
         XCTAssertEqual(c.deleting, "web", "asked, not deleted")
+        // An SSH host is selected in the VM's place, and Delete leaves it
+        // (it is removed in Virtual Machines › SSH hosts).
+        c.deleting = nil
+        c.selectedSSHHost = "box"
+        XCTAssertNil(c.selected, "one inspector at a time")
+        XCTAssertFalse(c.hasSelection)
+        c.deleteSelection()
+        XCTAssertNil(c.deleting)
+        c.selected = "web"
+        XCTAssertNil(c.selectedSSHHost)
+    }
+
+    /// An SSH host's inspector: the forwards through it, by VM, off ones too.
+    func testWhatGoesThroughAnSSHHostIsListedByVM() {
+        let db = SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remotePort: 5432)
+        let site = SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 8000, remotePort: 18000, enabled: false)
+        var web = InstanceConfig.defaults(name: "web")
+        web.sshForwards = [db, SSHForward(sshHost: "other", direction: .intoVM, guestPort: 2222, remotePort: 22), site]
+        var api = InstanceConfig.defaults(name: "api")
+        api.sshForwards = [db]
+        XCTAssertEqual(SSHLinks.list([web, InstanceConfig.defaults(name: "quiet"), api], host: "box"),
+                       [SSHLinks.Entry(vm: "api", forwards: [db]), SSHLinks.Entry(vm: "web", forwards: [db, site])])
+        XCTAssertEqual(SSHLinks.list([web], host: "ghost"), [])
     }
 
     /// This Mac's Show Forwards: every link between the Mac and the VMs, by

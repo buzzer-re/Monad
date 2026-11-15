@@ -19,7 +19,8 @@ final class CanvasNotesTests: XCTestCase {
         m.update(vms: [CanvasVM(name: "web", network: "lab", running: true, linksToMac: false),
                        CanvasVM(name: "db", network: "lab", running: true, linksToMac: false),
                        CanvasVM(name: "box", network: "dirty", running: false, linksToMac: false)],
-                 networks: [CanvasNetwork(name: "lab", kind: .nat), CanvasNetwork(name: "dirty", kind: .internal)])
+                 networks: [CanvasNetwork(name: "lab", kind: .nat), CanvasNetwork(name: "dirty", kind: .internal)],
+                 sshHosts: ["bastion"])
         return m
     }
 
@@ -32,10 +33,14 @@ final class CanvasNotesTests: XCTestCase {
         drawn.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
         var ink = note(.ink, "")
         ink.points = [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 4)]
+        var onHosts = note(.zone, "Production")
+        onHosts.around = ["ssh:bastion", "vm:web"]
         for good in [note(.note, "**Detonation** box, no internet"), note(.note, "pinned", on: "vm:box"),
                      note(.label, "isolated", on: "net:dirty"), note(.label, "C2", on: "vm:web"),
                      note(.arrow, "logs", on: "vm:box", to: "vm:web"), note(.arrow, "", on: "note:b2", to: "internet"),
-                     note(.arrow, "", on: "mac", to: "net:lab"), zone, drawn, ink] {
+                     note(.arrow, "", on: "mac", to: "net:lab"), zone, drawn, ink,
+                     note(.note, "the jump box", on: "ssh:bastion"), note(.label, "prod", on: "ssh:bastion"),
+                     note(.arrow, "deploys", on: "vm:web", to: "ssh:bastion"), onHosts] {
             XCTAssertNoThrow(try good.validate(), "\(good)")
         }
         var bad: [(CanvasNote, String)] = [
@@ -46,6 +51,7 @@ final class CanvasNotesTests: XCTestCase {
             (note(.label, "x", on: "note:a2"), "a label is on a VM or a network"),
             (note(.arrow, on: "vm:web"), "an arrow goes somewhere"),
             (note(.arrow, on: "vm:Bad Name", to: "vm:web"), "not a VM name"),
+            (note(.arrow, on: "ssh:Bad Name", to: "vm:web"), "not an SSH host's name"),
             (note(.arrow, on: "disk:web", to: "vm:web"), "not a kind of thing"),
             (note(.arrow, on: "vm:web", to: "vm:web"), "to itself"),
             (note(.note, String(repeating: "x", count: CanvasNote.maxText + 1)), "too long"),
@@ -94,10 +100,13 @@ final class CanvasNotesTests: XCTestCase {
         XCTAssertEqual(CanvasRef("mac"), .mac)
         XCTAssertEqual(CanvasRef("internet"), .internet)
         XCTAssertNil(CanvasRef("web"))
-        XCTAssertEqual(CanvasRef.resolve("web", vms: ["web"], networks: ["lab"]), "vm:web")
-        XCTAssertEqual(CanvasRef.resolve("lab", vms: ["web"], networks: ["lab"]), "net:lab")
-        XCTAssertEqual(CanvasRef.resolve("net:lab", vms: [], networks: []), "net:lab")
-        XCTAssertNil(CanvasRef.resolve("ghost", vms: ["web"], networks: ["lab"]))
+        XCTAssertEqual(CanvasRef("ssh:bastion"), .ssh("bastion"))
+        XCTAssertNil(CanvasRef("ssh:-oProxyCommand=x"), "a name, never an ssh option")
+        XCTAssertEqual(CanvasRef.resolve("web", vms: ["web"], networks: ["lab"], sshHosts: ["web"]), "vm:web", "a VM first")
+        XCTAssertEqual(CanvasRef.resolve("lab", vms: ["web"], networks: ["lab"], sshHosts: []), "net:lab")
+        XCTAssertEqual(CanvasRef.resolve("net:lab", vms: [], networks: [], sshHosts: []), "net:lab")
+        XCTAssertEqual(CanvasRef.resolve("bastion", vms: ["web"], networks: ["lab"], sshHosts: ["bastion"]), "ssh:bastion")
+        XCTAssertNil(CanvasRef.resolve("ghost", vms: ["web"], networks: ["lab"], sshHosts: ["bastion"]))
     }
 
     // MARK: Keeping them
@@ -129,12 +138,14 @@ final class CanvasNotesTests: XCTestCase {
         lone.around = ["vm:box"]
         let notes = [note(.label, "x", id: "l1", on: "vm:box"), note(.label, "y", id: "l2", on: "vm:web"),
                      note(.arrow, "", id: "r1", on: "vm:web", to: "vm:box"), note(.note, "p", id: "n1", on: "vm:box"),
-                     note(.arrow, "", id: "r2", on: "note:n1", to: "vm:web"), zone, lone]
+                     note(.arrow, "", id: "r2", on: "note:n1", to: "vm:web"), zone, lone,
+                     note(.label, "prod", id: "l3", on: "ssh:box"), note(.arrow, "", id: "r3", on: "vm:web", to: "ssh:box")]
         let after = CanvasNote.forget("vm:box", in: notes)
-        XCTAssertEqual(after.map(\.id), ["l2", "n1", "r2", "z1"])
+        XCTAssertEqual(after.map(\.id), ["l2", "n1", "r2", "z1", "l3", "r3"], "an SSH host named the same keeps its own")
+        XCTAssertEqual(CanvasNote.forget("ssh:box", in: after).map(\.id), ["l2", "n1", "r2", "z1"], "an SSH host's go with it")
         XCTAssertNil(after.first { $0.id == "n1" }?.on, "unpinned")
         XCTAssertEqual(after.first { $0.id == "z1" }?.around, ["vm:web"])
-        XCTAssertEqual(CanvasNote.forget("note:n1", in: after).map(\.id), ["l2", "z1"], "arrows to a note go with it")
+        XCTAssertEqual(CanvasNote.forget("note:n1", in: after).map(\.id), ["l2", "z1", "l3", "r3"], "arrows to a note go with it")
     }
 
     func testInkIsSimplified() {
@@ -149,7 +160,7 @@ final class CanvasNotesTests: XCTestCase {
     // MARK: On the canvas
 
     func testThingsHaveAPlace() throws {
-        let m = model()
+        var m = model()
         let web = try XCTUnwrap(m.rect(of: "vm:web"))
         XCTAssertEqual(web.size, CanvasModel.node)
         XCTAssertEqual(m.rect(of: "net:lab"), m.frame("lab"))
@@ -157,6 +168,14 @@ final class CanvasNotesTests: XCTestCase {
         XCTAssertNotNil(m.rect(of: "internet"))
         XCTAssertNil(m.rect(of: "vm:ghost"))
         XCTAssertNil(m.rect(of: "net:gone"))
+        XCTAssertEqual(m.rect(of: "ssh:bastion"), m.rect(ofSSHHost: "bastion"))
+        XCTAssertNil(m.rect(of: "ssh:gone"))
+        // A free note keeps clear of an SSH host put where it would go.
+        let free = [note(.note, "free", id: "f1")]
+        let before = try XCTUnwrap(CanvasNotesLayout.place(free, in: m)["f1"])
+        m.moveSSHHost("bastion", to: CGPoint(x: before.midX, y: before.midY))
+        let after = try XCTUnwrap(CanvasNotesLayout.place(free, in: m)["f1"])
+        XCTAssertFalse(after.intersects(try XCTUnwrap(m.rect(ofSSHHost: "bastion"))))
     }
 
     /// A note without a place of its own sits beside what it is pinned to

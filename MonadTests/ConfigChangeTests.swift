@@ -39,6 +39,7 @@ final class ConfigChangeTests: XCTestCase {
     func testLiveSettingsNeedNoRestart() {
         let new = edited {
             $0.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)]
+            $0.sshForwards = [SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remotePort: 5432)]
             $0.autoForward.enabled = false
             $0.memoryTargetGiB = 1
             $0.theme = "Ocean"
@@ -48,6 +49,7 @@ final class ConfigChangeTests: XCTestCase {
         }
         XCTAssertEqual(ConfigChange.restartOnly(from: base, to: new), [])
         XCTAssertTrue(ConfigChange.all(from: base, to: new).contains("start at boot"))
+        XCTAssertTrue(ConfigChange.all(from: base, to: new).contains("SSH forwards"))
         XCTAssertTrue(ConfigChange.all(from: base, to: new).contains("inline images"))
         XCTAssertEqual(ConfigChange.fixed(from: base, to: new), [])
     }

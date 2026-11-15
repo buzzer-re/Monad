@@ -9,8 +9,10 @@ import os
 // MARK: Helper processes
 
 protocol CommandRunning: Sendable {
-    func run(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) async throws
-        -> ProcessRunner.Result
+    /// `environment`: variables added to the helper's minimal environment
+    /// (ProcessRunner.baseEnvironment).
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], stdin: Data?,
+             timeout: TimeInterval) async throws -> ProcessRunner.Result
     /// Like run, and each line of output (stdout and stderr) goes to
     /// `onLine` as it comes.
     func stream(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval,
@@ -18,6 +20,11 @@ protocol CommandRunning: Sendable {
 }
 
 extension CommandRunning {
+    func run(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) async throws
+        -> ProcessRunner.Result {
+        try await run(executable, arguments, environment: [:], stdin: stdin, timeout: timeout)
+    }
+
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 60) async throws -> ProcessRunner.Result {
         try await run(executable, arguments, stdin: nil, timeout: timeout)
     }
@@ -36,9 +43,9 @@ extension CommandRunning {
 }
 
 struct SystemCommandRunner: CommandRunning {
-    func run(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval) async throws
-        -> ProcessRunner.Result {
-        try await ProcessRunner.run(executable, arguments, stdin: stdin, timeout: timeout)
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], stdin: Data?,
+             timeout: TimeInterval) async throws -> ProcessRunner.Result {
+        try await ProcessRunner.run(executable, arguments, environment: environment, stdin: stdin, timeout: timeout)
     }
 
     func stream(_ executable: String, _ arguments: [String], stdin: Data?, timeout: TimeInterval,
@@ -352,6 +359,9 @@ struct VMEnvironment {
     var disksAttachWhileRunning = false
     /// Asks the app for the setup's admin prompt (HostService); nil: no app.
     var macSetup: MacSetupAuthorizing?
+    /// The SSH hosts' side of this VM's forwards through them (SSHForward);
+    /// nil: none are carried.
+    var sshLegs: SSHLegApplying? = nil
     /// monad-guestd, copied into macOS guests: this MonadHost.
     var guestdBinary: URL? = Bundle.main.executableURL
     /// A bridge's server on the Mac (Phase 12).
@@ -379,6 +389,7 @@ struct VMEnvironment {
                                 virtualizationSupported: MNDVirtualMachine.isSupported(), networks: NetdSupervisor.shared)
         env.allowsMacGuests = GuestOS.ready.contains(.macos)
         env.disksAttachWhileRunning = MNDVirtualMachine.canAttachDisksWhileRunning()
+        env.sshLegs = SSHHostManager.shared
         return env
     }
 }

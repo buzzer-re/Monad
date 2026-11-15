@@ -30,7 +30,7 @@ enum TabRouting {
         switch focused.target {
         case .ephemeralVM: return focused.vm.map { .vm($0) }
         case .defaultVM: return focused.vm.map { .vm($0) } ?? .defaultVM
-        case .vm, .host: return focused.target
+        case .vm, .host, .ssh: return focused.target
         }
     }
 
@@ -68,6 +68,7 @@ enum TabRouting {
         case .host: return "New Host Shell Tab"
         case .defaultVM: return "New Tab in \(focused?.vm ?? defaultVM ?? VMManager.defaultName)"
         case .vm(let name): return "New Tab in \(name)"
+        case .ssh(let name): return "New Tab on \(name)"
         case .ephemeralVM: return focused?.vm.map { "New Tab in \($0)" } ?? "New Tab"
         }
     }

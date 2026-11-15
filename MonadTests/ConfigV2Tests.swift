@@ -296,6 +296,42 @@ final class ConfigV2Tests: XCTestCase {
         assertInvalid(c, .hostAddress("example.com"))
     }
 
+    /// Forwards through SSH hosts (Monad/SSH): kept, written only when
+    /// there are some (so files without them stay as they were, and a
+    /// Monad from before them still loads the VM), and checked.
+    func testForwardsThroughSSHHosts() throws {
+        var c = valid()
+        XCTAssertFalse(String(decoding: try c.encoded(), as: UTF8.self).contains("sshForwards"))
+        XCTAssertEqual(try InstanceConfig.decode(c.encoded()).sshForwards, [])
+        let db = SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remoteHost: "db.internal", remotePort: 5432)
+        let web = SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 8000, remotePort: 18000, enabled: false)
+        c.sshForwards = [db, web]
+        XCTAssertNoThrow(try c.validate(maxCPUs: 8, maxMemoryGiB: 16))
+        XCTAssertEqual(try InstanceConfig.decode(c.encoded()), c)
+
+        c.sshForwards = [SSHForward(sshHost: "box", direction: .intoVM, guestPort: 80, remotePort: 80)]
+        assertInvalid(c, .sshForward("The port in the VM is from 1024 to 65535."))
+        c.sshForwards = [SSHForward(sshHost: "box", direction: .intoVM, guestPort: 5432, remoteHost: "db:1", remotePort: 5432)]
+        assertInvalid(c, .sshForward("“db:1” is not a host name or address."))
+        c.sshForwards = (0...SSHForward.maxPerVM).map {
+            SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 8000 + $0, remotePort: 8000 + $0)
+        }
+        assertInvalid(c, .tooManySSHForwards)
+
+        // One port in the VM has one listener: sshd for a forward, a bridge or another forward.
+        c.sshForwards = [db, SSHForward(sshHost: "other", direction: .intoVM, guestPort: 5432, remotePort: 3306)]
+        assertInvalid(c, .duplicateGuestEndpoint("127.0.0.1:5432"))
+        c.sshForwards = [db]
+        c.forwards = [ForwardRule(kind: .remote, hostPort: 5432, guestPort: 5432)]
+        assertInvalid(c, .duplicateGuestEndpoint("127.0.0.1:5432"))
+        c.forwards = []
+        c.bridges = [CommandBridge(name: "cat", command: ["/bin/cat"], guestPort: 5432)]
+        assertInvalid(c, .duplicateGuestEndpoint("127.0.0.1:5432"))
+        c.bridges = []
+        c.sshForwards = [db, SSHForward(sshHost: "box", direction: .ontoHost, guestPort: 5432, remotePort: 15432)]
+        XCTAssertNoThrow(try c.validate(maxCPUs: 8, maxMemoryGiB: 16), "a VM port offered on the server listens nowhere in the VM")
+    }
+
     /// A VM port or SOCKS proxy on any Mac address but the loopback can be
     /// reached by other computers: that, like a forward into the Mac, is
     /// asked for. Where a forward into the Mac connects, or a socket, is not.

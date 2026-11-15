@@ -1,6 +1,7 @@
 //
 //  TerminalSessionViewController.swift — one tab: a terminal view connected
-//  to a shell inside a VM (via ssh over vsock) or, optionally, on the host.
+//  to a shell inside a VM (via ssh over vsock), on an SSH host (Monad/SSH)
+//  or, optionally, on the host.
 //
 
 import AppKit
@@ -14,6 +15,8 @@ enum SessionTarget: Equatable {
     case ephemeralVM
     case vm(String)
     case host
+    /// An SSH host (Monad/SSH), by name.
+    case ssh(String)
 }
 
 @MainActor
@@ -146,6 +149,7 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         case .defaultVM: return hostClient.defaultVM?.name ?? VMManager.defaultName
         case .ephemeralVM: return "ephemeral"
         case .vm(let name): return name
+        case .ssh(let name): return name
         case .host: return "host"
         }
     }
@@ -157,10 +161,10 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
                                                object: nil)
         refreshTheme()
         updateTitle()
-        if target == .host {
-            connectHost()
-        } else {
-            attachVM()
+        switch target {
+        case .host: connectHost()
+        case .ssh(let name): connectSSH(name)
+        case .defaultVM, .ephemeralVM, .vm: attachVM()
         }
     }
 
@@ -225,6 +229,7 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         case .defaultVM: return try await hostClient.ensureDefault()
         case .ephemeralVM: return try await hostClient.createEphemeral()
         case .vm(let name): return try await hostClient.existing(name)
+        case .ssh: throw MonadError("SSH hosts have no VM.")
         case .host: throw MonadError("Host shells have no VM.")
         }
     }
@@ -450,9 +455,71 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
 
     /// ssh's argv for a VM's shell. In `directory`: a command in a terminal,
     /// into it (the home folder if it is gone) and then the login shell.
-    nonisolated static func sshCommand(options: [String], host: String, startIn directory: String?) -> [String] {
+    /// `throughSh`: a server's login shell may not be a POSIX one.
+    nonisolated static func sshCommand(options: [String], host: String, startIn directory: String?,
+                                       throughSh: Bool = false) -> [String] {
         guard let directory else { return ["ssh"] + options + [host] }
-        return ["ssh"] + options + ["-t", host, "cd \(ShellQuote.quote(directory)) 2>/dev/null; exec \"$SHELL\" -l"]
+        let command = "cd \(ShellQuote.quote(directory)) 2>/dev/null; exec \"$SHELL\" -l"
+        return ["ssh"] + options + ["-t", host, throughSh ? "sh -c " + ShellQuote.quote(command) : command]
+    }
+
+    // MARK: SSH hosts
+
+    /// A shell on an SSH host: ssh with the host's options (never a config
+    /// file), and Monad as its askpass, so the host key, a password or a
+    /// passphrase are asked in Monad's panel and never in this tab. Each tab
+    /// is its own connection, like VM tabs (a server's MaxSessions would cap
+    /// the tabs of a shared one).
+    private func connectSSH(_ name: String) {
+        debug("connecting to the SSH host")
+        phase = .waiting
+        status("Connecting to SSH host \u{1B}[1m\(name)\u{1B}[22m…")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var snap = try await self.hostClient.existingSSHHost(name)
+                if snap.config.auth == .generated && !snap.config.keyInstalled {
+                    self.status("Installing Monad's key on \(name). Monad asks in a panel of its own for what the server needs.")
+                    try await self.hostClient.installSSHKey(name)
+                    snap = try await self.hostClient.existingSSHHost(name)
+                }
+                let ticket = try await self.hostClient.sshTicket(name)
+                guard !self.closed else { return }
+                let jump = snap.config.jump.flatMap { self.hostClient.sshHost(named: $0)?.config }
+                let cmd = PTYSession.Command(
+                    executable: "/usr/bin/ssh",
+                    arguments: Self.sshCommand(options: SSHHost.sshArguments(snap.config, jump: jump) + ["-o", "ControlPath=none"],
+                                               host: snap.config.host, startIn: self.startDirectory, throughSh: true),
+                    environment: Self.environment().merging(SSHAskpass.environment(ticket: ticket)) { _, new in new },
+                    directory: Paths.home.path)
+                // Only the first shell: one connected again starts at home.
+                self.startDirectory = nil
+                self.spawn(cmd)
+            } catch {
+                guard !self.closed else { return }
+                self.debug("could not connect: \(error.localizedDescription)")
+                self.error(HostAgent.describe(error))
+                self.status("Press Return to retry.")
+                self.phase = .exited
+                self.updateTitle()
+            }
+        }
+    }
+
+    /// Where this tab's uploads go (a dropped file, a pasted picture): its
+    /// VM, or its SSH host over a connection of its own for each upload.
+    /// nil while it is not connected.
+    private func uploadTarget() async throws -> (target: SSHTarget, name: String)? {
+        guard phase == .connected else { return nil }
+        if let vm { return (vm.sshTarget, vm.name) }
+        guard case .ssh(let name) = target else { return nil }
+        let snap = try await hostClient.existingSSHHost(name)
+        let jump = snap.config.jump.flatMap { hostClient.sshHost(named: $0)?.config }
+        var environment = SSHAskpass.environment(ticket: try await hostClient.sshTicket(name))
+        // A host that signs in with ssh's own keys may need the agent.
+        if let agent = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] { environment["SSH_AUTH_SOCK"] = agent }
+        return (SSHTarget(options: SSHHost.sshArguments(snap.config, jump: jump) + ["-o", "ControlPath=none"],
+                          host: snap.config.host, environment: environment, batch: false, throughSh: true), name)
     }
 
     /// The path of a shell's OSC 7 URL (file://host/path), percent-decoded
@@ -491,6 +558,8 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         }
     }
 
+        case .ssh(let name):
+            return SavedSession.Context(kind: .ssh, vm: name, directory: directory, theme: themeOverride)
     /// The session target a saved context opens.
     nonisolated static func target(of context: SavedSession.Context) -> SessionTarget {
         switch context.kind {
@@ -503,6 +572,7 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
     // MARK: Host sessions
 
     /// Where a host shell starts: `directory` while it is a folder on this
+        case .ssh: return context.vm.map { .ssh($0) } ?? .defaultVM
     /// Mac, else the home folder.
     nonisolated static func hostDirectory(_ directory: String?, home: String = Paths.home.path) -> String {
         var isFolder: ObjCBool = false
@@ -663,6 +733,9 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         updateTitle()
     }
 
+        } else if case .ssh(let name) = target, code == 255 {
+            // An SSH tab never signs in again by itself: Return asks for it.
+            error("Connection to \(name) failed or was lost.")
     private func reconnect() {
         if target == .host {
             connectHost()
@@ -674,6 +747,10 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
         }
         phase = .waiting
         if vm.state == .ready {
+        if case .ssh(let name) = target {
+            connectSSH(name)
+            return
+        }
             connectVM(vm)
         } else {
             status("Starting VM \(vm.name)…")
@@ -768,50 +845,54 @@ final class TerminalSessionViewController: NSViewController, TerminalViewDelegat
 
     func terminalView(_ view: MonadTerminalView, receivedImages images: [ImagePayload]) -> Bool {
         guard target != .host else { return false }
-        guard let vm, phase == .connected else {
+        guard phase == .connected else {
             view.showToast("Not connected to \(displayName)")
             return true
         }
-        view.showToast(images.count == 1 ? "Uploading image to \(vm.name)…" : "Uploading \(images.count) images…")
+        let name = displayName
+        view.showToast(images.count == 1 ? "Uploading image to \(name)…" : "Uploading \(images.count) images…")
         Task { @MainActor in
             var paths: [String] = []
-            for img in images {
-                do {
+            do {
+                guard let to = try await uploadTarget() else { return view.showToast("Not connected to \(name)") }
+                for img in images {
                     paths.append(try await FileUploader.upload(img.png, name: img.suggestedName,
-                                                               directory: .screenshots, to: vm.sshTarget))
-                } catch {
-                    view.showToast("Upload failed: \(error.localizedDescription)", duration: 5)
-                    return
+                                                               directory: .screenshots, to: to.target))
                 }
             }
             view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
-            view.showToast(paths.count == 1 ? "Image copied into \(vm.name)" : "\(paths.count) images copied")
+            view.showToast(paths.count == 1 ? "Image copied into \(name)" : "\(paths.count) images copied")
         }
         return true
     }
+            } catch {
+                view.showToast("Upload failed: \(error.localizedDescription)", duration: 5)
+                return
 
     func terminalView(_ view: MonadTerminalView, receivedFiles urls: [URL]) -> Bool {
         guard target != .host else { return false }
-        guard let vm, phase == .connected else {
+        guard phase == .connected else {
             view.showToast("Not connected to \(displayName)")
             return true
         }
-        view.showToast("Copying \(urls.count) file(s) into \(vm.name)…")
+        let name = displayName
+        view.showToast("Copying \(urls.count) file(s) into \(name)…")
         Task { @MainActor in
             var paths: [String] = []
-            for url in urls {
-                do {
-                    paths.append(try await FileUploader.uploadFile(url, to: vm.sshTarget))
-                } catch {
-                    view.showToast("Copy failed: \(error.localizedDescription)", duration: 5)
-                    return
+            do {
+                guard let to = try await uploadTarget() else { return view.showToast("Not connected to \(name)") }
+                for url in urls {
+                    paths.append(try await FileUploader.uploadFile(url, to: to.target))
                 }
             }
             view.pasteText(paths.map(ShellQuote.quote).joined(separator: " ") + " ")
-            view.showToast("Copied into \(vm.name):~/.monad/uploads")
+            view.showToast("Copied into \(name):~/.monad/uploads")
         }
         return true
     }
+            } catch {
+                view.showToast("Copy failed: \(error.localizedDescription)", duration: 5)
+                return
 }
 
 /// Follows a growing file (the VM serial console log).

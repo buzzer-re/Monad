@@ -89,6 +89,15 @@ struct HostRequest: Codable, Equatable, Sendable {
         case openDesktop     // name: a macOS VM's desktop in a window (shown by the host) → instance
         case clone           // name, config, snapshot?: a copy of the stopped VM `name` (or of its snapshot) → instance
         case repairDisk      // name: Repair Disk on the stopped Linux VM (minutes) → instance, message: what it did
+        case sshHosts        // → sshHosts: the SSH hosts (Monad/SSH)
+        case setSSHHost      // sshHost, secret? (its password, for the Keychain): added or changed → sshHosts
+        case removeSSHHost   // name → sshHosts
+        case forgetSSHPassword // name: its password leaves the Keychain → sshHosts
+        case installSSHKey   // name: Monad's key onto the server with ssh-copy-id (waits for the user's answers) → sshHosts
+        case connectSSHHost  // name: its forwards tried again → sshHosts
+        case sshTicket       // name: for one ssh the app starts to that host (SSHAskpass) → ticket
+        case askSSH          // ticket, prompt, promptHint?: one ssh question, from the askpass helper → secret
+        case answerSSHPrompt // promptID, secret? (absent: cancelled), remember?: the user answered a question of ssh's
     }
 
     var id: UInt64
@@ -115,6 +124,18 @@ struct HostRequest: Codable, Equatable, Sendable {
     var macSetupError: String?
     /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot, clone: its id.
     var snapshot: String?
+    /// setSSHHost: the host.
+    var sshHost: SSHHost?
+    /// setSSHHost: a typed password; answerSSHPrompt: the answer. Never logged.
+    var secret: String?
+    /// askSSH: what lets the helper ask (SSHTickets).
+    var ticket: String?
+    /// askSSH: ssh's prompt and its hint (SSH_ASKPASS_PROMPT).
+    var prompt: String?
+    var promptHint: String?
+    /// answerSSHPrompt: the question, and whether to keep a password in the Keychain.
+    var promptID: UUID?
+    var remember: Bool?
 
     init(id: UInt64, op: Op, name: String? = nil, force: Bool? = nil, config: InstanceConfig? = nil,
          version: Int? = nil, firewallAnswer: FirewallAnswer? = nil, profiles: [String]? = nil, names: [String]? = nil,
@@ -200,6 +221,25 @@ struct HostRequest: Codable, Equatable, Sendable {
             try note.validate()
         case .removeNote:
             guard let noteID, CanvasNote.isID(noteID) else { throw HostProtocolError.invalid("removeNote needs a note's id.") }
+        case .sshHosts:
+            break
+        case .removeSSHHost, .forgetSSHPassword, .installSSHKey, .connectSSHHost, .sshTicket:
+            guard let name, SSHHost.isValidName(name) else {
+                throw HostProtocolError.invalid("\(op.rawValue) needs a valid SSH host name.")
+            }
+        case .setSSHHost:
+            guard let sshHost else { throw HostProtocolError.invalid("setSSHHost needs an SSH host.") }
+            try sshHost.validate()
+        case .askSSH:
+            guard let ticket, SSHAskpass.isTicket(ticket), let prompt, prompt.utf8.count <= SSHAskpass.maxPromptBytes,
+                  (promptHint ?? "").utf8.count <= 64 else {
+                throw HostProtocolError.invalid("askSSH needs a ticket and a prompt.")
+            }
+        case .answerSSHPrompt:
+            guard promptID != nil else { throw HostProtocolError.invalid("answerSSHPrompt needs a question.") }
+        }
+        if let secret, !SSHAskpass.isAnswerable(secret) {
+            throw HostProtocolError.invalid("A secret is one line of at most \(SSHAskpass.maxSecretBytes) bytes.")
         }
     }
 }
@@ -235,6 +275,12 @@ struct HostResponse: Codable, Equatable, Sendable {
     var defaultVM: String?
     /// repairDisk: what it did, in a few sentences.
     var message: String?
+    /// The SSH host ops: every SSH host.
+    var sshHosts: [SSHHostSnapshot]?
+    /// sshTicket: the ticket.
+    var ticket: String?
+    /// askSSH: the answer for ssh.
+    var secret: String?
 
     init(id: UInt64, version: Int? = nil, instance: VMSnapshot? = nil, instances: [VMSnapshot]? = nil) {
         self.id = id
@@ -382,11 +428,15 @@ enum HostEvent: Equatable, Sendable {
     case notes([CanvasNote])
     /// The default VM changed (nil: there is no VM).
     case defaultVM(String?)
+    /// The SSH hosts (all of them, each time one changes).
+    case sshHosts([SSHHostSnapshot])
+    /// ssh's questions waiting for the user (all of them, each time).
+    case sshPrompts([SSHPromptRequest])
 }
 
 extension HostEvent: Codable {
-    private enum Keys: String, CodingKey { case event, instance, name, names, approvals, notes }
-    private enum Kind: String, Codable { case instance, removed, order, approvals, notes, defaultVM }
+    private enum Keys: String, CodingKey { case event, instance, name, names, approvals, notes, sshHosts, sshPrompts }
+    private enum Kind: String, Codable { case instance, removed, order, approvals, notes, defaultVM, sshHosts, sshPrompts }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -397,6 +447,8 @@ extension HostEvent: Codable {
         case .approvals: self = .approvals(try c.decode([ApprovalRequest].self, forKey: .approvals))
         case .notes: self = .notes(try c.decode([CanvasNote].self, forKey: .notes))
         case .defaultVM: self = .defaultVM(try c.decodeIfPresent(String.self, forKey: .name))
+        case .sshHosts: self = .sshHosts(try c.decode([SSHHostSnapshot].self, forKey: .sshHosts))
+        case .sshPrompts: self = .sshPrompts(try c.decode([SSHPromptRequest].self, forKey: .sshPrompts))
         }
     }
 
@@ -421,6 +473,12 @@ extension HostEvent: Codable {
         case .defaultVM(let name):
             try c.encode(Kind.defaultVM, forKey: .event)
             try c.encodeIfPresent(name, forKey: .name)
+        case .sshHosts(let list):
+            try c.encode(Kind.sshHosts, forKey: .event)
+            try c.encode(list, forKey: .sshHosts)
+        case .sshPrompts(let list):
+            try c.encode(Kind.sshPrompts, forKey: .event)
+            try c.encode(list, forKey: .sshPrompts)
         }
     }
 }

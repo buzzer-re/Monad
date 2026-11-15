@@ -8,6 +8,7 @@
 //  ~/.monad/networks/<name>.json  Monad networks
 //  ~/.monad/firewall-tags/<name>.json  firewall rule lists VMs can carry
 //  ~/.monad/profiles/<id>.profile.json  the user's own profiles
+//  ~/.monad/ssh-hosts/<name>/     one directory per SSH host (Monad/SSH), and known_hosts
 //
 
 import Foundation
@@ -28,6 +29,8 @@ enum Paths {
     static var distros: URL { root.appendingPathComponent("distros", isDirectory: true) }
     /// The user's own profiles (<id>.profile.json).
     static var profiles: URL { root.appendingPathComponent("profiles", isDirectory: true) }
+    /// SSH hosts (a folder each, with host.json) and their known hosts file.
+    static var sshHosts: URL { root.appendingPathComponent("ssh-hosts", isDirectory: true) }
     /// Debug logs (Settings › Logs), one file a day.
     static var logs: URL { root.appendingPathComponent("logs", isDirectory: true) }
     /// Whether debug logging is on, read by the app and MonadHost.
@@ -119,6 +122,9 @@ struct InstancePaths {
     /// Monad's MCP endpoint for this VM (agents phase), and its token.
     var mcpSocket: URL { dir.appendingPathComponent("mcp.sock") }
     var mcpToken: URL { dir.appendingPathComponent("mcp-token") }
+    /// An SSH host's folder (Monad/SSH) reuses this layout: host.json,
+    /// id_ed25519(.pub), ctl.sock, ssh-master.log.
+    var sshHost: URL { dir.appendingPathComponent("host.json") }
 }
 
 extension FileManager {

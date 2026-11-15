@@ -266,6 +266,79 @@ final class HostProtocolTests: XCTestCase {
         XCTAssertEqual(try HostProtocol.decode(HostResponse.self, from: HostProtocol.encode(reply)), reply)
     }
 
+    /// SSH hosts (Monad/SSH): the app sets and removes them, MonadHost
+    /// pushes them and ssh's questions; a password only ever travels towards
+    /// MonadHost, except as the askpass helper's answer.
+    func testSSHHosts() throws {
+        var box = SSHHost(name: "box", host: "example.com", user: "dev", auth: .key)
+        box.keyPath = "/Users/dev/.ssh/id_work"
+        box.jump = "bastion"
+        let boxJSON = #"{"auth":"key","host":"example.com","jump":"bastion","keyInstalled":false,"#
+            + #""keyPath":"/Users/dev/.ssh/id_work","name":"box","port":22,"user":"dev","version":1}"#
+        try assertGolden(HostRequest(id: 1, op: .sshHosts), #"{"id":1,"op":"sshHosts"}"#)
+        try assertGolden(HostRequest(id: 2, op: .setSSHHost).with { $0.sshHost = box; $0.secret = "pw" },
+                         #"{"id":2,"op":"setSSHHost","secret":"pw","sshHost":\#(boxJSON)}"#)
+        for op in [HostRequest.Op.removeSSHHost, .forgetSSHPassword, .installSSHKey, .connectSSHHost, .sshTicket] {
+            try assertGolden(HostRequest(id: 3, op: op, name: "box"), #"{"id":3,"name":"box","op":"\#(op.rawValue)"}"#)
+            XCTAssertThrowsError(try HostRequest(id: 3, op: op).validate(), op.rawValue)
+            XCTAssertThrowsError(try HostRequest(id: 3, op: op, name: "../etc").validate(), op.rawValue)
+            XCTAssertNoThrow(try HostRequest(id: 3, op: op, name: "box").validate(), op.rawValue)
+        }
+        let ticket = String(repeating: "0a", count: 32)
+        let ask = HostRequest(id: 4, op: .askSSH).with {
+            $0.ticket = ticket
+            $0.prompt = "dev@example.com's password: "
+            $0.promptHint = "confirm"
+        }
+        try assertGolden(ask, #"{"id":4,"op":"askSSH","prompt":"dev@example.com's password: ","promptHint":"confirm","ticket":"\#(ticket)"}"#)
+        let id = UUID(uuidString: "AAAAAAAA-0000-4000-8000-000000000001")!
+        try assertGolden(HostRequest(id: 5, op: .answerSSHPrompt).with { $0.promptID = id; $0.secret = "pw"; $0.remember = true },
+                         #"{"id":5,"op":"answerSSHPrompt","promptID":"AAAAAAAA-0000-4000-8000-000000000001","remember":true,"secret":"pw"}"#)
+
+        let snapshot = SSHHostSnapshot(config: box, hasPassword: false, forwards: [
+            ForwardStatus(flag: "-L", spec: "/vms/web/sshfwd-aaaaaaaa.sock:db.internal:5432", origin: .bridge, state: .active),
+        ])
+        let snapshotJSON = #"{"config":\#(boxJSON),"forwards":[{"flag":"-L","origin":"bridge","spec":"/vms/web/sshfwd-aaaaaaaa.sock:db.internal:5432","state":{"state":"active"}}],"hasPassword":false}"#
+        var reply = HostResponse(id: 6)
+        reply.sshHosts = [snapshot]
+        try assertGolden(reply, #"{"id":6,"ok":true,"sshHosts":[\#(snapshotJSON)]}"#)
+        reply = HostResponse(id: 7)
+        reply.ticket = ticket
+        try assertGolden(reply, #"{"id":7,"ok":true,"ticket":"\#(ticket)"}"#)
+        reply = HostResponse(id: 8)
+        reply.secret = "pw"
+        try assertGolden(reply, #"{"id":8,"ok":true,"secret":"pw"}"#)
+
+        try assertGolden(HostEvent.sshHosts([snapshot]), #"{"event":"sshHosts","sshHosts":[\#(snapshotJSON)]}"#)
+        let question = SSHPromptRequest(id: id, host: "box", kind: .secret, prompt: "dev@example.com's password: ",
+                                        canRemember: true, retry: false, asked: Date(timeIntervalSince1970: 1_790_000_000))
+        try assertGolden(HostEvent.sshPrompts([question]),
+                         #"{"event":"sshPrompts","sshPrompts":[{"asked":"2026-09-21T14:13:20Z","canRemember":true,"host":"box","id":"AAAAAAAA-0000-4000-8000-000000000001","kind":"secret","prompt":"dev@example.com's password: ","retry":false}]}"#)
+    }
+
+    /// What reaches MonadHost about an SSH host is checked like any request.
+    func testSSHRequestsAreValidated() {
+        func invalid(_ r: HostRequest, _ line: UInt = #line) {
+            XCTAssertThrowsError(try r.validate(), line: line)
+        }
+        let box = SSHHost(name: "box", host: "example.com", user: "dev", auth: .password)
+        invalid(HostRequest(id: 1, op: .setSSHHost))
+        invalid(HostRequest(id: 1, op: .setSSHHost).with { $0.sshHost = box; $0.sshHost?.host = "-oProxyCommand=x" })
+        invalid(HostRequest(id: 1, op: .setSSHHost).with { $0.sshHost = box; $0.secret = "two\nlines" })
+        invalid(HostRequest(id: 1, op: .setSSHHost).with { $0.sshHost = box; $0.secret = String(repeating: "p", count: 1024) })
+        XCTAssertNoThrow(try HostRequest(id: 1, op: .setSSHHost).with { $0.sshHost = box; $0.secret = "pw" }.validate())
+        let ticket = String(repeating: "0a", count: 32)
+        invalid(HostRequest(id: 1, op: .askSSH).with { $0.prompt = "Password:" })
+        invalid(HostRequest(id: 1, op: .askSSH).with { $0.ticket = ticket })
+        invalid(HostRequest(id: 1, op: .askSSH).with { $0.ticket = "../../etc/passwd"; $0.prompt = "Password:" })
+        invalid(HostRequest(id: 1, op: .askSSH).with { $0.ticket = ticket.uppercased(); $0.prompt = "Password:" })
+        invalid(HostRequest(id: 1, op: .askSSH).with { $0.ticket = ticket; $0.prompt = String(repeating: "x", count: 4097) })
+        XCTAssertNoThrow(try HostRequest(id: 1, op: .askSSH).with { $0.ticket = ticket; $0.prompt = "Password:" }.validate())
+        invalid(HostRequest(id: 1, op: .answerSSHPrompt))
+        invalid(HostRequest(id: 1, op: .answerSSHPrompt).with { $0.promptID = UUID(); $0.secret = "a\rb" })
+        XCTAssertNoThrow(try HostRequest(id: 1, op: .answerSSHPrompt).with { $0.promptID = UUID() }.validate(), "a cancel")
+    }
+
     /// A macOS VM's setup question rides in its snapshot; the answer is a
     /// work folder or why not.
     func testTheMacOSSetupQuestion() throws {
