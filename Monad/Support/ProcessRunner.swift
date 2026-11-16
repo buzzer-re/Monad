@@ -143,8 +143,10 @@ enum ProcessRunner {
         return sig == 0 ? (st >> 8) & 0xff : 128 + sig
     }
 
-    private static func spawn(_ executable: String, _ arguments: [String], environment: [String: String],
-                              stdin: Int32?, stdout: Int32, stderr: Int32) throws -> pid_t {
+    /// Starts `executable` in a process group of its own, with these
+    /// descriptors as its input and output and nothing else inherited.
+    static func spawn(_ executable: String, _ arguments: [String], environment: [String: String],
+                      stdin: Int32?, stdout: Int32, stderr: Int32) throws -> pid_t {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }

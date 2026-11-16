@@ -689,6 +689,33 @@ final class FakeSSHLegs: SSHLegApplying {
     func apply(_ legs: [SSHLeg], for vm: String) { applied.append((vm, legs)) }
 }
 
+/// Programs run with one stream for input and output (an SSH host's agent
+/// through ssh), recorded: each gets a socketpair the test holds the far
+/// end of, and speaks as the program through it.
+final class FakeChannels: ChannelSpawning, @unchecked Sendable {
+    struct Call: Equatable {
+        let executable: String
+        let arguments: [String]
+        let environment: [String: String]
+    }
+
+    private let lock = NSLock()
+    private var _opened: [Call] = []
+    private var _channels: [SocketPairChannel] = []
+
+    var opened: [Call] { lock.withLock { _opened } }
+    var channels: [SocketPairChannel] { lock.withLock { _channels } }
+
+    func open(_ executable: String, _ arguments: [String], environment: [String: String]) throws -> ByteChannel {
+        let channel = SocketPairChannel()
+        lock.withLock {
+            _opened.append(Call(executable: executable, arguments: arguments, environment: environment))
+            _channels.append(channel)
+        }
+        return channel
+    }
+}
+
 /// A unix socket's file at `url`, as ssh leaves one where it listened (made
 /// under a short name and moved: a socket's path is 104 bytes at most).
 func makeSocketFile(at url: URL) throws {

@@ -1,9 +1,10 @@
 //
 //  SSHHostsView.swift — Virtual Machines › SSH: the servers Monad opens
 //  tabs on and carries ports to and from, and the sheet that adds or
-//  changes one. They are MonadHost's (this view mirrors them through
-//  HostClient); a typed password goes to MonadHost for the Keychain and is
-//  never shown again.
+//  changes one (how Monad signs in, the host's own forwards, and Monad's
+//  agent on the server, asked about before it goes there). They are
+//  MonadHost's (this view mirrors them through HostClient); a typed
+//  password goes to MonadHost for the Keychain and is never shown again.
 //
 
 import AppKit
@@ -22,6 +23,15 @@ struct SSHHostDraft: Equatable {
     /// A private key: one file (`keyPath`), or ssh's own keys and agent.
     var usesKeyFile = false
     var keyPath = ""
+    /// Monad's agent on the server: its ports forwarded by themselves.
+    /// Set only once the user said yes (SSHHostAgent.question).
+    var agent = false
+    /// Ports the automatic forwards skip, as typed ("5432, 6379").
+    var ignoredPorts = ""
+    /// Its own forwards, between this Mac and the server.
+    var forwards: [ForwardRule] = []
+    /// What the sheet does not show of the automatic forwards (where they start).
+    private(set) var autoForward = AutoForwardSettings()
     /// A host being changed keeps its name (the name is its identity).
     let isNew: Bool
 
@@ -39,6 +49,10 @@ struct SSHHostDraft: Equatable {
         auth = host.auth
         usesKeyFile = host.keyPath != nil
         keyPath = host.keyPath ?? ""
+        agent = host.agent
+        autoForward = host.autoForward
+        ignoredPorts = VMSettingsDraft.text(host.autoForward.ignoredPorts)
+        forwards = host.forwards
     }
 
     /// The host as typed, checked. `taken`: the names there are (a new
@@ -60,8 +74,10 @@ struct SSHHostDraft: Equatable {
             guard !path.isEmpty else { throw MonadError("Choose a key file, or use ssh's own keys and agent.") }
             key = path == "~" ? home : path.hasPrefix("~/") ? home + path.dropFirst(1) : path
         }
+        var auto = autoForward
+        auto.ignoredPorts = try VMSettingsDraft.ports(ignoredPorts)
         let made = SSHHost(name: name, host: trimmed(host), port: number, user: trimmed(user), auth: auth, keyPath: key,
-                           jump: jump)
+                           jump: jump, agent: agent, autoForward: auto, forwards: forwards)
         try made.validate()
         return made
     }
@@ -83,9 +99,42 @@ struct SSHHostDraft: Equatable {
         }
     }
 
-    /// The forwards carried through the host that are not up.
+    /// The forwards carried through the host that are not up (the VMs' and
+    /// its own: an automatic one that is not, mostly for a Mac port already
+    /// in use, is skipped rather than broken, and says so in the sheet).
     static func failedForwards(_ snapshot: SSHHostSnapshot) -> Int {
-        (snapshot.forwards ?? []).filter { if case .failed = $0.state { return true } else { return false } }.count
+        (snapshot.forwards ?? []).filter {
+            if $0.origin != .auto, case .failed = $0.state { return true } else { return false }
+        }.count
+    }
+
+    /// How a row says the host's agent is doing; nil without one.
+    static func agentTag(_ snapshot: SSHHostSnapshot) -> (text: String, problem: Bool)? {
+        guard snapshot.config.agent else { return nil }
+        return snapshot.agentRunning == true ? ("Agent running", false) : ("Agent not running", true)
+    }
+
+    /// Whether Connect Again has something to do: a forward is not up, or
+    /// the agent is not running.
+    static func canReconnect(_ snapshot: SSHHostSnapshot) -> Bool {
+        failedForwards(snapshot) > 0 || (snapshot.config.agent && snapshot.agentRunning != true)
+    }
+
+    /// The Mac port of an automatic forward ("127.0.0.1:8080:127.0.0.1:8080").
+    static func macPort(ofAutoForward spec: String) -> String {
+        spec.split(separator: ":").dropFirst().first.map(String.init) ?? "?"
+    }
+
+    /// How one of the host's own forwards is doing, in the sheet: `saved`
+    /// is the host as MonadHost has it (nil: not saved yet).
+    static func state(of rule: ForwardRule, saved: SSHHostSnapshot?) -> (text: String, problem: Bool) {
+        guard rule.enabled else { return ("Off", false) }
+        guard let saved, saved.config.forwards.contains(rule) else { return ("Not saved yet", false) }
+        switch VMSettingsDraft.status(of: rule, in: saved.forwards ?? [])?.state {
+        case .active?: return ("Active", false)
+        case .failed(let why)?: return (why, true)
+        case nil: return ("Not connected", false)
+        }
     }
 }
 
@@ -134,6 +183,9 @@ private struct SSHHostRow: View {
                     Text(name).font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.middle)
                     TagLabel(text: SSHHostDraft.signIn(snapshot),
                              color: snapshot.config.auth == .generated && !snapshot.config.keyInstalled ? .orange : .secondary)
+                    if let agent = SSHHostDraft.agentTag(snapshot) {
+                        TagLabel(text: agent.text, color: agent.problem ? .orange : .secondary)
+                    }
                     if let forwards = snapshot.forwards, !forwards.isEmpty {
                         TagLabel(text: "\(forwards.count) forward\(forwards.count == 1 ? "" : "s")")
                         let failed = SSHHostDraft.failedForwards(snapshot)
@@ -151,7 +203,7 @@ private struct SSHHostRow: View {
             if installing { ProgressView().controlSize(.small) }
             Button("Open Tab") { (NSApp.delegate as? AppDelegate)?.open(.ssh(name)) }
             Button(action: onEdit) { Image(systemName: "slider.horizontal.3") }
-                .help("Host, user and how Monad signs in")
+                .help("Host, user, how Monad signs in, and its port forwarding")
             Menu {
                 if snapshot.config.auth == .generated {
                     Button(snapshot.config.keyInstalled ? "Install Key Again…" : "Install Key…") { installKey() }
@@ -160,8 +212,8 @@ private struct SSHHostRow: View {
                 if snapshot.hasPassword {
                     Button("Forget Password") { run { try await host.forgetSSHPassword(name) } }
                 }
-                if SSHHostDraft.failedForwards(snapshot) > 0 {
-                    Button("Connect Forwards Again") { run { try await host.connectSSHHost(name) } }
+                if SSHHostDraft.canReconnect(snapshot) {
+                    Button("Connect Again") { run { try await host.connectSSHHost(name) } }
                 }
                 Divider()
                 Button("Delete…", role: .destructive) { confirmDelete = true }
@@ -203,6 +255,9 @@ struct SSHHostSheet: View {
     let editing: SSHHost?
     /// Every SSH host there is (the names taken, and those to connect through).
     let hosts: [SSHHost]
+    /// The host being changed as MonadHost has it now (its forwards, its
+    /// agent); nil for a new one.
+    var status: SSHHostSnapshot?
     /// Saves the host with the password typed (nil: none typed) and says
     /// how MonadHost has it now; throws to keep the sheet open with the reason.
     var onSave: (SSHHost, String?) async throws -> SSHHost
@@ -218,17 +273,36 @@ struct SSHHostSheet: View {
     /// The names taken when the sheet opened: a host this sheet saved (even
     /// when the save then said why something else failed) is not in the way of itself.
     @State private var taken: [String]
+    /// The agent is asked about before it goes onto the server.
+    @State private var askingAgent = false
+    @State private var addingForward = false
     @StateObject private var submission = SheetSubmission()
 
-    init(editing: SSHHost?, hosts: [SSHHost], onSave: @escaping (SSHHost, String?) async throws -> SSHHost,
+    init(editing: SSHHost?, hosts: [SSHHost], status: SSHHostSnapshot? = nil,
+         onSave: @escaping (SSHHost, String?) async throws -> SSHHost,
          onInstallKey: @escaping (String) async throws -> Void, onClose: @escaping () -> Void) {
         self.editing = editing
         self.hosts = hosts
+        self.status = status
         self.onSave = onSave
         self.onInstallKey = onInstallKey
         self.onClose = onClose
         _draft = State(initialValue: SSHHostDraft(editing))
         _taken = State(initialValue: hosts.map(\.name))
+    }
+
+    /// Turning automatic forwards on puts Monad's agent on the server:
+    /// only after the user's yes. Off needs no question.
+    private var agentChoice: Binding<Bool> {
+        Binding(get: { draft.agent }, set: { on in
+            if on { askingAgent = true } else { draft.agent = false }
+        })
+    }
+
+    private var agentQuestion: (title: String, message: String) {
+        let name = draft.name.trimmingCharacters(in: .whitespaces)
+        return SSHHostAgent.question(host: name.isEmpty ? "this server" : name,
+                                     user: draft.user.trimmingCharacters(in: .whitespaces))
     }
 
     /// The hosts this one may connect through: others, themselves reached directly.
@@ -301,6 +375,7 @@ struct SSHHostSheet: View {
                             .font(Design.caption).foregroundStyle(.secondary)
                     }
                 }
+                forwarding
             }
             .formStyle(.grouped)
             .font(Design.body)
@@ -320,6 +395,90 @@ struct SSHHostSheet: View {
         }
         // A grouped form has no height of its own in a sheet.
         .frame(width: 520, height: 640)
+        .confirmationDialog(agentQuestion.title, isPresented: $askingAgent, titleVisibility: .visible) {
+            Button("Put the Agent There") { draft.agent = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(agentQuestion.message)
+        }
+        .sheet(isPresented: $addingForward) {
+            ForwardEditor(side: .server) { rule in
+                draft.forwards.append(rule)
+                addingForward = false
+            } onCancel: { addingForward = false }
+        }
+    }
+
+    /// The host's own forwards, and the automatic ones its agent makes.
+    @ViewBuilder private var forwarding: some View {
+        Section {
+            Toggle(isOn: agentChoice) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Forward ports automatically")
+                    Text("Ports from \(draft.autoForward.minimumPort) up that the server listens on are reachable on this Mac's "
+                         + "localhost, while Monad is open or a VM runs. Monad's agent on the server says which.")
+                        .font(Design.caption).foregroundStyle(.secondary)
+                }
+            }
+            if draft.agent {
+                TextField("Ports to skip", text: $draft.ignoredPorts, prompt: Text("5432, 6379"))
+                agentState
+            }
+            ForEach($draft.forwards) { $rule in
+                let state = SSHHostDraft.state(of: rule, saved: status)
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(VMSettingsDraft.describe(rule, side: .server))
+                        Text(state.text).font(Design.caption).foregroundStyle(state.problem ? Color.red : Color.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $rule.enabled).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    Button(role: .destructive) {
+                        draft.forwards.removeAll { $0.id == rule.id }
+                    } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button { addingForward = true } label: { Label("Add Forward…", systemImage: "plus") }
+        } header: {
+            Text("Port forwarding")
+        }
+    }
+
+    /// How the agent is doing on the host as it is saved, and what it forwards now.
+    @ViewBuilder private var agentState: some View {
+        if let status, status.config.agent {
+            if status.agentRunning == true {
+                let auto = (status.forwards ?? []).filter { $0.origin == .auto }
+                if auto.isEmpty {
+                    Text("The agent is running. No ports forwarded right now.").font(Design.caption).foregroundStyle(.secondary)
+                }
+                ForEach(auto, id: \.spec) { forward in
+                    HStack {
+                        Image(systemName: "arrow.right.circle.fill").foregroundStyle(.indigo)
+                        Text("localhost:\(SSHHostDraft.macPort(ofAutoForward: forward.spec))").font(Design.body.monospacedDigit())
+                        Spacer()
+                        switch forward.state {
+                        case .active: Text("Active").font(Design.caption).foregroundStyle(.green)
+                        case .failed(let why): Text(why).font(Design.caption).foregroundStyle(.red).lineLimit(2)
+                        }
+                    }
+                }
+                if let over = status.portsOverLimit {
+                    Label("\(over) more \(over == 1 ? "port is" : "ports are") not forwarded. Monad forwards at most \(ForwardPlan.maxAutoForwards) per server, lowest first.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(Design.caption).foregroundStyle(.orange)
+                }
+            } else {
+                Label(status.agentProblem ?? "The agent is not running: Monad is not connected to the server. "
+                        + "Connect Again is in the host's ⋯ menu.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(Design.caption).foregroundStyle(.orange)
+            }
+        } else {
+            Text("The agent goes onto the server when you save.").font(Design.caption).foregroundStyle(.secondary)
+        }
     }
 
     private func save() {

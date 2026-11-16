@@ -170,6 +170,75 @@ final class SSHHostTests: XCTestCase {
         XCTAssertFalse(h.keyInstalled)
     }
 
+    // MARK: Its own forwards and the agent
+
+    /// Forwards between this Mac and the server, and the agent that makes
+    /// some by themselves: in the file only when there are any, so a host
+    /// without them is written as it always was.
+    func testItsForwardsAndAgentAreKeptOnlyWhenThereAreAny() throws {
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(host())) as? [String: Any])
+        XCTAssertEqual(Set(plain.keys), ["version", "name", "host", "port", "user", "auth", "keyInstalled"])
+        var h = host(.key)
+        h.agent = true
+        h.autoForward.ignoredPorts = [5432]
+        h.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)]
+        XCTAssertEqual(try JSONDecoder().decode(SSHHost.self, from: JSONEncoder().encode(h)), h)
+        let old = try JSONDecoder().decode(SSHHost.self,
+                                           from: Data(#"{"name": "box", "host": "example.com", "user": "dev", "auth": "key"}"#.utf8))
+        XCTAssertFalse(old.agent)
+        XCTAssertEqual(old.forwards, [])
+        XCTAssertEqual(old.autoForward, AutoForwardSettings())
+    }
+
+    /// Ports are forwarded by themselves only with the agent, and Monad
+    /// stays connected only to a host that has something to carry.
+    func testWhatAHostIsConnectedFor() {
+        var h = host(.key)
+        XCTAssertFalse(h.effectiveAutoForward.enabled, "no agent: nothing says which ports there are")
+        XCTAssertFalse(h.keepsConnection)
+        h.agent = true
+        h.autoForward.ignoredPorts = [5432]
+        XCTAssertEqual(h.effectiveAutoForward, AutoForwardSettings(enabled: true, minimumPort: 1024, ignoredPorts: [5432]))
+        XCTAssertTrue(h.keepsConnection)
+        h.agent = false
+        var rule = ForwardRule(kind: .socks, hostPort: 1080)
+        h.forwards = [rule]
+        XCTAssertTrue(h.keepsConnection)
+        rule.enabled = false
+        h.forwards = [rule]
+        XCTAssertFalse(h.keepsConnection, "a forward that is off needs no connection")
+    }
+
+    func testItsForwardsAreCheckedLikeAVMs() {
+        func problem(_ change: (inout SSHHost) -> Void) -> String? {
+            var h = host(.key)
+            change(&h)
+            do {
+                try h.validate()
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        XCTAssertNil(problem {
+            $0.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80),
+                           ForwardRule(kind: .remote, hostPort: 5432, guestPort: 15432)]
+        })
+        XCTAssertEqual(problem { $0.forwards = [ForwardRule(kind: .local, hostPort: 80, guestPort: 80)] },
+                       "Port 80 is privileged on the Mac. Use 1024 or above.")
+        XCTAssertEqual(problem { $0.forwards = [ForwardRule(kind: .local, hostPort: 8080)] },
+                       "A forward is missing its ports or socket paths.")
+        XCTAssertEqual(problem {
+            $0.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80), ForwardRule(kind: .socks, hostPort: 8080)]
+        }, "Two forwards listen on 127.0.0.1:8080.")
+        XCTAssertEqual(problem {
+            $0.forwards = (0...SSHHost.maxForwards).map { ForwardRule(kind: .local, hostPort: 2000 + $0, guestPort: 80) }
+        }, "An SSH host can have at most 32 forwards.")
+        XCTAssertEqual(problem { $0.autoForward.minimumPort = 80 }, "Auto-forwarding cannot start below port 1024 (got 80).")
+        XCTAssertEqual(problem { $0.autoForward.ignoredPorts = [0] }, "0 is not a valid port (1–65535).")
+        XCTAssertEqual(problem { $0.autoForward.ignoredPorts = Array(1024...2048) }, "At most 256 ports to skip.")
+    }
+
     func testAHostFromANewerMonadIsNotLoaded() {
         let json = #"{"version": 2, "name": "box", "host": "example.com", "user": "dev", "auth": "key"}"#
         XCTAssertThrowsError(try JSONDecoder().decode(SSHHost.self, from: Data(json.utf8))) {

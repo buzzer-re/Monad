@@ -2,8 +2,10 @@
 //  SSHHostManagerTests.swift — MonadHost's side of SSH hosts: what is
 //  saved and refused, where a password goes, which of ssh's questions the
 //  Keychain may answer (only ssh's own password question, once per
-//  connection), how Monad's key gets onto a server, and the hosts' side of
-//  the VMs' forwards (one ssh master per host that carries any).
+//  connection), how Monad's key gets onto a server, the hosts' side of
+//  the VMs' forwards (one ssh master per host that carries any), a host's
+//  own forwards, and Monad's agent on a server (put there with the user's
+//  yes, run over that master, its ports forwarded by themselves).
 //
 
 import XCTest
@@ -23,6 +25,16 @@ final class SSHHostManagerTests: XCTestCase {
     /// What the manager runs commands through: `runner`, with a master's
     /// start held on request (as ssh waits for the user's answer).
     private var commands: HoldingRunner!
+    /// The agents run on servers: each a stream the test holds the far end of.
+    private var channels: FakeChannels!
+    /// What the server says it is (`uname -s`), a login shell's noise included.
+    private let server = Server()
+
+    private final class Server: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _uname = "Linux\n"
+        var uname: String { get { lock.withLock { _uname } } set { lock.withLock { _uname = newValue } } }
+    }
 
     private final class MasterStart: @unchecked Sendable {
         private let lock = NSLock()
@@ -73,8 +85,10 @@ final class SSHHostManagerTests: XCTestCase {
         secrets = FakeSecrets()
         ssh = FakeSSHMaster()
         watcher = ManualProcessWatcher()
+        channels = FakeChannels()
         // ssh-keygen leaves a key pair, a master its control socket; everything else succeeds.
-        runner = FakeCommandRunner { [ssh, masterStart] call in
+        runner = FakeCommandRunner { [ssh, masterStart, server] call in
+            if call.executable == "/usr/bin/ssh", call.arguments.last == SSHHostAgent.probe { return .ok(server.uname) }
             if call.executable == "/usr/bin/ssh-keygen", let i = call.arguments.firstIndex(of: "-f") {
                 let key = call.arguments[i + 1]
                 try Data("private\n".utf8).write(to: URL(fileURLWithPath: key))
@@ -98,6 +112,8 @@ final class SSHHostManagerTests: XCTestCase {
         env.home = home
         env.agentSocket = "/private/tmp/agent.sock"
         env.watcher = watcher
+        env.channels = channels
+        env.agentScript = { "# the \($0.rawValue) agent\n" }
         return SSHHostManager(root: root, environment: env)
     }
 
@@ -618,6 +634,186 @@ final class SSHHostManagerTests: XCTestCase {
         let control = root.appendingPathComponent("box/ctl.sock").path
         await assertEventually { self.masterExits.count == 1 && !FileManager.default.fileExists(atPath: control) }
         XCTAssertEqual(ssh.specs, [])
+        XCTAssertNil(m.snapshots.first?.forwards)
+    }
+
+    // MARK: A host's own forwards, and the agent
+
+    private func remote(_ command: String) -> String { "sh -c " + ShellQuote.quote(command) }
+
+    private func withAgent(_ auth: SSHHost.Auth = .key) -> SSHHost {
+        var host = box(auth)
+        host.agent = true
+        return host
+    }
+
+    /// With the user's yes, the agent is put on the server and run over the
+    /// host's master, which is kept for it; the ports it reports from 1024
+    /// up, on addresses the server's own programs reach, come to this Mac's
+    /// localhost.
+    func testTheAgentsPortsAreForwardedByThemselves() async throws {
+        let m = manager()
+        var host = withAgent()
+        host.autoForward.ignoredPorts = [5432]
+        try await m.set(host, password: nil)
+        await assertEventually { self.channels.opened.count == 1 }
+        XCTAssertEqual(masterStarts.count, 1, "kept for the agent, with nothing to forward yet")
+
+        // What ran on the server: each over the master, none that could ask.
+        let control = root.appendingPathComponent("box/ctl.sock").path
+        let probe = try XCTUnwrap(runner.sshCalls(runningRemote: "uname -s").first)
+        let install = try XCTUnwrap(runner.sshCalls(runningRemote: remote(SSHHostAgent.install)).first)
+        XCTAssertEqual(install.stdin, Data("# the Linux agent\n".utf8))
+        let run = channels.opened[0]
+        XCTAssertEqual(run.executable, "/usr/bin/ssh")
+        XCTAssertEqual(run.arguments.last, remote(SSHHostAgent.run(.linux)))
+        for arguments in [probe.arguments, install.arguments, run.arguments] {
+            XCTAssertEqual(Array(arguments.prefix(2)), ["-F", "none"])
+            XCTAssertTrue(arguments.contains("ControlPath=\(control)"))
+            XCTAssertTrue(arguments.contains("ControlMaster=no"))
+            XCTAssertTrue(arguments.contains("BatchMode=yes"))
+            XCTAssertEqual(arguments.dropLast().last, "example.com")
+        }
+        XCTAssertEqual(m.snapshots.first?.agentRunning, false, "not until it has said hello")
+
+        let agent = channels.channels[0]
+        agent.agentSays("hello monad-agent 1\nmode polling\nport+ tcp 0.0.0.0 8080\nport+ tcp 127.0.0.1 5432\n"
+            + "port+ tcp 0.0.0.0 22\nport+ tcp 192.0.2.7 9000\n")
+        await assertEventually("specs \(ssh.specs)") { self.ssh.specs == ["127.0.0.1:8080:127.0.0.1:8080"] }
+        XCTAssertEqual(m.snapshots.first?.agentRunning, true)
+        await assertEventually {
+            m.snapshots.first?.forwards == [ForwardStatus(flag: "-L", spec: "127.0.0.1:8080:127.0.0.1:8080", origin: .auto,
+                                                          state: .active)]
+        }
+
+        agent.agentSays("port- tcp 0.0.0.0 8080\nport+ tcp :: 3000\n")
+        await assertEventually("specs \(ssh.specs)") { self.ssh.specs == ["127.0.0.1:3000:[::1]:3000"] }
+        XCTAssertEqual(masterStarts.count, 1)
+    }
+
+    /// A VM's port on the server makes the server listen: the agent reports
+    /// that port like any other, and it must not come to the Mac by itself
+    /// (the VM's own settings say whether its ports do).
+    func testAPortAVMPutOnTheServerIsNotForwardedBack() async throws {
+        let m = manager()
+        try await m.set(withAgent(), password: nil)
+        let onto = SSHLeg(host: "box", spec: SSHMux.Spec(flag: "-R", value: "127.0.0.1:18000:/vms/web/sshfwd-00000001.sock"),
+                          listensOn: 18000)
+        m.apply([onto], for: "web")
+        await assertEventually { self.channels.opened.count == 1 }
+        channels.channels[0].agentSays("hello monad-agent 1\nport+ tcp 127.0.0.1 18000\nport+ tcp 127.0.0.1 9090\n")
+        await assertEventually("specs \(ssh.specs)") {
+            Set(self.ssh.specs) == [onto.spec.value, "127.0.0.1:9090:127.0.0.1:9090"]
+        }
+    }
+
+    /// Turned off: the agent stops, its script is taken from the server
+    /// while the connection is still there, and the connection goes when
+    /// nothing else needs it.
+    func testTurningTheAgentOffTakesItFromTheServer() async throws {
+        let m = manager()
+        var host = withAgent()
+        try await m.set(host, password: nil)
+        await assertEventually { self.channels.opened.count == 1 }
+        channels.channels[0].agentSays("hello monad-agent 1\nport+ tcp 0.0.0.0 8080\n")
+        await assertEventually { self.ssh.specs == ["127.0.0.1:8080:127.0.0.1:8080"] }
+
+        host.agent = false
+        try await m.set(host, password: nil)
+        await assertEventually { self.masterExits.count == 1 }
+        let removed = try XCTUnwrap(runner.calls.firstIndex { $0.arguments.last == self.remote(SSHHostAgent.remove) })
+        let exited = try XCTUnwrap(runner.calls.firstIndex { $0 == self.masterExits[0] })
+        XCTAssertLessThan(removed, exited, "while Monad is still connected")
+        XCTAssertTrue(channels.channels[0].closed)
+        XCTAssertNil(m.snapshots.first?.agentRunning)
+        XCTAssertNil(m.snapshots.first?.forwards)
+        await pause()
+        XCTAssertEqual(channels.opened.count, 1, "not run again")
+    }
+
+    /// Ports and sockets between this Mac and the server, set by hand, need
+    /// no agent: the master carries them, and goes with the last.
+    func testAHostsOwnForwardsNeedNoAgent() async throws {
+        let m = manager()
+        var host = box(.key)
+        var off = ForwardRule(kind: .socks, hostPort: 1080)
+        off.enabled = false
+        host.forwards = [ForwardRule(kind: .local, hostPort: 15432, guestPort: 5432), off]
+        try await m.set(host, password: nil)
+        await assertEventually { self.ssh.specs == ["127.0.0.1:15432:127.0.0.1:5432"] }
+        await assertEventually {
+            m.snapshots.first?.forwards == [ForwardStatus(flag: "-L", spec: "127.0.0.1:15432:127.0.0.1:5432",
+                                                          origin: .configured, state: .active)]
+        }
+        XCTAssertEqual(channels.opened.count, 0)
+        XCTAssertEqual(runner.sshCalls(runningRemote: "uname -s").count, 0, "nothing runs on the server")
+        XCTAssertNil(m.snapshots.first?.agentRunning)
+
+        host.forwards = []
+        try await m.set(host, password: nil)
+        await assertEventually { self.masterExits.count == 1 }
+        XCTAssertEqual(ssh.specs, [])
+    }
+
+    /// Monad has an agent for Linux and for macOS. Another system says so,
+    /// and is not asked again until the user asks.
+    func testAServerTheAgentDoesNotRunOnSaysSo() async throws {
+        let m = manager()
+        server.uname = "FreeBSD\n"
+        try await m.set(withAgent(), password: nil)
+        await assertEventually { m.snapshots.first?.agentProblem != nil }
+        XCTAssertEqual(m.snapshots.first?.agentProblem,
+                       "Monad's agent runs on Linux and macOS servers. This one says it is “FreeBSD”.")
+        XCTAssertEqual(m.snapshots.first?.agentRunning, false)
+        await pause()
+        XCTAssertEqual(runner.sshCalls(runningRemote: "uname -s").count, 1)
+        XCTAssertEqual(channels.opened.count, 0)
+
+        // A login shell may print before uname does: its last line counts.
+        server.uname = "Welcome to box\n\nDarwin\n"
+        try m.reconnect("box")
+        await assertEventually { self.channels.opened.count == 1 }
+        XCTAssertEqual(channels.opened[0].arguments.last, remote(SSHHostAgent.run(.macos)))
+        XCTAssertEqual(runner.sshCalls(runningRemote: remote(SSHHostAgent.install)).first?.stdin, Data("# the Darwin agent\n".utf8))
+        XCTAssertNil(m.snapshots.first?.agentProblem)
+    }
+
+    /// An agent that ends while Monad is still connected: what it reported
+    /// is no longer forwarded, and it is run again.
+    func testAnAgentThatEndsIsRunAgainAndItsPortsForgotten() async throws {
+        let m = manager()
+        try await m.set(withAgent(), password: nil)
+        await assertEventually { self.channels.opened.count == 1 }
+        channels.channels[0].agentSays("hello monad-agent 1\nport+ tcp 0.0.0.0 8080\n")
+        await assertEventually { self.ssh.specs == ["127.0.0.1:8080:127.0.0.1:8080"] }
+        channels.channels[0].hangUp()
+        await assertEventually("specs \(ssh.specs), agents \(channels.opened.count)") {
+            self.ssh.specs == [] && self.channels.opened.count == 2
+        }
+        XCTAssertEqual(masterStarts.count, 1, "the connection stayed")
+        channels.channels[1].agentSays("hello monad-agent 1\nport+ tcp 0.0.0.0 8081\n")
+        await assertEventually { self.ssh.specs == ["127.0.0.1:8081:127.0.0.1:8081"] }
+    }
+
+    /// MonadHost connects to the hosts that carry something as it starts,
+    /// and leaves no master behind as it ends (a forward on a Mac port
+    /// would otherwise outlive Monad).
+    func testHostsAreConnectedWhileMonadHostRuns() async throws {
+        var carrying = withAgent()
+        carrying.forwards = [ForwardRule(kind: .local, hostPort: 15432, guestPort: 5432)]
+        for host in [carrying, box(.key, name: "quiet")] { try SSHHostStore(root: root).save(host) }
+        let m = manager()
+        XCTAssertEqual(runner.calls, [], "making a manager connects to nothing")
+        m.connectHosts()
+        await assertEventually { self.channels.opened.count == 1 && self.ssh.specs == ["127.0.0.1:15432:127.0.0.1:5432"] }
+        let control = root.appendingPathComponent("box/ctl.sock").path
+        XCTAssertEqual(masterStarts.map { $0.arguments.contains("ControlPath=\(control)") }, [true],
+                       "none for a host with nothing to carry")
+
+        await m.stopAll()
+        XCTAssertEqual(masterExits.count, 1)
+        XCTAssertTrue(channels.channels[0].closed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: control))
         XCTAssertNil(m.snapshots.first?.forwards)
     }
 }

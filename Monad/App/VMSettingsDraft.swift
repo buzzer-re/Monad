@@ -210,9 +210,21 @@ struct VMSettingsDraft {
 
     // MARK: Forwards
 
+    /// Whose a forward's far end is: a VM's, or an SSH host's own (the
+    /// same rules, with the server in the VM's place).
+    enum ForwardSide {
+        case vm, server
+
+        /// "VM port", "Server port".
+        var noun: String { self == .vm ? "VM" : "Server" }
+        /// Where its end is: "in the VM", "on the server".
+        var inside: String { self == .vm ? "in the VM" : "on the server" }
+        var name: String { self == .vm ? "the VM" : "the server" }
+    }
+
     /// One line per rule, in words: whose port or socket it is, and where
     /// it is reached.
-    static func describe(_ rule: ForwardRule) -> String {
+    static func describe(_ rule: ForwardRule, side: ForwardSide = .vm) -> String {
         func at(_ address: String, _ port: Int?) -> String {
             let a = address.contains(":") ? "[\(address)]" : address
             return "\(a):\(port.map(String.init) ?? "?")"
@@ -222,12 +234,27 @@ struct VMSettingsDraft {
         let hostSocket = rule.hostSocket ?? "?", guestSocket = rule.guestSocket ?? "?"
         let open = rule.opensToNetwork ? ", open to other computers" : ""
         switch rule.kind {
-        case .remote: return "Mac port \(hostPort), in the VM at \(guest)"
-        case .local: return "VM port \(guestPort), on the Mac at \(host)\(open)"
+        case .remote: return "Mac port \(hostPort), \(side.inside) at \(guest)"
+        case .local: return "\(side.noun) port \(guestPort), on the Mac at \(host)\(open)"
         case .socks: return "SOCKS proxy on the Mac at \(host)\(open)"
-        case .unixLocal: return "VM socket \(guestSocket), on the Mac at \(hostSocket)"
-        case .unixRemote: return "Mac socket \(hostSocket), in the VM at \(guestSocket)"
+        case .unixLocal: return "\(side.noun) socket \(guestSocket), on the Mac at \(hostSocket)"
+        case .unixRemote: return "Mac socket \(hostSocket), \(side.inside) at \(guestSocket)"
         }
+    }
+
+    /// An address "The server reaches" offers, in a VM's forward through an SSH host.
+    struct ReachChoice: Equatable {
+        var title: String
+        var address: String
+    }
+
+    /// What the server `server` may be told to reach without typing an
+    /// address: itself, then the other SSH hosts by name, at the address
+    /// Monad has for them.
+    static func reachChoices(through server: String, hosts: [SSHHost]) -> [ReachChoice] {
+        [ReachChoice(title: "The server itself (127.0.0.1)", address: "127.0.0.1")]
+            + hosts.filter { $0.name != server }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { ReachChoice(title: "\($0.name) (\($0.host))", address: $0.host) }
     }
 
     /// A port forward as typed: `intoVM`, a port of this Mac reached from
@@ -349,25 +376,28 @@ struct VMSettingsDraft {
             : "The VM can change and replace files here, including with links that Mac programs will follow."
     }
 
-    /// What to confirm before adding a forward into the Mac (the VM reaches
-    /// something on it) or one open to other computers; nil for the rest.
-    static func confirmation(for rule: ForwardRule) -> String? {
+    /// What to confirm before adding a forward into the Mac (the VM, or
+    /// whoever is on the server, reaches something on it) or one open to
+    /// other computers; nil for the rest.
+    static func confirmation(for rule: ForwardRule, side: ForwardSide = .vm) -> String? {
         let hostPort = rule.hostPort.map(String.init) ?? "?"
         let reach = "Computers that reach this Mac at \(rule.hostAddress) will be able to"
+        // A server's end is on the server's loopback: every account there reaches it.
+        let who = side == .vm ? "The VM" : "Whoever is on the server"
         switch rule.kind {
-        case .remote: return "The VM will be able to connect to port \(hostPort) on this Mac."
-        case .unixRemote: return "The VM will be able to connect to \(rule.hostSocket ?? "?") on this Mac."
+        case .remote: return "\(who) will be able to connect to port \(hostPort) on this Mac."
+        case .unixRemote: return "\(who) will be able to connect to \(rule.hostSocket ?? "?") on this Mac."
         case .local where rule.opensToNetwork:
-            return "\(reach) connect to port \(rule.guestPort.map(String.init) ?? "?") in the VM, through port \(hostPort)."
+            return "\(reach) connect to port \(rule.guestPort.map(String.init) ?? "?") \(side.inside), through port \(hostPort)."
         case .socks where rule.opensToNetwork:
-            return "\(reach) use port \(hostPort) as a proxy that leaves from the VM."
+            return "\(reach) use port \(hostPort) as a proxy that leaves from \(side.name)."
         case .local, .socks, .unixLocal: return nil
         }
     }
 
     /// The question confirmation(for:) answers.
-    static func confirmationTitle(for rule: ForwardRule) -> String {
-        rule.reachesIntoHost ? "Let the VM reach this Mac?" : "Open this port to other computers?"
+    static func confirmationTitle(for rule: ForwardRule, side: ForwardSide = .vm) -> String {
+        rule.reachesIntoHost ? "Let \(side.name) reach this Mac?" : "Open this port to other computers?"
     }
 
     /// What MonadHost reports for a configured rule, if it is set up.
@@ -434,11 +464,12 @@ struct VMSettingsDraft {
         return (host.forwards ?? []).first { $0.flag == far.flag && $0.spec == far.value }?.state ?? .failed("Not set up yet.")
     }
 
-    private static func text(_ ports: [Int]) -> String {
+    /// Ports as a field shows them ("5432, 6379"), and as typed there.
+    static func text(_ ports: [Int]) -> String {
         ports.map(String.init).joined(separator: ", ")
     }
 
-    private static func ports(_ text: String) throws -> [Int] {
+    static func ports(_ text: String) throws -> [Int] {
         try text.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map { token in
             guard let p = Int(token), (1...65535).contains(p) else {
                 throw MonadError("“\(token)” is not a port number (1–65535).")

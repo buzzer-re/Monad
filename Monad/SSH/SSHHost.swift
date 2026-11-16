@@ -21,6 +21,9 @@ struct SSHHost: Codable, Equatable, Hashable, Sendable, Identifiable {
 
     static let currentVersion = 1
     static let maxHosts = 64
+    /// Its own forwards, set by hand.
+    static let maxForwards = 32
+    static let maxIgnoredPorts = 256
 
     var version = SSHHost.currentVersion
     /// As a VM's name: it names the folder and the Keychain item.
@@ -36,11 +39,32 @@ struct SSHHost: Codable, Equatable, Hashable, Sendable, Identifiable {
     var jump: String?
     /// `.generated`: MonadHost saw the server accept Monad's key.
     var keyInstalled = false
+    /// Monad's agent on the server, with the user's yes: a shell script in
+    /// ~/.monad there that MonadHost runs over its ssh connection and that
+    /// says which TCP ports the server listens on (SSHHostAgent).
+    var agent = false
+    /// Which of those ports come to this Mac's localhost by themselves, as
+    /// a VM's do. Nothing does without the agent (`effectiveAutoForward`).
+    var autoForward = AutoForwardSettings()
+    /// Ports and sockets between this Mac and the server, set by hand: a
+    /// VM's rules, with the server in the guest's place. They need no agent.
+    var forwards: [ForwardRule] = []
 
     var id: String { name }
 
+    /// What is forwarded by itself now.
+    var effectiveAutoForward: AutoForwardSettings {
+        var settings = autoForward
+        settings.enabled = agent && autoForward.enabled
+        return settings
+    }
+
+    /// Whether MonadHost stays connected to it while it runs: its agent
+    /// runs over the connection, and its forwards are carried by it.
+    var keepsConnection: Bool { agent || forwards.contains { $0.enabled } }
+
     private enum CodingKeys: String, CodingKey {
-        case version, name, host, port, user, auth, keyPath, jump, keyInstalled
+        case version, name, host, port, user, auth, keyPath, jump, keyInstalled, agent, autoForward, forwards
     }
 
     enum DecodingProblem: Error, Equatable, LocalizedError {
@@ -62,6 +86,8 @@ struct SSHHost: Codable, Equatable, Hashable, Sendable, Identifiable {
         case keyPath
         case jump(String)
         case selfJump
+        case tooManyForwards
+        case tooManyIgnoredPorts
 
         var errorDescription: String? {
             switch self {
@@ -73,6 +99,8 @@ struct SSHHost: Codable, Equatable, Hashable, Sendable, Identifiable {
             case .keyPath: return "A key file is given by its full path."
             case .jump(let j): return "“\(j)” is not an SSH host's name."
             case .selfJump: return "An SSH host cannot jump through itself."
+            case .tooManyForwards: return "An SSH host can have at most \(SSHHost.maxForwards) forwards."
+            case .tooManyIgnoredPorts: return "At most \(SSHHost.maxIgnoredPorts) ports to skip."
             }
         }
     }
@@ -104,6 +132,13 @@ struct SSHHost: Codable, Equatable, Hashable, Sendable, Identifiable {
             guard Self.isValidName(jump) else { throw ValidationError.jump(jump) }
             guard jump != name else { throw ValidationError.selfJump }
         }
+        guard forwards.count <= Self.maxForwards else { throw ValidationError.tooManyForwards }
+        try InstanceConfig.validate(forwards: forwards)
+        guard autoForward.minimumPort >= 1024 else {
+            throw InstanceConfig.ValidationError.autoForwardMinimum(autoForward.minimumPort)
+        }
+        guard autoForward.ignoredPorts.count <= Self.maxIgnoredPorts else { throw ValidationError.tooManyIgnoredPorts }
+        for port in autoForward.ignoredPorts where !(1...65535).contains(port) { throw ValidationError.port(port) }
     }
 }
 
@@ -118,17 +153,45 @@ extension SSHHost {
                   user: try c.decode(String.self, forKey: .user), auth: try c.decode(Auth.self, forKey: .auth),
                   keyPath: try c.decodeIfPresent(String.self, forKey: .keyPath),
                   jump: try c.decodeIfPresent(String.self, forKey: .jump),
-                  keyInstalled: try c.decodeIfPresent(Bool.self, forKey: .keyInstalled) ?? false)
+                  keyInstalled: try c.decodeIfPresent(Bool.self, forKey: .keyInstalled) ?? false,
+                  agent: try c.decodeIfPresent(Bool.self, forKey: .agent) ?? false,
+                  autoForward: try c.decodeIfPresent(AutoForwardSettings.self, forKey: .autoForward) ?? AutoForwardSettings(),
+                  forwards: try c.decodeIfPresent([ForwardRule].self, forKey: .forwards) ?? [])
+    }
+
+    /// What a host had before it could carry anything is written as it
+    /// always was: the agent and the forwards only when there are any.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encode(name, forKey: .name)
+        try c.encode(host, forKey: .host)
+        try c.encode(port, forKey: .port)
+        try c.encode(user, forKey: .user)
+        try c.encode(auth, forKey: .auth)
+        try c.encodeIfPresent(keyPath, forKey: .keyPath)
+        try c.encodeIfPresent(jump, forKey: .jump)
+        try c.encode(keyInstalled, forKey: .keyInstalled)
+        if agent { try c.encode(agent, forKey: .agent) }
+        if autoForward != AutoForwardSettings() { try c.encode(autoForward, forKey: .autoForward) }
+        if !forwards.isEmpty { try c.encode(forwards, forKey: .forwards) }
     }
 }
 
 /// An SSH host as the app shows it: its settings, whether the Keychain has
-/// its password (never the password), and the ports carried through it.
+/// its password (never the password), the ports carried through it (the
+/// VMs', its own, those its agent found), and how its agent is doing.
 struct SSHHostSnapshot: Codable, Equatable, Sendable, Identifiable {
     var config: SSHHost
     var hasPassword: Bool
     /// Absent when there are none.
     var forwards: [ForwardStatus]?
+    /// Absent without an agent; true once the agent on the server answered.
+    var agentRunning: Bool?
+    /// Why the agent is not running, when Monad knows.
+    var agentProblem: String?
+    /// The server's ports not forwarded because of the limit; absent when none.
+    var portsOverLimit: Int?
 
     var id: String { config.name }
 }

@@ -471,4 +471,49 @@ final class VMSettingsDraftTests: XCTestCase {
         XCTAssertFalse(d.isDirty)
         XCTAssertEqual(d.appliesAfterRestart, [])
     }
+
+    // MARK: An SSH host's own forwards, and servers by name
+
+    /// An SSH host's own forwards are a VM's rules with the server in the
+    /// VM's place: said in the same words, about the server.
+    func testAForwardOfAServerIsSaidAboutTheServer() {
+        let onto = ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)
+        let into = ForwardRule(kind: .remote, hostPort: 5432, guestPort: 15432)
+        XCTAssertEqual(VMSettingsDraft.describe(onto), "VM port 80, on the Mac at 127.0.0.1:8080")
+        XCTAssertEqual(VMSettingsDraft.describe(onto, side: .server), "Server port 80, on the Mac at 127.0.0.1:8080")
+        XCTAssertEqual(VMSettingsDraft.describe(into, side: .server), "Mac port 5432, on the server at 127.0.0.1:15432")
+        XCTAssertEqual(VMSettingsDraft.describe(ForwardRule(kind: .socks, hostPort: 1080), side: .server),
+                       "SOCKS proxy on the Mac at 127.0.0.1:1080")
+        XCTAssertEqual(VMSettingsDraft.describe(ForwardRule(kind: .unixLocal, hostSocket: "/Users/dev/d.sock",
+                                                            guestSocket: "/run/docker.sock"), side: .server),
+                       "Server socket /run/docker.sock, on the Mac at /Users/dev/d.sock")
+        XCTAssertEqual(VMSettingsDraft.describe(ForwardRule(kind: .unixRemote, hostSocket: "/Users/dev/a.sock",
+                                                            guestSocket: "/tmp/a.sock"), side: .server),
+                       "Mac socket /Users/dev/a.sock, on the server at /tmp/a.sock")
+
+        // What is asked first: a server reaching into the Mac lets in whoever is on that server.
+        XCTAssertEqual(VMSettingsDraft.confirmationTitle(for: into, side: .server), "Let the server reach this Mac?")
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: into, side: .server),
+                       "Whoever is on the server will be able to connect to port 5432 on this Mac.")
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: into), "The VM will be able to connect to port 5432 on this Mac.")
+        XCTAssertNil(VMSettingsDraft.confirmation(for: onto, side: .server))
+        let open = ForwardRule(kind: .local, hostAddress: "0.0.0.0", hostPort: 8080, guestPort: 80)
+        XCTAssertEqual(VMSettingsDraft.confirmation(for: open, side: .server),
+                       "Computers that reach this Mac at 0.0.0.0 will be able to connect to port 80 on the server, through port 8080.")
+    }
+
+    /// In a VM's forward through an SSH host, what the server reaches can be
+    /// picked: the server itself, or another SSH host by name (its address
+    /// is not typed again).
+    func testWhatAServerReachesCanBePickedFromTheSSHHosts() {
+        let hosts = [SSHHost(name: "db", host: "10.0.0.5", user: "dev", auth: .key),
+                     SSHHost(name: "bastion", host: "example.com", user: "dev", auth: .key),
+                     SSHHost(name: "api", host: "api.internal", port: 2222, user: "ops", auth: .password)]
+        XCTAssertEqual(VMSettingsDraft.reachChoices(through: "bastion", hosts: hosts), [
+            VMSettingsDraft.ReachChoice(title: "The server itself (127.0.0.1)", address: "127.0.0.1"),
+            VMSettingsDraft.ReachChoice(title: "api (api.internal)", address: "api.internal"),
+            VMSettingsDraft.ReachChoice(title: "db (10.0.0.5)", address: "10.0.0.5"),
+        ])
+        XCTAssertEqual(VMSettingsDraft.reachChoices(through: "bastion", hosts: []).map(\.address), ["127.0.0.1"])
+    }
 }

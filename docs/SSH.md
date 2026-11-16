@@ -1,9 +1,9 @@
 # SSH hosts
 
-A tab can be a shell on a server reached over ssh, and a port can be carried between such a server
-and a VM with Monad in the middle. The servers are listed in Virtual Machines › SSH, beside the
-VMs, and drawn on the canvas. The security side is in [SECURITY.md](SECURITY.md) (SSH hosts); this
-is how it is built.
+A tab can be a shell on a server reached over ssh, and ports are carried between such a server and
+this Mac or a VM: set by hand, or by themselves once Monad's agent runs on the server. The servers
+are listed in Virtual Machines › SSH, beside the VMs, and drawn on the canvas. The security side is
+in [SECURITY.md](SECURITY.md) (SSH hosts); this is how it is built.
 
 ## An SSH host
 
@@ -15,13 +15,16 @@ is how it is built.
 | `keyPath` | `key` only: one private key file, by its full path. Left out: ssh's own keys and agent. |
 | `jump` | Another SSH host to connect through (one level; that host is reached directly). |
 | `keyInstalled` | `generated`: MonadHost saw the server accept Monad's key. |
+| `forwards` | Ports and sockets between this Mac and the server, set by hand (below). Left out: none. |
+| `agent` | Monad's agent is on the server, with your yes (below). Left out: no. |
+| `autoForward` | With the agent: `minimumPort` (1024 or more) and `ignoredPorts`, as a VM's. Left out: from 1024, none skipped. |
 
 MonadHost owns them: `~/.monad/ssh-hosts/<name>/host.json` (0600), read back as untrusted and
 validated (`SSHHost.validate`), at most 64. The app mirrors them through `HostClient` and changes
 them with requests (`setSSHHost`, `removeSSHHost`, …), like VMs. The same folder holds Monad's key
-pair for that server (`id_ed25519`, `id_ed25519.pub`) and, while forwards use it, its ssh master's
-socket and log (`ctl.sock`, `ssh-master.log`). `~/.monad/ssh-hosts/known_hosts` holds the host keys
-accepted in Monad.
+pair for that server (`id_ed25519`, `id_ed25519.pub`) and, while Monad is connected to it, its ssh
+master's socket and log (`ctl.sock`, `ssh-master.log`). `~/.monad/ssh-hosts/known_hosts` holds the
+host keys accepted in Monad.
 
 Monad never reads `~/.ssh/config`: every ssh it runs for an SSH host is `/usr/bin/ssh -F none`
 with the options built in one place (`SSHHost.sshArguments`).
@@ -83,16 +86,61 @@ master (`VMInstance.applyForwards`); the server's half is kept by `SSHHostManage
 ssh master per SSH host that carries anything (a `ForwardManager`, as for a VM), started when the
 first VM needs it and ended with the last. A forward is up when both halves are; its row says
 which is not. When the master cannot start (a question left unanswered, a key refused) or its
-connection is lost and one new try fails, the forwards stay down until Connect Forwards Again in
-the host's ⋯ menu (or on the canvas), or until a VM's forwards through it change.
+connection is lost and one new try fails, the forwards stay down until Connect Again in the host's
+⋯ menu (or on the canvas), or until a VM's forwards through it change.
+
+In Add Forward › SSH Host, "The server reaches" is typed or picked: the server itself, or another
+of your SSH hosts by name, at the address Monad has for it (`VMSettingsDraft.reachChoices`).
+
+## Ports between this Mac and an SSH host
+
+An SSH host has forwards of its own, in its sheet under Port forwarding: a VM's rules
+(`ForwardRule`: a server port on the Mac, a Mac port on the server, a SOCKS proxy that leaves from
+the server, unix sockets), with the server in the VM's place and the same checks
+(`InstanceConfig.validate(forwards:)`), 32 at most. A forward that lets the server reach this Mac,
+or that other computers can reach, is asked about when it is added: the server's end is on its
+loopback, so every account there reaches it.
+
+They need no agent. The same master carries them (`SSHHostManager.reconcile`), and MonadHost
+keeps it while it runs: it connects as it starts (`connectHosts`) to the hosts that have forwards
+or the agent, and ends every master as it ends (`stopAll`), so no forward on a Mac port outlives
+Monad. MonadHost runs while Monad is open or a VM runs. A host that asks (no password kept, a new
+host key) asks in Monad's panel when Monad opens.
+
+## Monad's agent on a server
+
+"Forward ports automatically" in the host's sheet asks first (`SSHHostAgent.question`), since it
+puts something on your server. With your yes, each time MonadHost connects it:
+
+1. asks the server what it is (`uname -s`: Linux and macOS have an agent, anything else says so);
+2. writes the agent to `~/.monad/monad-agent.sh` there (0600): the same script a VM runs
+   (`monad-agent.sh`, or `monad-macos-agent.sh`), so it always matches this Monad;
+3. runs it with `sh`, over the master (no second sign-in), its input and output one stream
+   (`ProcessChannel`), read like a VM's agent (`AgentClient`, `AgentProtocol`).
+
+The agent runs as the account Monad signs in as: nothing is installed as root, the server starts
+nothing itself, and the agent ends with the connection. It only says which TCP ports the server
+listens on, every two seconds. Those from 1024 up, on the loopback or on every address, come to
+this Mac's localhost at the same port (`ForwardPlan`, as for a VM): 32 at most, lowest first,
+never one in "Ports to skip", never over a port a Mac program listens on (the sheet then says
+which program), and never a port a VM's forward put on the server (that one is the VM's).
+
+- **Linux:** every listener on the server (`/proc/net/tcp`).
+- **macOS:** netstat shows an account that is not root no TCP socket (macOS 27), so the agent
+  reads lsof there: the listeners of that account's own programs.
+- An agent that ends is run again, less and less often when it ends at once. A server Monad has
+  no agent for is not asked again until Connect Again.
+- Turning it off stops the agent and removes the script while Monad is still connected (otherwise
+  the file stays, and nothing runs it). Removing the host does the same.
 
 ## On the canvas
 
 Each SSH host is a card below the networks ([CANVAS.md](CANVAS.md)), kept where it is dragged
 (`canvas.json`). A VM with forwards through a host that are on has a line to its card: teal while
 they are up, dashed orange when one failed, dotted while the VM is not running. A click shows the
-host's address, how Monad signs in and the forwards through it by VM; from there or its
-right-click a tab or a docked terminal opens on it, and its sheet for its settings. New on the
-canvas, or a right-click on the ground, adds a host with the same sheet as Virtual Machines › SSH.
-Notes, labels, zones and arrows name it `ssh:<name>`; they go with it when it is removed. The
-canvas gets what the hosts' list gets (`SSHHostSnapshot`): never a key or a password.
+host's address, how Monad signs in, the forwards through it by VM, and its own (with how its agent
+is doing); from there or its right-click a tab or a docked terminal opens on it, and its sheet for
+its settings. New on the canvas, or a right-click on the ground, adds a host with the same sheet as
+Virtual Machines › SSH. Notes, labels, zones and arrows name it `ssh:<name>`; they go with it when
+it is removed. The canvas gets what the hosts' list gets (`SSHHostSnapshot`): never a key or a
+password.

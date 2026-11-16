@@ -160,7 +160,8 @@ struct VMManagerView: View {
                     (NSApp.delegate as? AppDelegate)?.showDetails(of: vm)
                 } onCancel: { sheet = nil }
             case .sshHost(let editing):
-                SSHHostSheet(editing: editing, hosts: host.sshHosts.map(\.config)) { config, password in
+                SSHHostSheet(editing: editing, hosts: host.sshHosts.map(\.config),
+                             status: editing.flatMap { host.sshHost(named: $0.name) }) { config, password in
                     try await host.saveSSHHost(config, password: password)
                     return host.sshHost(named: config.name)?.config ?? config
                 } onInstallKey: { name in

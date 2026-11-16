@@ -63,6 +63,11 @@ struct SSHForward: Codable, Equatable, Hashable, Identifiable {
         direction == .ontoHost ? socket(in: paths) : nil
     }
 
+    /// The port this forward makes the server listen on, if it does: the
+    /// server's agent reports it like any other, and it is a VM's port,
+    /// never one to bring onto the Mac by itself.
+    var hostListenPort: Int? { direction == .ontoHost ? remotePort : nil }
+
     /// Why this cannot be a forward, or nil.
     var problem: String? {
         guard SSHHost.isValidName(sshHost) else { return "“\(sshHost)” is not an SSH host's name." }
@@ -109,6 +114,8 @@ extension SSHForward {
 struct SSHLeg: Equatable, Hashable {
     let host: String
     let spec: SSHMux.Spec
+    /// `SSHForward.hostListenPort`.
+    var listensOn: Int? = nil
 }
 
 /// Keeps the SSH hosts' side of the VMs' forwards (SSHHostManager).

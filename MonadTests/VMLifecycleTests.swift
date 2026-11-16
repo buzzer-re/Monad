@@ -969,8 +969,8 @@ final class VMLifecycleTests: XCTestCase {
         await assertEventually("specs \(ssh.specs)") { self.ssh.specs == vmSide }
         XCTAssertEqual(sshLegs.applied.last?.vm, "unit")
         XCTAssertEqual(sshLegs.applied.last?.legs, [SSHLeg(host: "box", spec: db.hostSpec(in: vm.paths)),
-                                                    SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths))],
-                       "a forward that is off has no leg")
+                                                    SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths), listensOn: 18000)],
+                       "a forward that is off has no leg; the port a VM puts on a server is said to be the VM's")
         await assertEventually { vm.forwards.count == 2 && vm.forwards.allSatisfy { $0.origin == .bridge && $0.state == .active } }
 
         // sshd in the VM now listens on 5432 for the forward: not a port to bring to the Mac.
@@ -988,7 +988,7 @@ final class VMLifecycleTests: XCTestCase {
         c.sshForwards = [web]
         try vm.update(c)
         await assertEventually("specs \(ssh.specs)") { !self.ssh.specs.contains(vmSide[0]) }
-        XCTAssertEqual(sshLegs.applied.last?.legs, [SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths))])
+        XCTAssertEqual(sshLegs.applied.last?.legs, [SSHLeg(host: "edge", spec: web.hostSpec(in: vm.paths), listensOn: 18000)])
         XCTAssertFalse(FileManager.default.fileExists(atPath: db.socket(in: vm.paths).path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: web.socket(in: vm.paths).path), "still carried")
 

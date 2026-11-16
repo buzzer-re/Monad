@@ -84,16 +84,24 @@ MainActor.assumeIsolated {
     // Clients are pinned to Monad's binaries as installed, read for each connection.
     let listener = HostXPCListener(listener: NSXPCListener(machServiceName: HostXPCSecurity.machServiceName),
                                    service: service, requirement: { HostXPCSecurity.clientRequirement() })
+    // No ssh master of an SSH host outlives MonadHost (its forwards on Mac
+    // ports would stay, with nothing left to say whose they are).
     let lifetime = HostLifetime(service: service, grace: 30) {
-        manager.flushLogs()
-        exit(EXIT_SUCCESS)
+        Task { @MainActor in
+            await SSHHostManager.shared.stopAll()
+            manager.flushLogs()
+            exit(EXIT_SUCCESS)
+        }
     }
     // An app with a newer embedded host asked us to make way (only when idle).
     service.onShutdown = {
         listener.invalidate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            manager.flushLogs()
-            exit(EXIT_SUCCESS)
+            Task { @MainActor in
+                await SSHHostManager.shared.stopAll()
+                manager.flushLogs()
+                exit(EXIT_SUCCESS)
+            }
         }
     }
 
@@ -102,6 +110,7 @@ MainActor.assumeIsolated {
         Task { @MainActor in
             Log.host.notice("SIGTERM: stopping VMs")
             await manager.stopAll(because: "MonadHost is quitting (launchd asked it to: a logout, a restart or an unload)")
+            await SSHHostManager.shared.stopAll()
             manager.flushLogs()
             exit(EXIT_SUCCESS)
         }
@@ -115,6 +124,8 @@ MainActor.assumeIsolated {
 
     listener.resume()
     lifetime.start()
+    // The SSH hosts with an agent or forwards of their own, while MonadHost runs.
+    SSHHostManager.shared.connectHosts()
     Log.host.notice("MonadHost \(HostProtocol.version) listening on \(HostXPCSecurity.machServiceName, privacy: .public)")
     // AppKit's loop (it runs the main queue too): a macOS VM's desktop is a
     // window here (MacDesktop). Nothing shows until one is opened.

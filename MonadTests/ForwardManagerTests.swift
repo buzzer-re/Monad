@@ -237,14 +237,68 @@ final class ForwardManagerTests: XCTestCase {
                                            : .ok()
                                    }, watcher: FakeWatcher(), clock: clock, vmName: "susetest")
         await other.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 8000)])
-        XCTAssertEqual(ForwardManager.masterVM(pid: 500), "susetest")
+        XCTAssertEqual(ForwardManager.masterHolder(pid: 500), "the virtual machine susetest")
         ssh.busyHostPorts = ["127.0.0.1:8000:"]
         ssh.listeners = [8000: ["ssh"]]
         await manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 8000)])
         XCTAssertEqual(state("127.0.0.1:8000:127.0.0.1:8000"),
                        .failed("Port 8000 on this Mac is already in use by the virtual machine susetest."))
         other.stop()
-        XCTAssertNil(ForwardManager.masterVM(pid: 500))
+        XCTAssertNil(ForwardManager.masterHolder(pid: 500))
+    }
+
+    /// An SSH host's master holds Mac ports too (its own forwards, its
+    /// agent's), and a failure says so.
+    func testAMacPortHeldByAnSSHHostNamesIt() async {
+        defer { ForwardManager.forgetMasters() }
+        let other = ForwardManager(mux: SSHMux(paths: InstancePaths(name: "box", root: URL(fileURLWithPath: "/tmp/monad-test")),
+                                                host: "example.com", options: []),
+                                   runner: FakeCommandRunner { call in
+                                       call.arguments.contains("check")
+                                           ? .init(status: 0, stdout: Data(), stderr: Data("Master running (pid=500)\r\n".utf8))
+                                           : .ok()
+                                   }, watcher: FakeWatcher(), clock: clock, holder: "the SSH host box")
+        await other.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 8000)])
+        ssh.busyHostPorts = ["127.0.0.1:8000:"]
+        ssh.listeners = [8000: ["ssh"]]
+        await manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [port("0.0.0.0", 8000)])
+        XCTAssertEqual(state("127.0.0.1:8000:127.0.0.1:8000"),
+                       .failed("Port 8000 on this Mac is already in use by the SSH host box."))
+        other.stop()
+    }
+
+    /// An SSH host's agent runs over its master: the master is kept with
+    /// nothing to forward yet, and whoever asked for it hears when it is
+    /// up and when it is gone.
+    func testAMasterIsKeptWithNothingToForwardWhenAskedFor() async {
+        var ups: [Bool] = []
+        manager.onMaster = { ups.append($0) }
+        await manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [])
+        XCTAssertEqual(ssh.masterPID, 0, "nothing to forward: no connection")
+        XCTAssertFalse(manager.hasMaster)
+        await manager.apply(configured: [], autoForward: AutoForwardSettings(), ports: [], keepMaster: true)
+        XCTAssertEqual(ssh.masterPID, 100)
+        XCTAssertTrue(manager.hasMaster)
+        XCTAssertEqual(ups, [true])
+        ssh.kill()
+        watcher.exit(100)
+        XCTAssertEqual(ups, [true, false])
+        XCTAssertFalse(manager.hasMaster)
+        await assertEventually { self.ssh.masterPID == 101 && ups == [true, false, true] }
+    }
+
+    /// The ports came from an agent whose connection is gone: they are no
+    /// longer forwarded by the next master, without starting one for it.
+    func testPortsCanBeForgottenWithoutReconnecting() async {
+        await manager.apply(configured: [ForwardRule(kind: .socks, hostPort: 1080)], autoForward: AutoForwardSettings(),
+                            ports: [port("0.0.0.0", 3000)])
+        XCTAssertEqual(ssh.activeSpecs.count, 2)
+        let runs = runner.calls.count
+        manager.forgetPorts()
+        XCTAssertEqual(runner.calls.count, runs, "nothing runs for it")
+        ssh.kill()
+        watcher.exit(100)
+        await assertEventually { self.ssh.masterPID == 101 && self.ssh.activeSpecs == ["127.0.0.1:1080"] }
     }
 
     func testPortsOverTheLimitAreNotForwardedAndCounted() async {

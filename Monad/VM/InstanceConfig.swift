@@ -268,7 +268,7 @@ struct ForwardRule: Codable, Equatable, Hashable, Identifiable {
 }
 
 /// Lima-style automatic forwarding of ports the guest listens on.
-struct AutoForwardSettings: Codable, Equatable {
+struct AutoForwardSettings: Codable, Equatable, Hashable {
     var enabled: Bool = true
     /// Ports below this are never auto-forwarded (privileged range).
     var minimumPort: Int = 1024
@@ -957,38 +957,7 @@ extension InstanceConfig {
             guard guestPaths.insert(g).inserted else { throw ValidationError.duplicateGuestPath(g) }
         }
 
-        var bindings = Set<String>()
-        for rule in forwards {
-            switch rule.kind {
-            case .local, .remote, .socks:
-                guard let hp = rule.hostPort, rule.kind == .socks || rule.guestPort != nil else {
-                    throw ValidationError.incompleteForward
-                }
-                for p in [hp, rule.guestPort].compactMap({ $0 }) where !(1...65535).contains(p) {
-                    throw ValidationError.port(p)
-                }
-                guard Self.isIPLiteral(rule.hostAddress) else { throw ValidationError.hostAddress(rule.hostAddress) }
-                if rule.kind != .socks {
-                    guard Self.isIPLiteral(rule.guestHost) || Self.isHostName(rule.guestHost) else {
-                        throw ValidationError.hostAddress(rule.guestHost)
-                    }
-                }
-                if rule.bindsOnHost {
-                    guard hp >= 1024 else { throw ValidationError.privilegedHostPort(hp) }
-                    let key = "\(rule.hostAddress):\(hp)"
-                    guard bindings.insert(key).inserted else { throw ValidationError.duplicateHostBinding(key) }
-                }
-            case .unixLocal, .unixRemote:
-                guard let hs = rule.hostSocket, let gs = rule.guestSocket else { throw ValidationError.incompleteForward }
-                for p in [hs, gs] where !p.hasPrefix("/") || p.contains(":") || p.contains(where: \.isWhitespace)
-                    || Self.hasControl(p) {
-                    throw ValidationError.socketPath(p)
-                }
-                if rule.bindsOnHost {
-                    guard bindings.insert(hs).inserted else { throw ValidationError.duplicateHostBinding(hs) }
-                }
-            }
-        }
+        try Self.validate(forwards: forwards)
 
         guard sshForwards.count <= SSHForward.maxPerVM else { throw ValidationError.tooManySSHForwards }
         for forward in sshForwards {
@@ -1131,6 +1100,46 @@ extension InstanceConfig {
             let candidate = String(name.prefix(32 - suffix.count)) + suffix
             if !used.contains(candidate.lowercased()) { return candidate }
             n += 1
+        }
+    }
+}
+
+extension InstanceConfig {
+    /// Port and socket forwards as a list (a VM's, an SSH host's own): each
+    /// complete, its ports and addresses real ones, nothing privileged on
+    /// the Mac, no two listening on the same Mac port or socket.
+    static func validate(forwards: [ForwardRule]) throws {
+        var bindings = Set<String>()
+        for rule in forwards {
+            switch rule.kind {
+            case .local, .remote, .socks:
+                guard let hp = rule.hostPort, rule.kind == .socks || rule.guestPort != nil else {
+                    throw ValidationError.incompleteForward
+                }
+                for p in [hp, rule.guestPort].compactMap({ $0 }) where !(1...65535).contains(p) {
+                    throw ValidationError.port(p)
+                }
+                guard isIPLiteral(rule.hostAddress) else { throw ValidationError.hostAddress(rule.hostAddress) }
+                if rule.kind != .socks {
+                    guard isIPLiteral(rule.guestHost) || isHostName(rule.guestHost) else {
+                        throw ValidationError.hostAddress(rule.guestHost)
+                    }
+                }
+                if rule.bindsOnHost {
+                    guard hp >= 1024 else { throw ValidationError.privilegedHostPort(hp) }
+                    let key = "\(rule.hostAddress):\(hp)"
+                    guard bindings.insert(key).inserted else { throw ValidationError.duplicateHostBinding(key) }
+                }
+            case .unixLocal, .unixRemote:
+                guard let hs = rule.hostSocket, let gs = rule.guestSocket else { throw ValidationError.incompleteForward }
+                for p in [hs, gs] where !p.hasPrefix("/") || p.contains(":") || p.contains(where: \.isWhitespace)
+                    || hasControl(p) {
+                    throw ValidationError.socketPath(p)
+                }
+                if rule.bindsOnHost {
+                    guard bindings.insert(hs).inserted else { throw ValidationError.duplicateHostBinding(hs) }
+                }
+            }
         }
     }
 }

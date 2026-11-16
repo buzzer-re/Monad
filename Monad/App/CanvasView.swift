@@ -857,7 +857,8 @@ struct CanvasView: View {
                               done: { canvas.sheet = nil })
             case .sshHost(let editing, let point):
                 SSHHostSheet(editing: editing.flatMap { canvas.sshHost(named: $0)?.config },
-                             hosts: canvas.sshHosts.map(\.config)) { config, password in
+                             hosts: canvas.sshHosts.map(\.config),
+                             status: editing.flatMap { canvas.sshHost(named: $0) }) { config, password in
                     // A new one goes where it was asked for; an edited one stays.
                     if editing == nil { canvas.sshHostWillBeSaved(config.name, at: point) }
                     try await canvas.host.saveSSHHost(config, password: password)
@@ -1308,8 +1309,8 @@ struct CanvasView: View {
                 Button("Terminal in the Canvas") { canvas.openTerminal(sshHost: name) }
                 Button("Open Tab") { appDelegate?.open(.ssh(name)) }
                 Button("Settings…") { canvas.editSSHHost(name) }
-                if SSHHostDraft.failedForwards(snapshot) > 0 {
-                    Button("Connect Forwards Again") { canvas.reconnect(sshHost: name) }
+                if SSHHostDraft.canReconnect(snapshot) {
+                    Button("Connect Again") { canvas.reconnect(sshHost: name) }
                 }
                 Divider()
                 Button("Add Label") { canvas.write(.label, on: ref) }
@@ -1707,8 +1708,23 @@ private struct CanvasSSHInspector: View, InspectorParts {
                             }
                         }
                     }
-                    if SSHHostDraft.failedForwards(snapshot) > 0 {
-                        Button("Connect Forwards Again") { canvas.reconnect(sshHost: name) }
+                    // Its own forwards to this Mac, and those its agent makes by themselves.
+                    if !snapshot.config.forwards.isEmpty || snapshot.config.agent {
+                        section("This Mac") {
+                            if let agent = SSHHostDraft.agentTag(snapshot) {
+                                let auto = (snapshot.forwards ?? []).filter { $0.origin == .auto }.count
+                                Text(agent.problem ? agent.text
+                                     : "\(agent.text) · \(auto) \(auto == 1 ? "port" : "ports") forwarded automatically")
+                                    .font(.system(size: 12)).foregroundStyle(agent.problem ? Color.orange : Color.secondary)
+                            }
+                            ForEach(snapshot.config.forwards.prefix(6)) { rule in
+                                Text(VMSettingsDraft.describe(rule, side: .server)).font(.system(size: 12))
+                                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    if SSHHostDraft.canReconnect(snapshot) {
+                        Button("Connect Again") { canvas.reconnect(sshHost: name) }
                     }
                 }
                 .padding(18)

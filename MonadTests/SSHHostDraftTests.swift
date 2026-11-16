@@ -1,6 +1,7 @@
 //
 //  SSHHostDraftTests.swift — the New SSH Host sheet's fields: what they
-//  make of what was typed, what they refuse, and how a host's row reads.
+//  make of what was typed, what they refuse, what they keep of a host's
+//  forwards and agent, and how a host's row reads.
 //
 
 import XCTest
@@ -107,5 +108,60 @@ final class SSHHostDraftTests: XCTestCase {
         ]
         XCTAssertEqual(SSHHostDraft.failedForwards(SSHHostSnapshot(config: host, hasPassword: false, forwards: forwards)), 1)
         XCTAssertEqual(SSHHostDraft.failedForwards(SSHHostSnapshot(config: host, hasPassword: false)), 0)
+    }
+
+    /// A host's forwards and its agent are in the sheet too: what is not
+    /// shown there (where automatic forwards start) is kept as it was.
+    func testItsForwardsAndAgentGoThroughTheSheet() throws {
+        var host = SSHHost(name: "box", host: "example.com", user: "dev", auth: .key)
+        host.agent = true
+        host.autoForward = AutoForwardSettings(enabled: true, minimumPort: 3000, ignoredPorts: [5432, 6379])
+        host.forwards = [ForwardRule(kind: .local, hostPort: 8080, guestPort: 80)]
+        var draft = SSHHostDraft(host)
+        XCTAssertTrue(draft.agent)
+        XCTAssertEqual(draft.ignoredPorts, "5432, 6379")
+        XCTAssertEqual(draft.forwards, host.forwards)
+        XCTAssertEqual(try draft.build(), host)
+
+        draft.ignoredPorts = "9000 9001"
+        draft.forwards.append(ForwardRule(kind: .socks, hostPort: 1080))
+        let changed = try draft.build()
+        XCTAssertEqual(changed.autoForward, AutoForwardSettings(enabled: true, minimumPort: 3000, ignoredPorts: [9000, 9001]))
+        XCTAssertEqual(changed.forwards.count, 2)
+        draft.ignoredPorts = "http"
+        XCTAssertEqual(message { try draft.build() }, "“http” is not a port number (1–65535).")
+    }
+
+    func testANewHostHasNoAgentAndNoForwards() {
+        let draft = SSHHostDraft(nil, user: "dev")
+        XCTAssertFalse(draft.agent, "the agent goes onto a server only with the user's yes")
+        XCTAssertEqual(draft.forwards, [])
+        XCTAssertEqual(draft.ignoredPorts, "")
+    }
+
+    /// A row says how the host's agent is doing, and offers to connect
+    /// again when something it should carry is not carried.
+    func testARowSaysHowTheAgentIsDoing() {
+        var host = SSHHost(name: "box", host: "example.com", user: "dev", auth: .key)
+        XCTAssertNil(SSHHostDraft.agentTag(SSHHostSnapshot(config: host, hasPassword: false)))
+        XCTAssertFalse(SSHHostDraft.canReconnect(SSHHostSnapshot(config: host, hasPassword: false)))
+        host.agent = true
+        let running = SSHHostSnapshot(config: host, hasPassword: false, agentRunning: true)
+        XCTAssertEqual(SSHHostDraft.agentTag(running)?.text, "Agent running")
+        XCTAssertFalse(SSHHostDraft.canReconnect(running))
+        // A server's port a Mac program already holds is skipped, not broken:
+        // connecting again would change nothing.
+        let skipped = ForwardStatus(flag: "-L", spec: "127.0.0.1:8080:127.0.0.1:8080", origin: .auto,
+                                    state: .failed("Port 8080 on this Mac is already in use by python3."))
+        let busy = SSHHostSnapshot(config: host, hasPassword: false, forwards: [skipped], agentRunning: true)
+        XCTAssertEqual(SSHHostDraft.failedForwards(busy), 0)
+        XCTAssertFalse(SSHHostDraft.canReconnect(busy))
+        let down = SSHHostSnapshot(config: host, hasPassword: false, agentRunning: false)
+        XCTAssertEqual(SSHHostDraft.agentTag(down)?.text, "Agent not running")
+        XCTAssertEqual(SSHHostDraft.agentTag(down)?.problem, true)
+        XCTAssertTrue(SSHHostDraft.canReconnect(down))
+        let failed = ForwardStatus(flag: "-L", spec: "127.0.0.1:8080:127.0.0.1:80", origin: .configured, state: .failed("no"))
+        host.agent = false
+        XCTAssertTrue(SSHHostDraft.canReconnect(SSHHostSnapshot(config: host, hasPassword: false, forwards: [failed])))
     }
 }

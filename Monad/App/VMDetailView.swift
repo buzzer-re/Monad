@@ -224,10 +224,10 @@ struct VMDetailView: View {
                 turning = nil
             }
         } message: {
-            Text(turning.flatMap(VMSettingsDraft.confirmation(for:)) ?? "")
+            Text(turning.flatMap { VMSettingsDraft.confirmation(for: $0) } ?? "")
         }
         .sheet(isPresented: $addingForward) {
-            ForwardEditor(sshHosts: host.sshHosts.map(\.config.name)) { rule in
+            ForwardEditor(sshHosts: host.sshHosts.map(\.config)) { rule in
                 draft.config.forwards.append(rule)
                 addingForward = false
             } onAddSSH: { forward in
@@ -1330,29 +1330,34 @@ private struct JSONEditor: NSViewRepresentable {
     }
 }
 
-/// Sheet for one new forward.
-private struct ForwardEditor: View {
+/// Sheet for one new forward: a VM's, or an SSH host's own (`side`; the
+/// same kinds but for one through an SSH host, said about the server).
+struct ForwardEditor: View {
+    typealias Side = VMSettingsDraft.ForwardSide
+
     enum Kind: String, CaseIterable, Identifiable {
         case macPort, vmPort, socks, socket, sshHost
         var id: String { rawValue }
 
-        var title: String {
+        func title(_ side: Side) -> String {
             switch self {
             case .macPort: return "Mac Port"
-            case .vmPort: return "VM Port"
+            case .vmPort: return "\(side.noun) Port"
             case .socks: return "SOCKS"
             case .socket: return "Socket"
             case .sshHost: return "SSH Host"
             }
         }
 
-        var explanation: String {
-            switch self {
-            case .macPort: return "A program on this Mac, used from the VM: the VM connects to 127.0.0.1 and reaches the Mac's port."
-            case .vmPort: return "A program in the VM, used from this Mac. Ports the VM opens are usually forwarded by themselves (below)."
-            case .socks: return "A SOCKS5 proxy on this Mac. Connections leave from the VM."
-            case .socket: return "A Unix socket in the VM, used from this Mac (e.g. Docker)."
-            case .sshHost: return "A port carried between the VM and a server added under Virtual Machines › SSH, with Monad in the middle."
+        func explanation(_ side: Side) -> String {
+            switch (self, side) {
+            case (.macPort, .vm): return "A program on this Mac, used from the VM: the VM connects to 127.0.0.1 and reaches the Mac's port."
+            case (.macPort, .server): return "A program on this Mac, used from the server: programs there connect to 127.0.0.1 and reach the Mac's port."
+            case (.vmPort, .vm): return "A program in the VM, used from this Mac. Ports the VM opens are usually forwarded by themselves (below)."
+            case (.vmPort, .server): return "A program on the server, used from this Mac. With Monad's agent on the server, the ports it opens are forwarded by themselves."
+            case (.socks, _): return "A SOCKS5 proxy on this Mac. Connections leave from \(side.name)."
+            case (.socket, _): return "A Unix socket \(side.inside), used from this Mac (e.g. Docker)."
+            case (.sshHost, _): return "A port carried between the VM and a server added under Virtual Machines › SSH, with Monad in the middle."
             }
         }
     }
@@ -1363,29 +1368,28 @@ private struct ForwardEditor: View {
     enum Pending {
         case rule(ForwardRule)
         case ssh(SSHForward)
-
-        var title: String {
-            switch self {
-            case .rule(let rule): return VMSettingsDraft.confirmationTitle(for: rule)
-            case .ssh: return VMSettingsDraft.sshForwardConfirmationTitle
-            }
-        }
-
-        var message: String {
-            switch self {
-            case .rule(let rule): return VMSettingsDraft.confirmation(for: rule) ?? ""
-            case .ssh(let forward): return VMSettingsDraft.confirmation(for: forward)
-            }
-        }
     }
 
-    /// The SSH hosts there are, by name.
-    var sshHosts: [String]
+    var side: Side = .vm
+    /// The SSH hosts there are (a VM's forward goes through one, and may
+    /// name another as what that one reaches).
+    var sshHosts: [SSHHost] = []
     var onAdd: (ForwardRule) -> Void
-    var onAddSSH: (SSHForward) -> Void
+    var onAddSSH: (SSHForward) -> Void = { _ in }
     var onCancel: () -> Void
 
-    @State private var kind: Kind = .macPort
+    /// `kind`: the kind it opens on (a preview's; the user picks).
+    init(side: Side = .vm, sshHosts: [SSHHost] = [], kind: Kind = .macPort, onAdd: @escaping (ForwardRule) -> Void,
+         onAddSSH: @escaping (SSHForward) -> Void = { _ in }, onCancel: @escaping () -> Void) {
+        self.side = side
+        self.sshHosts = sshHosts
+        self.onAdd = onAdd
+        self.onAddSSH = onAddSSH
+        self.onCancel = onCancel
+        _kind = State(initialValue: kind)
+    }
+
+    @State private var kind: Kind
     @State private var hostPort = ""
     @State private var guestPort = ""
     @State private var hostSocket = ""
@@ -1399,21 +1403,42 @@ private struct ForwardEditor: View {
     @State private var remotePort = ""
     @State private var pending: Pending?
 
+    /// A server's own forwards do not go through another server.
+    private var kinds: [Kind] { Kind.allCases.filter { side == .vm || $0 != .sshHost } }
+    private var hasHosts: Bool { !sshHosts.isEmpty }
+
+    private var pendingTitle: String {
+        switch pending {
+        case .rule(let rule)?: return VMSettingsDraft.confirmationTitle(for: rule, side: side)
+        case .ssh?: return VMSettingsDraft.sshForwardConfirmationTitle
+        case nil: return ""
+        }
+    }
+
+    private var pendingMessage: String {
+        switch pending {
+        case .rule(let rule)?: return VMSettingsDraft.confirmation(for: rule, side: side) ?? ""
+        case .ssh(let forward)?: return VMSettingsDraft.confirmation(for: forward)
+        case nil: return ""
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(symbol: "arrow.left.arrow.right", color: .purple, title: "Add Forward", subtitle: kind.explanation)
+            PageHeader(symbol: "arrow.left.arrow.right", color: .purple, title: "Add Forward", subtitle: kind.explanation(side))
                 .padding(.horizontal, 24).padding(.top, 18)
             Form {
                 Picker("Kind", selection: $kind) {
-                    ForEach(Kind.allCases) { Text($0.title).tag($0) }
+                    ForEach(kinds) { Text($0.title(side)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 switch kind {
                 case .macPort:
                     TextField("Mac port", text: $hostPort, prompt: Text("8000"))
-                    TextField("In the VM at port", text: $guestPort, prompt: Text(hostPort.isEmpty ? "the same" : hostPort))
+                    TextField(side == .vm ? "In the VM at port" : "On the server at port", text: $guestPort,
+                              prompt: Text(hostPort.isEmpty ? "the same" : hostPort))
                 case .vmPort:
-                    TextField("VM port", text: $guestPort, prompt: Text("80"))
+                    TextField("\(side.noun) port", text: $guestPort, prompt: Text("80"))
                     TextField("On the Mac at port", text: $hostPort, prompt: Text("8080"))
                     TextField("Listen on address", text: $address, prompt: Text("127.0.0.1"))
                 case .socks:
@@ -1421,14 +1446,14 @@ private struct ForwardEditor: View {
                     TextField("Listen on address", text: $address, prompt: Text("127.0.0.1"))
                 case .socket:
                     TextField("Mac socket", text: $hostSocket, prompt: Text("~/.monad/docker.sock"))
-                    TextField("VM socket", text: $guestSocket, prompt: Text("/run/docker.sock"))
+                    TextField("\(side.noun) socket", text: $guestSocket, prompt: Text("/run/docker.sock"))
                 case .sshHost:
-                    if sshHosts.isEmpty {
+                    if !hasHosts {
                         Notice(symbol: "info.circle.fill", color: .blue, text: "Add an SSH host first, under Virtual Machines › SSH.")
                             .font(Design.caption)
                     } else {
                         Picker("SSH host", selection: $sshHost) {
-                            ForEach(sshHosts, id: \.self) { Text($0).tag($0) }
+                            ForEach(sshHosts.map(\.name), id: \.self) { Text($0).tag($0) }
                         }
                         Picker("Direction", selection: $direction) {
                             Text("Server port into the VM").tag(SSHForward.Direction.intoVM)
@@ -1438,7 +1463,22 @@ private struct ForwardEditor: View {
                         .labelsHidden()
                         switch direction {
                         case .intoVM:
-                            TextField("The server reaches", text: $remoteHost, prompt: Text("127.0.0.1"))
+                            // The address is typed, or picked: the server itself, or another SSH host by name.
+                            LabeledContent("The server reaches") {
+                                HStack(spacing: 6) {
+                                    TextField("The server reaches", text: $remoteHost, prompt: Text("127.0.0.1")).labelsHidden()
+                                    Menu {
+                                        ForEach(VMSettingsDraft.reachChoices(through: sshHost, hosts: sshHosts), id: \.title) { choice in
+                                            Button(choice.title) { remoteHost = choice.address }
+                                        }
+                                    } label: {
+                                        Image(systemName: "server.rack")
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                    .fixedSize()
+                                    .help("Pick the server itself or another of your SSH hosts")
+                                }
+                            }
                             TextField("at port", text: $remotePort, prompt: Text("5432"))
                             TextField("In the VM at port", text: $guestPort, prompt: Text(remotePort.isEmpty ? "the same" : remotePort))
                         case .ontoHost:
@@ -1451,7 +1491,8 @@ private struct ForwardEditor: View {
                 switch kind {
                 case .macPort:
                     Notice(symbol: "exclamationmark.shield", color: .orange,
-                           text: "Programs in the VM will reach this port on your Mac, past the VM's firewall.")
+                           text: side == .vm ? "Programs in the VM will reach this port on your Mac, past the VM's firewall."
+                               : "Whoever is on the server will reach this port on your Mac.")
                         .font(Design.caption)
                 case .vmPort, .socks:
                     if rule?.opensToNetwork == true {
@@ -1466,7 +1507,7 @@ private struct ForwardEditor: View {
                 case .socket:
                     Notice(symbol: "lock.fill", color: .green, text: "Only this Mac can connect.").font(Design.caption)
                 case .sshHost:
-                    if !sshHosts.isEmpty {
+                    if hasHosts {
                         Notice(symbol: "exclamationmark.shield", color: .orange,
                                text: direction == .intoVM
                                    ? "Programs in the VM will reach that address through the server, past the VM's firewall."
@@ -1485,7 +1526,7 @@ private struct ForwardEditor: View {
                         // Always asked: it passes the VM's firewall with the user's sign-in to the server.
                         if let sshForward { pending = .ssh(sshForward) }
                     } else if let rule {
-                        if VMSettingsDraft.confirmation(for: rule) != nil { pending = .rule(rule) } else { onAdd(rule) }
+                        if VMSettingsDraft.confirmation(for: rule, side: side) != nil { pending = .rule(rule) } else { onAdd(rule) }
                     }
                 }
                     .keyboardShortcut(.defaultAction)
@@ -1496,8 +1537,8 @@ private struct ForwardEditor: View {
             .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(width: 540, height: 480)
-        .onAppear { if sshHost.isEmpty { sshHost = sshHosts.first ?? "" } }
-        .confirmationDialog(pending?.title ?? "", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+        .onAppear { if sshHost.isEmpty { sshHost = sshHosts.first?.name ?? "" } }
+        .confirmationDialog(pendingTitle, isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
             Button("Add Forward") {
                 switch pending {
                 case .rule(let rule)?: onAdd(rule)
@@ -1507,7 +1548,7 @@ private struct ForwardEditor: View {
                 pending = nil
             }
         } message: {
-            Text(pending?.message ?? "")
+            Text(pendingMessage)
         }
     }
 
@@ -1530,7 +1571,7 @@ private struct ForwardEditor: View {
 
     /// The forward through an SSH host as typed, once it can be one.
     private var sshForward: SSHForward? {
-        guard kind == .sshHost, sshHosts.contains(sshHost) else { return nil }
+        guard kind == .sshHost, sshHosts.contains(where: { $0.name == sshHost }) else { return nil }
         return VMSettingsDraft.sshForward(host: sshHost, direction: direction, vmPort: guestPort, remoteHost: remoteHost,
                                           remotePort: remotePort)
     }

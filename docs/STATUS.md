@@ -1,6 +1,6 @@
 # Monad: where things stand
 
-Last updated: 2026-11-14. This is the state of the project, not its
+Last updated: 2026-11-16. This is the state of the project, not its
 history: what Monad does, how it is built, how it is tested, and what is open. Update it with every
 change that moves any of these.
 
@@ -98,7 +98,12 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   askpass, never in a tab. A VM's port is carried to or from a server with Monad in the middle
   (`sshForwards`: two ssh masters joined by a private socket), from the VM's Port Forwarding page
   or `add_ssh_forward`; agents can list the hosts but not add or open them (`docs/SSH.md`). The
-  hosts are on the canvas too, each with a line to the VMs that carry ports through it.
+  hosts are on the canvas too, each with a line to the VMs that carry ports through it. A host
+  has forwards of its own to this Mac (its sheet's Port forwarding: a VM's kinds, with the server
+  in the VM's place), and with Monad's agent on the server (a VM's agent script in `~/.monad`
+  there, put there with the user's yes and run over Monad's ssh connection) the ports it listens
+  on from 1024 up come to this Mac's localhost by themselves, as a VM's do. MonadHost keeps those
+  connections while it runs and ends them as it ends.
 - **Windows:** a window is one size whatever its tabs (cell steps only apply to a window with one
   tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
   added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
@@ -177,10 +182,19 @@ warnings, this file updated, and no private names or paths in what is committed.
   dropped on the tab; the tab back after a relaunch. On the canvas (drawn offscreen and looked at,
   not yet used by hand): a host's card dragged and still there after a relaunch, its inspector,
   the line to a VM turning teal once a forward is up, New › SSH Host placing the card where it
-  was asked for, Terminal docking a session on the host.
-- **SSH hosts, limits:** a forward through a server whose connection is lost is tried again once;
-  after that it stays down until Connect Forwards Again (the host's ⋯ menu) or a change of the
-  VM's forwards. One level of "connect through". A tab does not reconnect by itself.
+  was asked for, Terminal docking a session on the host. The agent and a host's own forwards
+  (the sheet drawn offscreen and looked at; the chain run through a throwaway test against a
+  loopback sshd with this Mac as the server, `docs/SECURITY.md` › Checked on the Mac): turning on
+  "Forward ports automatically" on a Linux server (the question, then a port opened there with
+  `python3 -m http.server 8000` reachable at `localhost:8000` here and gone when it stops), the
+  agent as an account that is not root on Linux, a hand-made forward in the sheet, "The server
+  reaches" picked from the SSH hosts in a VM's Add Forward, and the connection after the Mac
+  slept.
+- **SSH hosts, limits:** a connection to a server that is lost is tried again once; after that
+  its forwards and its agent stay down until Connect Again (the host's ⋯ menu, or the canvas) or,
+  for a VM's forwards, a change of them. A server that is unreachable when Monad opens is not
+  tried again by itself. On a macOS server the agent sees only the ports of the account's own
+  programs. One level of "connect through". A tab does not reconnect by itself.
 - **Not yet tried on the Mac:** dragging a pane by its header, the pane menu's contexts and ⇧⌘←/→; the
   first boot of Fedora, openSUSE and AlmaLinux (Ubuntu 26.04 and Debian 13 were made and checked
   through the Debug MCP, health port included); the kernel console on hvc0 (`serial.log` from a

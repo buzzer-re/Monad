@@ -85,9 +85,10 @@ icon's ember for selection and live traffic), light and dark.
 - **SSH hosts.** Each is a card (a teal tile, its name, `user@host`, a warning mark when one of
   its forwards is not up), dragged where the user wants it. A click opens its inspector in the
   VM inspector's place (one of the two shows): Terminal, Open Tab, Settings… (the SSH host's
-  sheet), its address and how Monad signs in, and the forwards carried through it by VM
+  sheet), its address and how Monad signs in, the forwards carried through it by VM
   (`SSHLinks`), in the VM window's words, each with a dot for its state and a way to that VM's
-  forwarding settings; Connect Forwards Again when one failed. Its right-click has the same,
+  forwarding settings, and under This Mac its own forwards and how its agent is doing; Connect
+  Again when a forward failed or its agent is not running. Its right-click has the same,
   and Add Label, Add Note and Arrow From Here. Delete does not remove an SSH host: that is done
   in Virtual Machines › SSH hosts.
 - **Making.** New (top right) makes a VM, a network or an SSH host in the middle of the view; a

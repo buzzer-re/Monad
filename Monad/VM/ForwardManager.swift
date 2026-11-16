@@ -182,6 +182,11 @@ final class ForwardManager {
     private let watcher: ProcessExitWatching
     private let clock: MonadClock
     private var plan: ForwardPlan?
+    /// What the plan was last made from, less the ports (`forgetPorts`).
+    private var inputs: (configured: [ForwardRule], autoForward: AutoForwardSettings, bridges: [ForwardPlan.Bridge])?
+    /// The master is wanted with nothing to forward (an SSH host's agent
+    /// runs over it).
+    private var keepMaster = false
     private var active: [SSHMux.Spec: ForwardStatus.Origin] = [:]
     private var failures: [SSHMux.Spec: String] = [:]
     private var masterPID: Int32?
@@ -212,25 +217,32 @@ final class ForwardManager {
     private let debugLog: DebugLog
     private let debugScope: String
 
-    /// The VM whose forwards these are (its master is named after it when
-    /// it holds a port another VM wants).
-    private let vmName: String?
+    /// Whose master this is, as a failure names what holds a Mac port
+    /// ("the virtual machine web", "the SSH host box"); nil: just "ssh".
+    private let holder: String?
     /// What the master connects to, as a failure says it ("the VM", "the
     /// SSH host box").
     private let target: String
     /// Added to the environment of the ssh that starts the master (an SSH
     /// host's askpass variables, a new ticket each start).
     var masterEnvironment: (@MainActor () -> [String: String])?
+    /// A master came up (true) or exited (false); not said when the
+    /// forwards are stopped. An SSH host's agent runs while one is up.
+    var onMaster: ((Bool) -> Void)?
+    var hasMaster: Bool { masterPID != nil }
 
-    /// Each running ssh master by pid, with its VM: a Mac port held by one
-    /// is "in use by the virtual machine <name>", not by "ssh".
+    /// Each running ssh master by pid, with whose it is: a Mac port held by
+    /// one is "in use by the virtual machine <name>", not by "ssh".
     private static var masters: [Int32: String] = [:]
-    static func masterVM(pid: Int32) -> String? { masters[pid] }
+    static func masterHolder(pid: Int32) -> String? { masters[pid] }
     static func forgetMasters() { masters = [:] }
 
+    /// `vmName`: the VM whose forwards these are; `holder`: whose they are
+    /// when not a VM's.
     init(mux: SSHMux, runner: CommandRunning, watcher: ProcessExitWatching? = nil, clock: MonadClock = SystemClock(),
-         debugLog: DebugLog = .shared, debugScope: String = "forwards", vmName: String? = nil, target: String = "the VM") {
-        self.vmName = vmName
+         debugLog: DebugLog = .shared, debugScope: String = "forwards", vmName: String? = nil, holder: String? = nil,
+         target: String = "the VM") {
+        self.holder = holder ?? vmName.map { "the virtual machine \($0)" }
         self.target = target
         self.mux = mux
         self.runner = runner
@@ -247,10 +259,13 @@ final class ForwardManager {
 
     /// Make the master's forwards match the rules and the guest's ports.
     /// A `guestEvent` (the guest's ports changed) reconciles at most once
-    /// per `guestEventInterval`, with the newest plan.
+    /// per `guestEventInterval`, with the newest plan. `keepMaster`: the
+    /// master is wanted even with nothing to forward.
     func apply(configured: [ForwardRule], autoForward: AutoForwardSettings, ports: Set<ListeningPort>,
-               bridges: [ForwardPlan.Bridge] = [], guestEvent: Bool = false) async {
+               bridges: [ForwardPlan.Bridge] = [], guestEvent: Bool = false, keepMaster: Bool = false) async {
         guard !stopped else { return }
+        inputs = (configured, autoForward, bridges)
+        self.keepMaster = keepMaster
         plan = ForwardPlan(configured: configured, autoForward: autoForward, ports: ports, bridges: bridges)
         if guestEvent, let last = lastReconcile {
             let wait = Self.guestEventInterval - clock.now().timeIntervalSince(last)
@@ -269,6 +284,14 @@ final class ForwardManager {
             }
         }
         await reconcileSerially()
+    }
+
+    /// The ports came from an agent that is gone (an SSH host's, with its
+    /// connection): they are in no later plan, and nothing is started or
+    /// run for it now.
+    func forgetPorts() {
+        guard !stopped, let inputs else { return }
+        plan = ForwardPlan(configured: inputs.configured, autoForward: inputs.autoForward, ports: [], bridges: inputs.bridges)
     }
 
     /// The VM stopped: forget forwards (the master goes with it).
@@ -309,7 +332,7 @@ final class ForwardManager {
 
     private func reconcile() async {
         guard let plan, !stopped else { return }
-        if plan.forwards.isEmpty && active.isEmpty && masterPID == nil {
+        if plan.forwards.isEmpty && active.isEmpty && masterPID == nil && !keepMaster {
             publish([], overLimit: plan.overLimit)
             return
         }
@@ -327,10 +350,11 @@ final class ForwardManager {
             active = [:]
             if let old = masterPID { Self.masters[old] = nil }
             masterPID = pid
-            if let vmName { Self.masters[pid] = vmName }
+            if let holder { Self.masters[pid] = holder }
             masterStartedAt = clock.now()
             watch?.cancel()
             watch = watcher.watch(pid: pid) { [weak self] in self?.masterExited(pid) }
+            onMaster?(true)
         }
         let wanted = Set(plan.forwards.map(\.spec))
         for spec in active.keys where !wanted.contains(spec) {
@@ -416,20 +440,20 @@ final class ForwardManager {
         return Self.listeners(fromLsof: r.stdoutString)
     }
 
-    /// lsof -Fcn: "p" starts a process, "c" names it (a Monad VM's ssh
-    /// master is named after its VM), each "n" after it is a socket
-    /// ("*:8080", "127.0.0.1:8080", "[::1]:8080").
+    /// lsof -Fcn: "p" starts a process, "c" names it (one of Monad's ssh
+    /// masters is named after the VM or the SSH host it is for), each "n"
+    /// after it is a socket ("*:8080", "127.0.0.1:8080", "[::1]:8080").
     static func listeners(fromLsof output: String) -> [Int: [String]] {
         var out: [Int: [String]] = [:]
         var name = "another program"
-        var vm: String?
+        var holder: String?
         for line in output.split(whereSeparator: \.isNewline) {
             switch line.first {
             case "p":
                 name = "another program"
-                vm = Int32(line.dropFirst()).flatMap { masters[$0] }
-                if let vm { name = "the virtual machine \(vm)" }
-            case "c": if vm == nil { name = String(line.dropFirst()) }
+                holder = Int32(line.dropFirst()).flatMap { masters[$0] }
+                if let holder { name = holder }
+            case "c": if holder == nil { name = String(line.dropFirst()) }
             case "n":
                 guard let colon = line.lastIndex(of: ":"), let port = Int(line[line.index(after: colon)...]) else { continue }
                 if !(out[port] ?? []).contains(name) { out[port, default: []].append(name) }
@@ -469,6 +493,7 @@ final class ForwardManager {
         masterStartedAt = nil
         active = [:]
         watch = nil
+        onMaster?(false)
         let clock = self.clock
         Task { @MainActor [weak self] in
             if delay > 0 { await clock.sleep(seconds: delay) }

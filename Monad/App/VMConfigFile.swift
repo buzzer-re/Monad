@@ -99,8 +99,8 @@ enum VMConfigFile {
                         + $0.arguments.map { " ‹\($0.name) \($0.pattern)›" }.joined() + " in \($0.workingDirectory), at \($0.guestEndpoint) in the VM"
                 }
                 + (agents.map { ["Monad access (\($0.role.rawValue)): \($0.summary)"] } ?? [])
-                + forwards.map(VMSettingsDraft.describe)
-                + sshForwards.map(VMSettingsDraft.describe)
+                + forwards.map { VMSettingsDraft.describe($0) }
+                + sshForwards.map { VMSettingsDraft.describe($0) }
                 + (allowLAN ? ["The Mac and its local network are reachable from the VM"] : [])
                 + (images ? ["Images the VM sends are decoded on this Mac and shown in its tabs"] : [])
                 + firewallRules.map { "The firewall allows the VM " + ConnectionsModel.describe($0).dropFirst("Allow ".count) }

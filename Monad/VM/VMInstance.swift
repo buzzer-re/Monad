@@ -1436,7 +1436,8 @@ final class VMInstance: ObservableObject, Identifiable {
               + "auto-forward \(auto.enabled ? "on" : "off"), "
               + "guest listening on \(ports.isEmpty ? "nothing" : ports.map { "\($0.address):\($0.port)" }.sorted().joined(separator: " "))")
         Task { await forwarding.apply(configured: rules, autoForward: auto, ports: ports, bridges: bridges, guestEvent: guestEvent) }
-        env.sshLegs?.apply(ssh.map { SSHLeg(host: $0.sshHost, spec: $0.hostSpec(in: paths)) }, for: name)
+        env.sshLegs?.apply(ssh.map { SSHLeg(host: $0.sshHost, spec: $0.hostSpec(in: paths), listensOn: $0.hostListenPort) },
+                           for: name)
     }
 
     // MARK: Connections

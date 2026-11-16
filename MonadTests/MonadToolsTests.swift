@@ -463,7 +463,7 @@ final class MonadToolsTests: XCTestCase {
                                            "remote_host": .string("db.internal")])
         try await call("add_ssh_forward", ["name": .string("web"), "ssh_host": .string("vault"), "direction": .string("ontoHost"),
                                            "guest_port": .number(8000), "remote_port": .number(18000)])
-        XCTAssertEqual(vm.config.sshForwards.map(VMSettingsDraft.describe), [
+        XCTAssertEqual(vm.config.sshForwards.map { VMSettingsDraft.describe($0) }, [
             "db.internal:5432 through the SSH host box, in the VM at 127.0.0.1:15432",
             "VM port 8000, on the SSH host vault at 127.0.0.1:18000",
         ])

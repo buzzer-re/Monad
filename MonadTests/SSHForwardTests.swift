@@ -37,6 +37,13 @@ final class SSHForwardTests: XCTestCase {
         XCTAssertEqual(f.vmBoundSocket(in: paths)?.path, socket)
     }
 
+    /// The port a forward makes the server listen on: the server's agent
+    /// reports it, and it must not come back onto the Mac as a port of its own.
+    func testOnlyAVMPortOnTheServerMakesTheServerListen() {
+        XCTAssertEqual(forward(.ontoHost, guest: 8000, remote: 18000).hostListenPort, 18000)
+        XCTAssertNil(forward(.intoVM, guest: 5432, remote: 5432).hostListenPort)
+    }
+
     func testIPv6AddressesAreBracketed() {
         XCTAssertEqual(forward(.intoVM, guest: 8080, remoteHost: "2001:db8::5", remote: 80).hostSpec(in: paths).value,
                        "\(socket):[2001:db8::5]:80")

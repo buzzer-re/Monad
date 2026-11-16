@@ -1,9 +1,11 @@
 #!/bin/sh
-# monad-agent (macOS guests, Phase 14) — Monad's in-guest control channel.
+# monad-agent (macOS, Phase 14) — Monad's control channel in a macOS guest,
+# and on a macOS server Monad reaches over ssh (an SSH host with the agent).
 #
-# Started by monad-guestd for each connection the HOST opens to vsock port
-# 1024; the guest never initiates connections. The same protocol as the
-# Linux agent (monad-agent.sh):
+# In a guest, started by monad-guestd for each connection the HOST opens to
+# vsock port 1024; the guest never initiates connections. On a server, run
+# by Monad over its ssh connection, as the account it signs in as. The same
+# protocol as the Linux agent (monad-agent.sh):
 #   hello        -> "hello monad-agent 1"
 #   ports        -> "port tcp <addr> <port>" per listening TCP socket, then "end"
 #   watch-ports  -> "mode polling", "port+ …" for current listeners, then
@@ -20,6 +22,11 @@ LC_ALL=C
 export LC_ALL
 
 NETSTAT=${MONAD_NETSTAT:-/usr/sbin/netstat -anv -p tcp}
+# Set on a server only (e.g. "/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -Ftn"):
+# macOS 27 shows an account that is not root no TCP socket in netstat, and
+# lsof then lists the listeners of that account's own programs. A guest's
+# agent runs as root and never needs it.
+LSOF=${MONAD_LSOF:-}
 PROMPTS=${MONAD_PROMPTS:-prompts_on_screen}
 # The login window counts once seen this many times in a row: logging in by
 # itself shows it for a moment.
@@ -32,19 +39,40 @@ trap 'exit 0' INT TERM HUP PIPE
 
 # Listening TCP sockets as sorted, unique "port tcp ADDR PORT" lines.
 # netstat writes "addr.port"; "*" is any address (IPv4 for tcp4, else IPv6).
+# lsof -Ftn writes a "t" line (IPv4 or IPv6) and an "n" line ("addr:port",
+# IPv6 in brackets) per socket.
 listening() {
-    $NETSTAT 2>/dev/null | awk '
-        $1 ~ /^tcp/ && $6 == "LISTEN" {
-            local = $4
-            n = split(local, part, ".")
-            port = part[n]
-            if (port !~ /^[0-9]+$/ || port + 0 <= 0 || port + 0 > 65535) next
-            addr = substr(local, 1, length(local) - length(port) - 1)
-            sub(/%.*/, "", addr)
-            if (addr == "*") addr = ($1 == "tcp4") ? "0.0.0.0" : "::"
-            print "port tcp " addr " " (port + 0)
-        }
-    ' | sort -u
+    sockets=$($NETSTAT 2>/dev/null)
+    if [ -n "$LSOF" ] && ! printf '%s\n' "$sockets" | grep -q '^tcp'; then
+        $LSOF 2>/dev/null | awk '
+            /^t/ { v6 = ($0 == "tIPv6") }
+            /^n/ {
+                s = substr($0, 2)
+                n = split(s, part, ":")
+                port = part[n]
+                if (port !~ /^[0-9]+$/ || port + 0 <= 0 || port + 0 > 65535) next
+                addr = substr(s, 1, length(s) - length(port) - 1)
+                sub(/^\[/, "", addr)
+                sub(/\]$/, "", addr)
+                sub(/%.*/, "", addr)
+                if (addr == "*") addr = v6 ? "::" : "0.0.0.0"
+                print "port tcp " addr " " (port + 0)
+            }
+        '
+    else
+        printf '%s\n' "$sockets" | awk '
+            $1 ~ /^tcp/ && $6 == "LISTEN" {
+                local = $4
+                n = split(local, part, ".")
+                port = part[n]
+                if (port !~ /^[0-9]+$/ || port + 0 <= 0 || port + 0 > 65535) next
+                addr = substr(local, 1, length(local) - length(port) - 1)
+                sub(/%.*/, "", addr)
+                if (addr == "*") addr = ($1 == "tcp4") ? "0.0.0.0" : "::"
+                print "port tcp " addr " " (port + 0)
+            }
+        '
+    fi | sort -u
 }
 
 # Print port+/port- for the difference between $prev and the current set,

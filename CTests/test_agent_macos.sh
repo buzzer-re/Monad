@@ -1,6 +1,8 @@
 #!/bin/sh
-# Tests for the macOS guest agent (Monad/Guest/monad-macos-agent.sh, Phase 14)
-# against canned netstat output: the same protocol as the Linux agent.
+# Tests for the macOS agent (Monad/Guest/monad-macos-agent.sh, Phase 14)
+# against canned netstat output: the same protocol as the Linux agent. On an
+# SSH host it runs as a plain account, to which macOS 27's netstat shows no
+# TCP socket: there it reads that account's own listeners from lsof.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 AGENT="$HERE/../Monad/Guest/monad-macos-agent.sh"
@@ -33,6 +35,21 @@ port tcp ::1 631
 port tcp fe80::1 5432
 end"
 check ports "$expected" "$(echo ports | run_agent "$HERE/agent_fixtures/netstat_macos.txt")"
+
+# On a server (MONAD_LSOF set): when netstat shows no TCP socket at all, the
+# account's own listeners come from lsof; while netstat shows them, lsof is
+# not asked.
+expected="port tcp 0.0.0.0 53917
+port tcp 127.0.0.1 41343
+port tcp :: 53917
+port tcp ::1 8080
+port tcp fe80::1 5432
+end"
+check ports-lsof "$expected" \
+    "$(echo ports | MONAD_NETSTAT="cat /dev/null" MONAD_LSOF="cat $HERE/agent_fixtures/lsof_macos.txt" $SH "$AGENT")"
+check ports-netstat-first "port tcp 0.0.0.0 3000" \
+    "$(echo ports | MONAD_NETSTAT="cat $HERE/agent_fixtures/netstat_macos.txt" MONAD_LSOF="echo n*:1" $SH "$AGENT" | sed -n 1p)"
+check ports-guest-never-lsof "end" "$(echo ports | MONAD_NETSTAT="cat /dev/null" $SH "$AGENT")"
 
 check unknown "error unknown-command" "$(echo format-disk | run_agent /dev/null)"
 long=$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "x" }')

@@ -4,6 +4,12 @@
 //  key pairs, answers the questions of every ssh Monad starts for them
 //  (SSHAskpass), and installs a key with ssh-copy-id.
 //
+//  It also keeps one ssh master per host that carries anything, while
+//  MonadHost runs: the VMs' forwards through the host (SSHForward), the
+//  host's own forwards to this Mac, and, with the user's yes, Monad's
+//  agent on the server (SSHHostAgent), whose ports come to this Mac's
+//  localhost by themselves like a VM's.
+//
 //  The app only mirrors what `snapshots` says (HostClient) and never sees a
 //  password: a typed one comes in over XPC and goes to the Keychain.
 //
@@ -26,6 +32,10 @@ final class SSHHostManager {
         /// sign in with ssh's own keys.
         var agentSocket: String? = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
         var debugLog: DebugLog = .shared
+        /// Runs an agent on a server: ssh, its input and output one stream.
+        var channels: ChannelSpawning = ProcessChannelSpawner()
+        /// The agent's script for a server's system (nil: Monad has none).
+        var agentScript: @Sendable (SSHHostAgent.System) -> String? = SSHHostAgent.script(for:)
     }
 
     static let shared = SSHHostManager()
@@ -41,15 +51,36 @@ final class SSHHostManager {
     var onChange: (([SSHHostSnapshot]) -> Void)?
     private var installing = Set<String>()
 
-    // The SSH hosts' side of the VMs' forwards (SSHForward): one ssh master
-    // per host that has any, kept by a ForwardManager as a VM's is.
+    // One ssh master per host that carries anything, kept by a
+    // ForwardManager as a VM's is: the VMs' forwards through the host
+    // (SSHForward), the host's own, and those its agent's ports make.
     /// What each VM wants, by VM.
     private var wanted: [String: [SSHLeg]] = [:]
-    /// By host: its master's manager, the forwards as they are, and the
-    /// set last applied (the same set again does nothing).
+    /// By host: its master's manager, the forwards as they are, and what
+    /// was last applied (the same again does nothing).
     private var links: [String: ForwardManager] = [:]
     private var statuses: [String: [ForwardStatus]] = [:]
-    private var applied: [String: Set<SSHMux.Spec>] = [:]
+    private var overLimit: [String: Int] = [:]
+    private var applied: [String: Applied] = [:]
+
+    /// Everything a host's master is made to carry.
+    private struct Applied: Equatable {
+        var legs: Set<SSHLeg>
+        var rules: [ForwardRule]
+        var autoForward: AutoForwardSettings
+        var ports: Set<ListeningPort>
+        var agent: Bool
+    }
+
+    // Monad's agent on the hosts that have one (SSHHostAgent), by host: the
+    // loop that keeps it running while a master is up (and which run of it
+    // that is), the agent while it is connected, and what it reported.
+    private var agentTasks: [String: (id: UUID, task: Task<Void, Never>)] = [:]
+    private var agents: [String: AgentClient] = [:]
+    private var agentPorts: [String: Set<ListeningPort>] = [:]
+    private var agentProblems: [String: String] = [:]
+    /// A connection to an agent that lasted this long was a working one.
+    static let healthyAgentConnection: TimeInterval = 10
     /// One thing at a time per host: a master ended before the next starts.
     private var work: [String: Task<Void, Never>] = [:]
     /// The ticket of each host's master as it last started, and the ticket
@@ -72,16 +103,35 @@ final class SSHHostManager {
     /// tests make managers too, beside a MonadHost whose masters are in use.)
     func endLeftoverMasters() {
         for host in hosts where FileManager.default.fileExists(atPath: paths(host.name).controlSocket.path) {
-            Task { @MainActor [weak self] in await self?.endMaster(host) }
+            enqueue(host.name) { [weak self] in await self?.endMaster(host) }
+        }
+    }
+
+    /// MonadHost, once it serves: the hosts with an agent or forwards of
+    /// their own are connected to while it runs.
+    func connectHosts() {
+        for host in hosts where host.keepsConnection { sync(host.name) }
+    }
+
+    /// MonadHost, as it ends: no master outlives it (a forward on a Mac
+    /// port would stay with nothing left to say whose it is).
+    func stopAll() async {
+        for host in hosts {
+            interrupt(host.name)
+            await enqueue(host.name) { [weak self] in await self?.tearDown(host) }.value
         }
     }
 
     var snapshots: [SSHHostSnapshot] {
         hosts.map { host in
-            let forwards = statuses[host.name] ?? []
+            let name = host.name
+            let forwards = statuses[name] ?? []
             return SSHHostSnapshot(config: host,
-                                   hasPassword: host.auth == .password && env.secrets.hasPassword(for: host.name),
-                                   forwards: forwards.isEmpty ? nil : forwards)
+                                   hasPassword: host.auth == .password && env.secrets.hasPassword(for: name),
+                                   forwards: forwards.isEmpty ? nil : forwards,
+                                   agentRunning: host.agent ? agents[name]?.version != nil : nil,
+                                   agentProblem: host.agent ? agentProblems[name] : nil,
+                                   portsOverLimit: overLimit[name].flatMap { $0 > 0 ? $0 : nil })
         }
     }
 
@@ -168,19 +218,24 @@ final class SSHHostManager {
         hosts.sort { $0.name < $1.name }
         defer { changed() }
         // Another server, account or way in: its master and those that
-        // connect through it start again; a host that is new may be one
-        // forwards were waiting for.
+        // connect through it start again. Anything else (a host that is
+        // new and may be one forwards were waiting for, its own forwards,
+        // its agent): its master carries what is wanted now. An agent
+        // turned off is taken from the server first.
+        let agentGone = old.map { $0.agent && !host.agent } ?? false
         if let old, old.host != host.host || old.port != host.port || old.user != host.user || old.auth != host.auth
             || old.keyPath != host.keyPath || old.jump != host.jump {
             for name in [host.name] + hosts.filter({ $0.jump == host.name }).map(\.name) {
                 guard let current = self.host(named: name) else { continue }
                 interrupt(name)
                 enqueue(name) { [weak self] in
+                    if name == host.name, agentGone { await self?.removeAgent(old) }
                     await self?.tearDown(name == host.name ? old : current)
                     await self?.reconcile(name, force: true)
                 }
             }
-        } else if old == nil {
+        } else {
+            if let old, agentGone { enqueue(host.name) { [weak self] in await self?.removeAgent(old) } }
             sync(host.name)
         }
         if host.auth != .password {
@@ -200,7 +255,10 @@ final class SSHHostManager {
         tickets.forget(host: name)
         try? env.secrets.removePassword(for: name)
         interrupt(name)
-        await enqueue(name) { [weak self] in await self?.tearDown(host) }.value
+        await enqueue(name) { [weak self] in
+            if host.agent { await self?.removeAgent(host) }
+            await self?.tearDown(host)
+        }.value
         try store.delete(name)
         hosts.removeAll { $0.name == name }
         changed()
@@ -212,8 +270,8 @@ final class SSHHostManager {
         changed()
     }
 
-    /// The host's forwards tried again (after a question went unanswered,
-    /// or the server came back).
+    /// The host's connection tried again (after a question went unanswered,
+    /// or the server came back), and its agent with it.
     func reconnect(_ name: String) throws {
         _ = try existing(name)
         sync(name, force: true)
@@ -221,9 +279,9 @@ final class SSHHostManager {
 
     // MARK: Forwards
 
-    /// The forwards `name`'s master should carry: every VM's.
-    private func specs(for name: String) -> Set<SSHMux.Spec> {
-        Set(wanted.values.joined().filter { $0.host == name }.map(\.spec))
+    /// What the VMs want of `name`'s master.
+    private func legs(for name: String) -> Set<SSHLeg> {
+        Set(wanted.values.joined().filter { $0.host == name })
     }
 
     @discardableResult
@@ -241,21 +299,36 @@ final class SSHHostManager {
         enqueue(name) { [weak self] in await self?.reconcile(name, force: force) }
     }
 
-    /// Makes `name`'s master carry what the VMs want of it now: nothing
-    /// when the set is the one applied last (a VM applies its forwards at
-    /// every change of its ports; that must not sign in again or ask
-    /// anything), no master when no VM wants any.
+    /// Makes `name`'s master carry what is wanted of it now: the VMs' legs,
+    /// the host's own forwards, and the ports its agent reports. Nothing
+    /// happens when that is what was applied last (a VM applies its
+    /// forwards at every change of its ports; that must not sign in again
+    /// or ask anything); no master when nothing wants one.
     private func reconcile(_ name: String, force: Bool) async {
         guard let host = host(named: name) else { return }
-        let specs = specs(for: name)
-        guard !specs.isEmpty else { return await tearDown(host) }
-        guard force || applied[name] != specs else { return }
-        applied[name] = specs
-        let link = links[name] ?? makeLink(host)
-        links[name] = link
-        let bridges = specs.sorted { ($0.flag, $0.value) < ($1.flag, $1.value) }
-            .map { ForwardPlan.Bridge(spec: $0, guestPort: nil) }
-        await link.apply(configured: [], autoForward: AutoForwardSettings(enabled: false), ports: [], bridges: bridges)
+        let legs = legs(for: name)
+        guard !legs.isEmpty || host.keepsConnection else { return await tearDown(host) }
+        let now = Applied(legs: legs, rules: host.forwards, autoForward: host.effectiveAutoForward,
+                          ports: host.agent ? agentPorts[name] ?? [] : [], agent: host.agent)
+        let before = applied[name]
+        if force || before != now {
+            applied[name] = now
+            let link = links[name] ?? makeLink(host)
+            links[name] = link
+            // Only the server's ports changed: applied as often as a VM's are.
+            var portsOnly = false
+            if !force, var same = before {
+                same.ports = now.ports
+                portsOnly = same == now
+            }
+            // A port a VM's forward makes the server listen on is that VM's:
+            // the agent reports it too, and it never comes to the Mac by itself.
+            let bridges = legs.sorted { ($0.spec.flag, $0.spec.value) < ($1.spec.flag, $1.spec.value) }
+                .map { ForwardPlan.Bridge(spec: $0.spec, guestPort: $0.listensOn) }
+            await link.apply(configured: host.forwards, autoForward: now.autoForward, ports: now.ports, bridges: bridges,
+                             guestEvent: portsOnly, keepMaster: host.agent)
+        }
+        ensureAgent(name, again: force)
     }
 
     private func makeLink(_ host: SSHHost) -> ForwardManager {
@@ -266,17 +339,25 @@ final class SSHHostManager {
         let mux = SSHMux(paths: paths(name), host: host.host, options: arguments(host) + ["-o", "ControlPath=" + control],
                          interactive: true, startTimeout: 300)
         let link = ForwardManager(mux: mux, runner: env.runner, watcher: env.watcher, clock: env.clock,
-                                  debugLog: env.debugLog, debugScope: "ssh \(name)", target: "the SSH host \(name)")
+                                  debugLog: env.debugLog, debugScope: "ssh \(name)", holder: "the SSH host \(name)",
+                                  target: "the SSH host \(name)")
         link.masterEnvironment = { [weak self] in
             guard let self else { return [:] }
             let environment = self.askpassEnvironment(for: name)
             self.masterTicket[name] = environment[SSHAskpass.ticketVariable]
             return environment
         }
-        link.onChange = { [weak self] statuses, _ in
+        link.onChange = { [weak self] statuses, overLimit in
             guard let self, self.links[name] === link else { return }
             self.statuses[name] = statuses
+            self.overLimit[name] = overLimit
             self.changed()
+        }
+        // Up: the agent can run over it. Gone: the agent's stream ends by
+        // itself (runAgent sees to what it had reported).
+        link.onMaster = { [weak self] up in
+            guard let self, up, self.links[name] === link else { return }
+            self.ensureAgent(name, again: true)
         }
         return link
     }
@@ -292,12 +373,155 @@ final class SSHHostManager {
 
     private func tearDown(_ host: SSHHost) async {
         let name = host.name
+        let hadAgent = agentTasks[name] != nil || agents[name] != nil || agentProblems[name] != nil
+        stopAgent(name)
         links[name]?.stop()
         links[name] = nil
         applied[name] = nil
+        overLimit[name] = nil
         let had = statuses.removeValue(forKey: name) != nil
         await endMaster(host)
-        if had { changed() }
+        if had || hadAgent { changed() }
+    }
+
+    // MARK: The agent
+
+    /// Monad has no agent for what the server says it is: nothing to try again.
+    private struct NoAgent: LocalizedError {
+        let said: String
+        var errorDescription: String? { "Monad's agent runs on Linux and macOS servers. This one says it is “\(said)”." }
+    }
+
+    /// ssh's options for a run over `host`'s master: nothing that could ask.
+    private func masterArguments(_ host: SSHHost) -> [String] {
+        arguments(host) + ["-o", "ControlPath=" + SSHHost.optionValue(path: paths(host.name).controlSocket.path),
+                           "-o", "ControlMaster=no", "-o", "BatchMode=yes"]
+    }
+
+    private func agentLog(_ name: String, _ message: String) {
+        env.debugLog.log("ssh \(name)", "agent: " + message)
+    }
+
+    /// Keeps `name`'s agent running while its master is up, when it is to
+    /// have one and none runs. One that was given up on (a server Monad has
+    /// no agent for) is tried `again` only with a new connection or at the
+    /// user's word, never at every change of a VM's ports.
+    private func ensureAgent(_ name: String, again: Bool) {
+        guard let host = host(named: name), host.agent, agentTasks[name] == nil, let link = links[name], link.hasMaster,
+              again || agentProblems[name] == nil else { return }
+        let id = UUID()
+        agentTasks[name] = (id, Task { @MainActor [weak self] in
+            await self?.runAgent(name, over: link)
+            if let self, self.agentTasks[name]?.id == id { self.agentTasks[name] = nil }
+        })
+    }
+
+    /// The agent on `host`'s server, as a stream: the script for its system
+    /// put in ~/.monad there (each time: it then matches this Monad) and run.
+    private func openAgent(_ host: SSHHost) async throws -> ByteChannel {
+        let ssh = masterArguments(host) + [host.host]
+        let probe = try await env.runner.run("/usr/bin/ssh", ssh + [SSHHostAgent.probe], timeout: 30)
+        guard probe.status == 0 else {
+            throw MonadError("The server did not answer Monad (\(Self.lastLine(probe.stderrString) ?? "ssh exited with status \(probe.status)")).")
+        }
+        guard let system = SSHHostAgent.System(uname: probe.stdoutString), let script = env.agentScript(system) else {
+            throw NoAgent(said: SSHHostAgent.System.said(probe.stdoutString) ?? "nothing")
+        }
+        let install = try await env.runner.run("/usr/bin/ssh", ssh + [SSHHostAgent.remote(SSHHostAgent.install)],
+                                               stdin: Data(script.utf8), timeout: 30)
+        guard install.status == 0 else {
+            throw MonadError("Monad's agent could not be put on the server (\(Self.lastLine(install.stderrString) ?? "ssh exited with status \(install.status)")).")
+        }
+        return try env.channels.open("/usr/bin/ssh", ssh + [SSHHostAgent.remote(SSHHostAgent.run(system))], environment: [:])
+    }
+
+    /// Runs the agent over `link`'s master until that master, the host or
+    /// the wish for an agent is gone; an agent that ends is run again, less
+    /// and less often when it ends at once (a broken or hostile server).
+    private func runAgent(_ name: String, over link: ForwardManager) async {
+        var delay: TimeInterval = 1
+        func wanted() -> SSHHost? {
+            guard !Task.isCancelled, links[name] === link, link.hasMaster, let host = host(named: name), host.agent else {
+                return nil
+            }
+            return host
+        }
+        while let host = wanted() {
+            let channel: ByteChannel
+            do {
+                channel = try await openAgent(host)
+            } catch {
+                guard wanted() != nil else { return }
+                agentProblems[name] = error.localizedDescription.plain(limit: 300)
+                agentLog(name, agentProblems[name] ?? "")
+                changed()
+                if error is NoAgent { return }
+                await env.clock.sleep(seconds: delay)
+                delay = min(delay * 2, 60)
+                continue
+            }
+            guard wanted() != nil else {
+                channel.close()
+                return
+            }
+            agentProblems[name] = nil
+            let connectedAt = env.clock.now()
+            let client = AgentClient(channel: channel)
+            agents[name] = client
+            let ended = AsyncStream<Void> { continuation in
+                client.onDisconnect = { continuation.finish() }
+                client.onEvent = { [weak self, weak client] event in
+                    guard let self, let client, self.agents[name] === client else { return }
+                    if let text = event.debugText { self.agentLog(name, text) }
+                    if case .hello = event { self.changed() }
+                    guard self.agentPorts[name] ?? [] != client.ports else { return }
+                    self.agentPorts[name] = client.ports
+                    self.sync(name)
+                }
+            }
+            client.start()
+            changed()
+            for await _ in ended {}
+            // Stopped from here (stopAgent): there is nothing left to see to.
+            guard agents[name] === client else { return }
+            agents[name] = nil
+            agentPorts[name] = nil
+            // What it reported is not for a master that starts meanwhile.
+            link.forgetPorts()
+            changed()
+            let lasted = env.clock.now().timeIntervalSince(connectedAt)
+            agentLog(name, String(format: "its connection ended after %.1f s", lasted))
+            let pause: TimeInterval
+            if lasted >= Self.healthyAgentConnection {
+                delay = 1
+                pause = 0.5
+            } else {
+                pause = delay
+                delay = min(delay * 2, 60)
+            }
+            await env.clock.sleep(seconds: pause)
+            guard !Task.isCancelled, links[name] === link else { return }
+            // A master that is still there takes those ports off now. One
+            // that went is started again by its ForwardManager, in its own time.
+            if link.hasMaster { sync(name) } else { applied[name]?.ports = [] }
+        }
+    }
+
+    private func stopAgent(_ name: String) {
+        agentTasks.removeValue(forKey: name)?.task.cancel()
+        agents.removeValue(forKey: name)?.stop()
+        agentPorts[name] = nil
+        agentProblems[name] = nil
+    }
+
+    /// The agent is no longer wanted on `host`: it stops, and its script is
+    /// taken from the server while Monad is still connected to it (it
+    /// stays there otherwise: a file nothing runs).
+    private func removeAgent(_ host: SSHHost) async {
+        stopAgent(host.name)
+        guard FileManager.default.fileExists(atPath: paths(host.name).controlSocket.path) else { return }
+        _ = try? await env.runner.run("/usr/bin/ssh", masterArguments(host) + [host.host, SSHHostAgent.remote(SSHHostAgent.remove)],
+                                      timeout: 15)
     }
 
     // MARK: Questions
@@ -431,7 +655,8 @@ extension SSHHostManager: SSHLegApplying {
         guard legs != before else { return }
         wanted[vm] = legs.isEmpty ? nil : legs
         for name in Set((before + legs).map(\.host)).sorted() {
-            if specs(for: name).isEmpty { interrupt(name) }
+            // A master nothing wants any more takes its question with it now.
+            if self.legs(for: name).isEmpty, host(named: name)?.keepsConnection != true { interrupt(name) }
             sync(name)
         }
     }

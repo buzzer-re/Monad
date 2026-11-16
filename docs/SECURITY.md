@@ -62,6 +62,7 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 | A password in the Keychain answers only ssh's own password question | MonadHost alone reads the login Keychain item of an SSH host, and releases it only for ssh's two password prompts for exactly that user and host (ssh's formats; a prompt a server words, such as a code or a new password, always reaches the user), once per connection: asked again, the server refused it, and the user is asked. The app never gets a password back | `SSHAskpassTests`, `SSHHostManagerTests`, `HostServiceTests` |
 | An SSH host's key is checked before any sign-in | `StrictHostKeyChecking=ask`: a key Monad has not seen is accepted only in Monad's panel (Trust is not the default button, and only an exact yes reaches ssh); a changed key ends the connection. Accepted keys go to `~/.monad/ssh-hosts/known_hosts`; `~/.ssh/known_hosts` is honoured and never written | `SSHHostTests`, `SSHHostManagerTests` |
 | A forward through an SSH host joins only what its rule names | Two ssh forwards, one on the VM's master and one on the SSH host's, joined by a unix socket in the VM's folder (0600, the user's own), never a TCP port of the Mac. The VM reaches the one `remoteHost:remotePort` of the rule, or the server the one VM port; a port brought into the VM is never auto-forwarded back onto the Mac; a socket left behind is removed only if it is a socket | `SSHForwardTests`, `ConfigV2Tests`, `VMLifecycleTests`, `ForwardManagerTests`, `SSHHostManagerTests` |
+| What an SSH host's agent says is a server's word | Monad's agent goes onto a server only with the user's yes in the host's sheet (no MCP tool sets it), as a file in `~/.monad` there, run as the account Monad signs in as over the host's ssh master. What runs on the server is fixed text (`uname -s`, and three `sh -c` commands): nothing a server said is ever part of a command. Its output is read like a guest's (`AgentProtocol`: printable lines of an exact grammar, 4096 ports at most); what it says its system is shows as plain text, 40 characters at most. Its ports come only to the Mac's loopback, from 1024 up, 32 at most, never over a port a Mac program listens on, never a port a VM's forward put on that server; an agent that ends at once is run again less and less often. MonadHost ends every SSH host's master as it ends | `SSHHostAgentTests`, `SSHHostManagerTests`, `ForwardManagerTests`, `AgentProtocolTests`, `ProcessChannelTests`, `test_agent_macos.sh` |
 | Images are what the distro published | OpenPGP signatures with pinned keys where the distro signs, never an older signed checksum file than one seen before, unsigned checksums only from their own site over HTTPS, then the image's digest | `OpenPGPTests`, `ImagePipelineTests`, `ParserFuzzTests` |
 | A VM's disk cannot steer MonadHost when Monad reads it | `mnd_diskcheck` reads fixed places only (the GPT and its table, superblocks; 4 KiB at a time), bounds every count and offset it reads, reports printable text only, and reads a VM's disk only once the VM is off, read only | `test_diskcheck.c`, `fuzz_decoders.c`, `DiskCheckTests`, `VMLifecycleTests` |
 | Repair Disk opens a VM's disk only inside another VM | The disk goes to a temporary ephemeral VM of the same distribution (no shared folders, forwards or role), as a USB disk once that VM runs, never at boot (two disks of one cloud image share labels and UUIDs). Only commands Monad builds run there, on a device name it checked; the VM being repaired cannot start or be deleted meanwhile; a clone of the disk is kept first | `DiskRepairTests`, `DeviceModelTests` (only that VM has a USB controller) |
@@ -188,11 +189,25 @@ VM with Monad in the middle (docs/CONFIG.md, `sshForwards`). Decided with the us
 - **Dropped files and pasted pictures** go to `~/.monad/uploads` and `~/.monad/shots` on the
   server over a connection of their own, by a name Monad made safe, only when the user drops or
   pastes.
+- **Monad's agent goes onto a server only when the user says so** (2026-11-16). Turning on
+  "Forward ports automatically" for an SSH host asks first and says what goes there: a shell
+  script in `~/.monad`, run as that account while Monad is connected, nothing as root, nothing
+  the server starts by itself. Turning it off stops it and removes the script while Monad can
+  reach the server. The agent is a VM's own script, and what it reports is trusted no more than
+  a VM's: the same parser, the same limits, the same rule that an automatic forward never takes
+  a port a Mac program holds.
+- **An SSH host's own forwards follow a VM's rules** (2026-11-16): a forward that lets the server
+  reach this Mac, or that other computers can reach, is asked about when it is added, and says
+  that every account on the server reaches the server's end. Only the user adds them, in the
+  host's sheet; agents cannot change an SSH host.
 
 Not promised:
 
 - **The server is the user's to trust.** It sees what is typed in its tab, and with a forward into
-  a VM it is the one that connects on. Agent forwarding and X11 forwarding are always off.
+  a VM it is the one that connects on. Agent forwarding and X11 forwarding are always off. With
+  Monad's agent on it, a server chooses which of its ports from 1024 up appear on this Mac's
+  localhost (among those no Mac program holds): a program here that connects to such a port
+  reaches the server, as it would a VM.
 - **A password is kept before the server has accepted it** (the user said to keep it as they typed
   it). A wrong one is tried once at the next connection, refused, and asked again.
 - **The server keeps Monad's public key** in `authorized_keys` after the SSH host is deleted in
@@ -318,6 +333,14 @@ Checked (2026-10-05, through the test suite on the development Mac):
   control socket, both ways round a port crosses two masters joined by one socket (mode 0600);
   `StreamLocalBindUnlink` binds over a file left in the socket's place; and ssh leaves a socket
   it made where it was when the forward is cancelled or the master exits (so Monad removes it).
+- Monad's agent on an SSH host (2026-11-16, through a throwaway test, the system's OpenSSH against
+  an sshd of the user's own on the loopback, this Mac as the server, key sign-in): over the host's
+  master and with nothing asked, `uname -s`, the script written to `~/.monad/monad-agent.sh`
+  (mode 0600) from ssh's input, and the agent run with one stream for its input and output; it
+  said hello and reported this Mac's listeners (17 of them, from lsof: `netstat -an -p tcp`
+  prints no TCP socket for an account that is not root on macOS 27.0.1), each then refused as a
+  port a Mac program holds; a hand-made forward carried a connection; turning the agent off
+  removed the script; and no ssh or agent process was left once the manager stopped.
 
 To check by hand on the Mac:
 
