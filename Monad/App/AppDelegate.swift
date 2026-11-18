@@ -312,10 +312,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             return TabRouting.settingsVM(focused: focusedTab).flatMap { HostAgent.client.vm(named: $0) } != nil
         }
         if item.action == #selector(mergeAllWindows(_:)) { return TerminalWindowController.all.count > 1 }
+        if item.action == #selector(toggleKeepAwake(_:)) {
+            item.state = KeepAwake.shared.isOn ? .on : .off
+            return true
+        }
         guard item.action == #selector(newTab(_:)) else { return true }
         item.title = TabRouting.newTabTitle(focused: focusedTab, fallback: defaultTarget,
                                             defaultVM: HostAgent.client.defaultVM?.name)
         return TabRouting.newTab(focused: focusedTab, fallback: defaultTarget) != nil
+    }
+
+    /// View › Keep This Mac Awake: the coffee cup's switch (KeepAwake),
+    /// also where no cup shows (a full-screen window with one tab).
+    @objc func toggleKeepAwake(_ sender: Any?) {
+        KeepAwake.shared.toggle()
     }
 
     /// VM › "<vm> Settings…": the settings of the VM in front.
@@ -634,6 +644,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         view.addItem(.separator())
         themeMenu.delegate = self
         view.addItem(withTitle: "Theme", action: nil, keyEquivalent: "").submenu = themeMenu
+        view.addItem(.separator())
+        view.addItem(withTitle: "Keep This Mac Awake", action: #selector(toggleKeepAwake(_:)), keyEquivalent: "")
         view.addItem(.separator())
         let fs = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fs.keyEquivalentModifierMask = [.command, .control]

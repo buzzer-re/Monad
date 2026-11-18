@@ -2,7 +2,7 @@
 //  TabStripView.swift — a terminal window's tab strip, drawn from its
 //  TabStrip where TabStripLayout puts things: each group's label in its
 //  colour, with a line under the label and its tabs; tabs with their
-//  title and a close button; "+" and the "…" menu. A click on a tab
+//  title and a close button; "+", the coffee cup and the "…" menu. A click on a tab
 //  brings it to front, on a label collapses or opens its group; tabs and
 //  labels drag to another place; a right-click opens the tab's or the
 //  group's menu, which the window fills. Monad draws the strip itself:
@@ -65,6 +65,8 @@ final class TabStripView: NSView {
 
     /// The "…" at the far end (new tabs and VMs).
     let menuButton: TabMenuButton
+    /// The coffee cup before it (keeping this Mac awake).
+    let awakeButton = KeepAwakeButton()
 
     private enum Press: Equatable {
         case item(TabStrip.Item)
@@ -85,6 +87,7 @@ final class TabStripView: NSView {
         menuButton = TabMenuButton(owner: owner)
         super.init(frame: NSRect(x: 0, y: 0, width: 400, height: TabStripLayout.height))
         addSubview(menuButton)
+        addSubview(awakeButton)
     }
 
     @available(*, unavailable)
@@ -116,6 +119,7 @@ final class TabStripView: NSView {
         for g in strip?.groups ?? [] { widths[g.id] = Self.chipWidth(g.name) }
         layout = TabStripLayout(items: strip?.items ?? [], chipWidths: widths, width: bounds.width)
         menuButton.frame = layout.menu
+        awakeButton.frame = layout.awake
         needsDisplay = true
     }
 

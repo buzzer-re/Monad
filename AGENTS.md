@@ -143,6 +143,7 @@ Code that touches the outside world goes through protocols in `Monad/Support/Sea
 | `SecretStoring` (SSH hosts' passwords) | `KeychainSecrets` (the login Keychain) | `FakeSecrets`: a dictionary; no test touches the Keychain |
 | `SSHLegApplying` (the SSH hosts' side of a VM's forwards) | `SSHHostManager` | `FakeSSHLegs` |
 | `ChannelSpawning` (a program whose input and output are one stream: an SSH host's agent, through ssh) | `ProcessChannelSpawner` | `FakeChannels`: a socketpair the test speaks through |
+| `SleepPreventing` (the hold on the Mac's sleep behind the coffee cup; in `App/KeepAwake.swift`, the app's alone) | `SystemSleepPreventer` | `FakeSleepPreventer`: counts the holds begun and ended |
 
 `TempDir` gives a test its own folder, and `ManagerFixture` wires a `VMManager` to fakes. New code that would reach the outside world needs a seam like these, not a real call in the test.
 

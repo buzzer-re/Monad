@@ -112,7 +112,12 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 - **Windows:** a window is one size whatever its tabs (cell steps only apply to a window with one
   tab and one terminal); a VM's Log page follows a log written every second at little cost (only what was
   added is read and laid out); a VM's settings, Settings, Themes, the VM list and prompts open on the Space in front,
-  a full-screen terminal's too.
+  a full-screen terminal's too. The coffee cup at the far end of a terminal window's titlebar (or of
+  its tab strip) and View › Keep This Mac Awake keep the display on and the Mac from sleeping or
+  locking by itself while on (a hold of the app's own on sleep, as `caffeinate -d -i`; off at each
+  start, gone when Monad quits); on, steam rises from the cup, still with Reduce Motion. Checked:
+  the hold macOS lists for it, and the cup drawn in a window's titlebar and tab strip. Not checked
+  by hand yet: a click on it in a real window, its steam moving, that the Mac stays unlocked.
 - **Canvas:** VMs, networks and SSH hosts drawn live, notes, labels, zones and arrows, docked
   terminals (on VMs and on SSH hosts).
 - **Agents:** an MCP server for agents on the Mac (`MonadHost --mcp`) and in VMs with a role

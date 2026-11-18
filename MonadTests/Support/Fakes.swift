@@ -819,3 +819,26 @@ enum FakeMacDisk {
             """)
     }
 }
+
+/// What keeps the Mac awake (KeepAwake): each hold begun and ended is
+/// recorded; nothing is asked of macOS.
+final class FakeSleepPreventer: SleepPreventing {
+    private(set) var begun: [String] = []
+    private(set) var ended = 0
+    /// The holds begun and not ended.
+    var held: Int { begun.count - ended }
+    private var live: [ObjectIdentifier] = []
+
+    func begin(reason: String) -> NSObjectProtocol {
+        begun.append(reason)
+        let hold = NSObject()
+        live.append(ObjectIdentifier(hold))
+        return hold
+    }
+
+    func end(_ activity: NSObjectProtocol) {
+        guard let i = live.firstIndex(of: ObjectIdentifier(activity)) else { return XCTFail("a hold that was never begun, or ended twice") }
+        live.remove(at: i)
+        ended += 1
+    }
+}

@@ -14,7 +14,9 @@ in front is in it, and the others' sessions go on out of sight.
 - A click brings a tab to front; its × or a middle click closes it. ⌘W closes the context in
   front, then the tab, then the window. ⌘1 … ⌘9 and Show Next/Previous Tab (⌘} and ⌘{) go over
   the tabs in sight.
-- "+" opens another tab on the VM in front, as ⌘T does; "…" has the other VMs.
+- "+" opens another tab on the VM in front, as ⌘T does; "…" has the other VMs. The coffee cup
+  before the "…" (in the titlebar while there is no strip) keeps this Mac awake while it is on:
+  one switch for the whole app (`KeepAwake`), also View ▸ Keep This Mac Awake.
 - A tab drags to another place in the strip. Its menu (right-click) moves it to a window of its
   own; Window ▸ Merge All Windows brings every window's tabs, groups included, into the one in
   front.

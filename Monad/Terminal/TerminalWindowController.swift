@@ -59,8 +59,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// The tab strip and the panes, and the titlebar a see-through theme gets (TerminalTitlebar).
     private let content: TerminalWindowContentView
     let stripView: TabStripView
-    /// The "…" in the titlebar, for a window without a tab strip (the
-    /// strip has its own).
+    /// The coffee cup and the "…" in the titlebar, for a window without a
+    /// tab strip (the strip has its own).
     private let titlebarMenu = NSTitlebarAccessoryViewController()
     private var inFullScreen = false
     /// Sessions start once the window is shown (`start`), each tab's when
@@ -580,18 +580,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Titlebar
 
-    /// The "…" pull-down (new tabs and VMs, its menu says which VM a new
-    /// tab opens on) in the titlebar, while the window shows no tab strip.
+    /// The coffee cup (keeping this Mac awake) and the "…" pull-down (new
+    /// tabs and VMs, its menu says which VM a new tab opens on) in the
+    /// titlebar, while the window shows no tab strip.
     private func addTitlebarMenu(to window: NSWindow) {
+        let cup = KeepAwakeButton()
         let inTitlebar = TabMenuButton(owner: self)
-        inTitlebar.frame = NSRect(x: 0, y: 0, width: 34, height: 22)
-        titlebarMenu.view = inTitlebar
+        inTitlebar.frame = NSRect(x: cup.frame.maxX, y: 0, width: 34, height: 22)
+        let both = NSView(frame: NSRect(x: 0, y: 0, width: inTitlebar.frame.maxX, height: 22))
+        both.addSubview(cup)
+        both.addSubview(inTitlebar)
+        titlebarMenu.view = both
         titlebarMenu.layoutAttribute = .trailing
         window.addTitlebarAccessoryViewController(titlebarMenu)
     }
 
-    /// The titlebar "…" only while there is no tab strip to hold one, and not
-    /// in full screen. Set only when it changes: in full screen any change
+    /// The titlebar's cup and "…" only while there is no tab strip to hold
+    /// them, and not in full screen. Set only when it changes: in full screen any change
     /// to the titlebar brings it down until the mouse comes and goes.
     func refreshTabMenu() {
         let hidden = TabRouting.hidesTitlebarMenu(tabBarVisible: showsTabStrip,

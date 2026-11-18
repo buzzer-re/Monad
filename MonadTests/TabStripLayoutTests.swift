@@ -19,6 +19,9 @@ final class TabStripLayoutTests: XCTestCase {
         XCTAssertLessThan(l.plus.minX, l.slots[1].frame.maxX + 20)
         XCTAssertGreaterThan(l.menu.minX, 1000 - 50, "the … at the far end")
         XCTAssertLessThanOrEqual(l.menu.maxX, 1000)
+        XCTAssertLessThanOrEqual(l.awake.maxX, l.menu.minX, "the coffee cup before the …")
+        XCTAssertGreaterThan(l.awake.minX, 1000 - 90)
+        XCTAssertEqual(l.awake.size, l.menu.size)
     }
 
     func testManyTabsShareTheRoom() {
@@ -27,7 +30,7 @@ final class TabStripLayoutTests: XCTestCase {
         let widths = Set(l.slots.map { ($0.frame.width * 100).rounded() })
         XCTAssertEqual(widths.count, 1, "all the same")
         XCTAssertLessThan(l.slots[0].frame.width, TabStripLayout.tabWidths.upperBound)
-        XCTAssertLessThanOrEqual(l.plus.maxX, l.menu.minX, "the + never under the …")
+        XCTAssertLessThanOrEqual(l.plus.maxX, l.awake.minX, "the + never under the cup or the …")
         XCTAssertLessThanOrEqual(l.slots[9].frame.maxX, l.plus.minX)
         let tight = TabStripLayout(items: items, chipWidths: [:], width: 100)
         XCTAssertEqual(tight.slots[0].frame.width, TabStripLayout.tabWidths.lowerBound, "never narrower than this")

@@ -1,9 +1,10 @@
 //
 //  TabStripLayout.swift — where the tab strip (TabStripView) puts things:
 //  group labels at the width of their name, tabs sharing the rest of the
-//  room up to a width, the "+" after the last of them and the "…" at the
-//  far end. Also what is under a point, and where a drag lets go there
-//  (the nearer half of what is under it). Pure.
+//  room up to a width, the "+" after the last of them, and at the far end
+//  the coffee cup (KeepAwakeButton) and the "…". Also what is under a
+//  point, and where a drag lets go there (the nearer half of what is
+//  under it). Pure.
 //
 
 import CoreGraphics
@@ -29,10 +30,13 @@ struct TabStripLayout: Equatable {
     let slots: [Slot]
     let plus: CGRect
     let menu: CGRect
+    /// The coffee cup, before the "…".
+    let awake: CGRect
 
     init(items: [TabStrip.Item], chipWidths: [TabGroupID: CGFloat], width: CGFloat) {
         let buttonY = Self.itemY + (Self.itemHeight - Self.button) / 2
         menu = CGRect(x: max(Self.inset, width - Self.inset - Self.button), y: buttonY, width: Self.button, height: Self.button)
+        awake = CGRect(x: max(Self.inset, menu.minX - Self.button), y: buttonY, width: Self.button, height: Self.button)
         func chip(_ id: TabGroupID) -> CGFloat {
             min(max(chipWidths[id] ?? 0, Self.chipWidths.lowerBound), Self.chipWidths.upperBound)
         }
@@ -46,7 +50,7 @@ struct TabStripLayout: Equatable {
         }
         // Everything but the tabs: the insets, the gaps, the labels, the "+".
         let fixed = Self.inset + chips + CGFloat(items.count) * Self.gap + Self.button + Self.gap
-        let room = menu.minX - fixed
+        let room = awake.minX - fixed
         let tabWidth = tabCount == 0 ? 0 : min(max(room / CGFloat(tabCount), Self.tabWidths.lowerBound), Self.tabWidths.upperBound)
         var x = Self.inset
         var out: [Slot] = []
@@ -61,7 +65,7 @@ struct TabStripLayout: Equatable {
         }
         slots = out
         // Too many tabs for the room: the "+" stays in sight, over the last.
-        plus = CGRect(x: min(x, menu.minX - Self.gap - Self.button), y: buttonY, width: Self.button, height: Self.button)
+        plus = CGRect(x: min(x, awake.minX - Self.gap - Self.button), y: buttonY, width: Self.button, height: Self.button)
     }
 
     func slot(at point: CGPoint) -> Slot? { slots.first { $0.frame.contains(point) } }
