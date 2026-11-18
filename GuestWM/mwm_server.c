@@ -305,14 +305,22 @@ static void surface_destroy(mwm_server *s, client *c, surface *f, bool tell) {
     buffer_unshown(f->current);
     for (int i = 0; i < f->pending_count; i++) mwm_del(c, f->frames_pending[i]);
     for (int i = 0; i < f->waiting_count; i++) mwm_del(c, f->frames_waiting[i]);
+    s->frames_waiting -= f->waiting_count;
     if (tell) mwm_del(c, f->id);
     free(f);
 }
 
 static void surface_commit(mwm_server *s, client *c, surface *f) {
-    /* Callbacks asked for since the last commit wait for the next frame. */
-    for (int i = 0; i < f->pending_count && f->waiting_count < MAX_FRAMES; i++) {
-        f->frames_waiting[f->waiting_count++] = f->frames_pending[i];
+    /* Callbacks asked for since the last commit wait for the next frame;
+     * more than can wait are answered at once rather than never. */
+    for (int i = 0; i < f->pending_count; i++) {
+        if (f->waiting_count < MAX_FRAMES) {
+            f->frames_waiting[f->waiting_count++] = f->frames_pending[i];
+            s->frames_waiting++;
+        } else {
+            mwm_event_uint(c, f->frames_pending[i], 0, s->frame_time);
+            mwm_del(c, f->frames_pending[i]);
+        }
     }
     f->pending_count = 0;
     mwm_shell_commit(s, c, f);
@@ -706,7 +714,8 @@ void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable) {
 }
 
 void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
-    for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
+    s->frame_time = time_ms;
+    for (int i = 0; s->frames_waiting > 0 && i < MWM_MAX_CLIENTS; i++) {
         client *c = s->clients[i];
         if (!c || c->dead) continue;
         for (uint32_t id = 0; id < c->object_cap; id++) {
@@ -716,10 +725,18 @@ void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
                 mwm_event_uint(c, f->frames_waiting[k], 0, time_ms);
                 mwm_del(c, f->frames_waiting[k]);
             }
+            s->frames_waiting -= f->waiting_count;
             f->waiting_count = 0;
         }
     }
     mwm_flush(s);
+}
+
+bool mwm_server_wants_frame(const mwm_server *s) { return s->frames_waiting > 0; }
+
+void mwm_server_size(const mwm_server *s, int *width, int *height) {
+    *width = s->screen.width;
+    *height = s->screen.height;
 }
 
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {

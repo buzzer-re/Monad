@@ -7,16 +7,20 @@
  * strings, descriptors of a file that may be shorter than said), the whole
  * exchange that opens a window with sizes from the input and takes the
  * pointer and the keyboard, frames, what the Mac says of the pointer and
- * the keys (any window, any position, any key, any table of keys), and
+ * the keys (any window, any position, any key, any table of keys), what
+ * MonadHost says on its channel (lines well formed or not, and bytes), and
  * programs leaving. After every step: every window is inside the display
  * and has a size, no two windows share a pixel, there are no more windows
- * or programs than there may be, and a pixel outside every window is
- * black. The sanitizers check the rest.
+ * or programs than there may be, a pixel outside every window is black,
+ * and what MonadHost was told is lines of plain printable ASCII no longer
+ * than they may be, whatever the programs called their windows. The
+ * sanitizers check the rest.
  *
  * Built with -fsanitize=fuzzer (clang), LLVMFuzzerTestOneInput is the
  * target. Otherwise main() is a deterministic driver: `fuzz_wm [iterations]
  * [seed]`, default a short run.
  */
+#include "mwm_ctl.h"
 #include "mwm_server.h"
 #include "mwm_wire.h"
 
@@ -101,6 +105,24 @@ static void drain(program *p) {
         }
 }
 
+/* How far into a line MonadHost's end is; a new connection starts a new line. */
+static size_t said;
+
+/* What MonadHost was sent: read, and looked at as MonadHost may rely on it. */
+static void check_said(int host) {
+    char text[4096];
+    ssize_t n;
+    while (host >= 0 && (n = read(host, text, sizeof text)) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (text[i] == '\n') {
+                said = 0;
+            } else if (text[i] < 0x20 || text[i] > 0x7e || ++said >= MWM_CTL_LINE) {
+                fail("MonadHost was sent something that is not a line of plain text");
+            }
+        }
+    }
+}
+
 static void request(program *p, input *in, uint32_t object, uint16_t opcode) {
     mwm_put_begin(p->conn, object, opcode);
     int args = byte(in) % 8;
@@ -154,8 +176,12 @@ static void open_window(program *p, input *in) {
     words(p, compositor, 0, 1, &surface);
     words(p, wm, 2, 2, (uint32_t[]){xdg, surface});
     words(p, xdg, 1, 1, &toplevel);
+    char title[40];
+    int length = byte(in) % (int)sizeof title;
+    for (int i = 0; i < length; i++) title[i] = (char)(byte(in) | 1);
+    title[length] = 0;
     mwm_put_begin(p->conn, toplevel, 2);
-    mwm_put_string(p->conn, "fuzz");
+    mwm_put_string(p->conn, title);
     mwm_put_end(p->conn);
     words(p, surface, 6, 0, NULL);
     uint32_t width = 1 + number(in) % 400, height = 1 + number(in) % 200, stride = width * 4 + (byte(in) % 4) * 4;
@@ -189,6 +215,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     memset(programs, 0, sizeof programs);
     input in = {.data = data, .len = size};
     uint32_t time = 0;
+    mwm_ctl *ctl = mwm_ctl_new(s);
+    int host = -1;
+    if (!ctl) fail("no channel");
     while (in.pos < in.len) {
         program *p = &programs[byte(&in) % PROGRAMS];
         if (!p->conn) {
@@ -199,7 +228,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             p->next = 2;
             if (!p->conn || !mwm_server_add_client(s, sv[1])) fail("a program could not connect");
         }
-        switch (byte(&in) % 10) {
+        if (mwm_ctl_fd(ctl) < 0) { /* MonadHost connects, again when it was dropped */
+            int sv[2];
+            if (host >= 0) close(host);
+            if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0) fail("no socket pair");
+            host = sv[0];
+            said = 0;
+            mwm_ctl_attach(ctl, sv[1]);
+        }
+        switch (byte(&in) % 12) {
         case 0: { /* bytes as they are */
             uint8_t raw[64];
             size_t n = byte(&in) % sizeof raw;
@@ -238,6 +275,25 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             }
             break;
         }
+        case 9: case 10: { /* what MonadHost says, well formed or not */
+            static const char *const names[] = {"pointer", "button", "scroll", "focus", "key", "mods", "keys", "k", "size", "close", "dance", ""};
+            char text[256];
+            size_t n = 0;
+            if (byte(&in) % 4 == 0) {
+                n = byte(&in) % 200;
+                for (size_t i = 0; i < n; i++) text[i] = (char)byte(&in);
+            } else {
+                n = (size_t)snprintf(text, sizeof text, "%s", names[byte(&in) % 12]);
+                for (int args = byte(&in) % 8; args > 0; args--) {
+                    long long v = byte(&in) % 2 ? (long long)(byte(&in) % 16) : (long long)(int32_t)number(&in) * (byte(&in) % 3);
+                    n += (size_t)snprintf(text + n, sizeof text - n, " %lld", v);
+                }
+                text[n++] = '\n';
+            }
+            if (n && write(host, text, n) < 0) { /* the window manager hung up first */ }
+            mwm_ctl_service(ctl, true, true, time);
+            break;
+        }
         default: /* the program leaves */
             mwm_conn_free(p->conn);
             p->conn = NULL;
@@ -255,9 +311,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             drain(p);
         }
         check(s);
+        mwm_ctl_update(ctl);
+        check_said(host);
     }
     for (int i = 0; i < PROGRAMS; i++)
         if (programs[i].conn) mwm_conn_free(programs[i].conn);
+    mwm_ctl_free(ctl);
+    if (host >= 0) close(host);
     mwm_server_free(s);
     return 0;
 }

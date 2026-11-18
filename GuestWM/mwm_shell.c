@@ -16,15 +16,40 @@ static void copy_text(char *dst, const char *src) {
     snprintf(dst, TEXT, "%s", src ? src : "");
 }
 
-/* Tells a top-level window its size (any it likes) and whether it is in front. */
+/* Tells a top-level window its size and whether it is in front. */
 static void configure(mwm_server *s, client *c, xdg *x) {
     static const uint32_t activated = 4;
     mwm_put_begin(c->conn, x->toplevel, 0);
-    mwm_put_int(c->conn, 0);
-    mwm_put_int(c->conn, 0);
+    mwm_put_int(c->conn, x->width);
+    mwm_put_int(c->conn, x->height);
     mwm_put_array(c->conn, &activated, x->active ? sizeof activated : 0);
     mwm_put_end(c->conn);
     mwm_event_uint(c, x->id, 0, ++s->serial);
+}
+
+/* The window's role, when its program can still be told things. */
+static xdg *toplevel_of(mwm_server *s, uint32_t window_id) {
+    window *w = mwm_window_by_id(s, window_id);
+    xdg *x = w && w->surface ? w->surface->xdg : NULL;
+    return x && x->toplevel && x->configured && !w->surface->owner->dead ? x : NULL;
+}
+
+void mwm_server_resize(mwm_server *s, uint32_t window_id, int32_t width, int32_t height) {
+    xdg *x = toplevel_of(s, window_id);
+    if (!x || width < 1 || height < 1 || width > MWM_MAX_SIDE || height > MWM_MAX_SIDE) return;
+    if (x->width == width && x->height == height) return;
+    x->width = width;
+    x->height = height;
+    configure(s, x->surface->owner, x);
+    mwm_flush(s);
+}
+
+void mwm_server_close(mwm_server *s, uint32_t window_id) {
+    xdg *x = toplevel_of(s, window_id);
+    if (!x) return;
+    mwm_put_begin(x->surface->owner->conn, x->toplevel, 1);
+    mwm_put_end(x->surface->owner->conn);
+    mwm_flush(s);
 }
 
 void mwm_shell_commit(mwm_server *s, client *c, surface *f) {
@@ -110,6 +135,8 @@ static void toplevel_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
         if (x->surface) mwm_window_gone(s, x->surface->window);
         x->toplevel = 0;
         x->configured = false;
+        x->active = false;
+        x->width = x->height = 0;
         mwm_del(c, m->object);
     } else if (m->opcode == 2 || m->opcode == 3) { /* set_title, set_app_id */
         const char *text = mwm_get_string(m, &len);

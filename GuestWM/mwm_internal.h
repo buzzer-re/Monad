@@ -78,6 +78,8 @@ typedef struct {
     bool configured;
     /* It has been told it is the window in front. */
     bool active;
+    /* The size it was last asked to be; 0: any it likes. */
+    int32_t width, height;
     char title[TEXT], app_id[TEXT];
 } xdg;
 
@@ -109,6 +111,9 @@ struct mwm_server {
     int order[MWM_MAX_WINDOWS];
     int window_count;
     uint32_t next_window, serial, generation;
+    /* Callbacks waiting for the next frame, over all surfaces, and when the last frame was. */
+    int frames_waiting;
+    uint32_t frame_time;
     /* The pointer and the keyboard (mwm_seat.c). */
     struct {
         /* The window the pointer is over, and where in it. */

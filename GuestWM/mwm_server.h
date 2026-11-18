@@ -51,6 +51,8 @@ enum {
     /* A key's code is the Linux kernel's; X has no place for one beyond. */
     MWM_MAX_KEYCODE = 247,
     MWM_MAX_KEYS = MWM_MAX_KEYCODE,
+    /* The widest and the tallest a window can be asked to be: the largest display there is. */
+    MWM_MAX_SIDE = 8192,
 };
 
 /* A key of the keyboard: its code, and the symbol (X's number for it) it
@@ -81,11 +83,25 @@ void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable);
 /* A frame's time has come (about 60 times a second): programs that asked
  * to be told when to draw again are told. */
 void mwm_server_frame(mwm_server *s, uint32_t time_ms);
+/* Whether any program waits for a frame: with none, there is nothing to
+ * wake up for. */
+bool mwm_server_wants_frame(const mwm_server *s);
+
+/* The display's size. */
+void mwm_server_size(const mwm_server *s, int *width, int *height);
 
 /* The windows on the display, oldest first: how many were written. */
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max);
 /* Counts up whenever a window comes, goes, moves or is renamed. */
 uint32_t mwm_server_generation(const mwm_server *s);
+
+/* The Mac's window was resized: the program is asked to draw at that size
+ * (it answers with a buffer of the size it then chooses). Sizes that no
+ * window can have are not passed on. */
+void mwm_server_resize(mwm_server *s, uint32_t window, int32_t width, int32_t height);
+/* The Mac's window was asked to close: the program is asked to close it
+ * (it may first ask whether to save). */
+void mwm_server_close(mwm_server *s, uint32_t window);
 
 /*
  * Input. The pointer and the keyboard are the Mac's: whoever shows the
