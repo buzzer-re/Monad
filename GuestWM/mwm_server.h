@@ -169,6 +169,12 @@ void mwm_server_on_copied(mwm_server *s, mwm_copied copied, void *ctx);
  */
 void mwm_server_pointer(mwm_server *s, uint32_t window, int32_t x, int32_t y, uint32_t time_ms);
 void mwm_server_button(mwm_server *s, uint32_t button, bool pressed, uint32_t time_ms);
+/* How the pointer is to look where it is: the Mac draws it. What the
+ * program under it asked for by name (wp_cursor_shape_device_v1's shapes,
+ * 1 the arrow to MWM_CURSOR_LAST), or hidden when it asked for none. The
+ * arrow over no window, and until the program under it says. */
+enum { MWM_CURSOR_HIDDEN = 0, MWM_CURSOR_DEFAULT = 1, MWM_CURSOR_LAST = 36 };
+int mwm_server_cursor(const mwm_server *s);
 /* Scrolling by so much, in 1/256 of a unit: right and down are positive. */
 void mwm_server_scroll(mwm_server *s, int32_t dx, int32_t dy, uint32_t time_ms);
 /* The window in front, which gets the keys; 0 when none is. */

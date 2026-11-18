@@ -11,6 +11,11 @@
  *          <inner width> <inner height> <parent> <offset x> <offset y>
  *          <app id> <title>                                  count times
  *   end
+ *   cursor <shape>                    how the pointer is to look where it
+ *                                     is, when that changes: 0 hidden, 1 the
+ *                                     arrow (which goes without saying), or
+ *                                     another of wp_cursor_shape_device_v1's
+ *                                     shapes, up to MWM_CURSOR_LAST
  *
  * A window's place is in the display's pixels; `scale` is how many of them
  * the program draws to one of its units (the Mac's window is that many

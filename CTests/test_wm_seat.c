@@ -481,6 +481,132 @@ static void test_the_keys_are_what_the_mac_says(void) {
     mwm_server_free(s);
 }
 
+enum { SHAPE_POINTER = 4, SHAPE_TEXT = 9, SHAPE_ZOOM_OUT = 34, SHAPE_ALL_RESIZE = 36 };
+
+/* A program's cursor shape device for its pointer (wp_cursor_shape_manager_v1.get_pointer). */
+static uint32_t shape_device(mwm_server *s, client *k, const seat *v, uint32_t version) {
+    uint32_t manager = bind_global(k, "wp_cursor_shape_manager_v1", version), device = k->next++;
+    request(k, manager, 1, 2, device, v->pointer);
+    pump(s, k);
+    CHECK(no_event(k));
+    return device;
+}
+
+static void forget(client *k) {
+    mwm_msg m;
+    while (mwm_conn_next(k->c, &m)) {}
+}
+
+/* The pointer looks as the program under it says, by name: the Mac draws
+ * it. A program the pointer is not over says nothing about it. */
+static void test_the_pointer_looks_as_the_program_under_it_says(void) {
+    mwm_server *s = server();
+    client a = connect_client(s), b = connect_client(s);
+    seat sa = take_seat(s, &a, 5), sb = take_seat(s, &b, 5);
+    uint32_t da = shape_device(s, &a, &sa, 2), db = shape_device(s, &b, &sb, 1);
+    window wa = open_window(s, &a, "A", "app.a", 0x00110000, 64, 32), wb = open_window(s, &b, "B", "app.b", 0x00001100, 64, 32);
+    forget(&a);
+    forget(&b);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+
+    request(&a, da, 1, 2, 1, SHAPE_TEXT); /* over no window of its: nothing changes */
+    pump(s, &a);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+
+    mwm_server_pointer(s, wa.id, 256, 256, 10);
+    request(&a, da, 1, 2, 1, SHAPE_TEXT);
+    pump(s, &a);
+    CHECK(mwm_server_cursor(s) == SHAPE_TEXT);
+    request(&b, db, 1, 2, 1, SHAPE_POINTER); /* another program's word */
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == SHAPE_TEXT);
+    request(&a, da, 1, 2, 1, SHAPE_ALL_RESIZE); /* a shape of the newer list, which it bound */
+    pump(s, &a);
+    CHECK(mwm_server_cursor(s) == SHAPE_ALL_RESIZE);
+
+    /* Over another program's window it is the arrow again, until that program says. */
+    mwm_server_pointer(s, wb.id, 256, 256, 20);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+    request(&b, db, 1, 2, 1, SHAPE_POINTER);
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == SHAPE_POINTER);
+
+    /* No cursor at all (wl_pointer.set_cursor with no surface): hidden, as a terminal does while one types. */
+    request(&b, sb.pointer, 0, 4, 1, 0, 0, 0);
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_HIDDEN);
+    /* A picture of its own is not the Mac's to draw: the arrow. */
+    uint32_t picture = b.next++;
+    request(&b, b.compositor, 0, 1, picture);
+    request(&b, sb.pointer, 0, 4, 1, picture, 0, 0);
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+    request(&a, sa.pointer, 0, 4, 1, 0, 0, 0); /* hiding it is also only for the program under it */
+    pump(s, &a);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+
+    /* Over no window, and when the window under it goes: the arrow. */
+    request(&b, db, 1, 2, 1, SHAPE_TEXT);
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == SHAPE_TEXT);
+    mwm_server_pointer(s, 0, 0, 0, 30);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+    mwm_server_pointer(s, wb.id, 256, 256, 40);
+    request(&b, db, 1, 2, 1, SHAPE_TEXT);
+    pump(s, &b);
+    CHECK(mwm_server_cursor(s) == SHAPE_TEXT);
+    mwm_conn_free(b.c);
+    mwm_server_service(s, b.server_fd, true, false);
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+
+    /* Shapes there are none of drop the program; so does a shape newer than what it bound. */
+    uint32_t object;
+    mwm_server_pointer(s, wa.id, 256, 256, 50);
+    request(&a, da, 1, 2, 1, 0);
+    CHECK(dropped_with(s, &a, &object) == 1 && object == da); /* wp_cursor_shape_device_v1.error.invalid_shape */
+    CHECK(mwm_server_cursor(s) == MWM_CURSOR_DEFAULT);
+
+    client k = connect_client(s);
+    seat v = take_seat(s, &k, 5);
+    uint32_t d = shape_device(s, &k, &v, 2);
+    request(&k, d, 1, 2, 1, SHAPE_ALL_RESIZE + 1);
+    CHECK(dropped_with(s, &k, &object) == 1 && object == d);
+
+    k = connect_client(s);
+    v = take_seat(s, &k, 5);
+    d = shape_device(s, &k, &v, 1);
+    request(&k, d, 1, 2, 1, SHAPE_ZOOM_OUT); /* the last of the first list */
+    pump(s, &k);
+    CHECK(no_event(&k));
+    request(&k, d, 1, 2, 1, SHAPE_ZOOM_OUT + 1);
+    CHECK(dropped_with(s, &k, &object) == 1 && object == d);
+
+    k = connect_client(s);
+    v = take_seat(s, &k, 5);
+    uint32_t manager = bind_global(&k, "wp_cursor_shape_manager_v1", 1);
+    request(&k, manager, 1, 2, k.next++, v.keyboard); /* a shape for what is no pointer */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_OBJECT);
+
+    k = connect_client(s);
+    v = take_seat(s, &k, 5);
+    manager = bind_global(&k, "wp_cursor_shape_manager_v1", 1);
+    request(&k, manager, 2, 2, k.next++, v.pointer); /* a tablet's pen: there is none */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_METHOD);
+
+    /* Destroyed, both are gone, and the program goes on. */
+    k = connect_client(s);
+    v = take_seat(s, &k, 5);
+    manager = bind_global(&k, "wp_cursor_shape_manager_v1", 1);
+    d = k.next++;
+    request(&k, manager, 1, 2, d, v.pointer);
+    request(&k, d, 0, 0);
+    request(&k, manager, 0, 0);
+    pump(s, &k);
+    request(&k, d, 1, 2, 1, SHAPE_TEXT); /* a device that is no more */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_OBJECT);
+    mwm_server_free(s);
+}
+
 int main(void) {
     test_the_pointer_is_where_the_mac_says();
     test_the_keyboard_follows_the_window_in_front();
@@ -489,6 +615,7 @@ int main(void) {
     test_an_old_seat_hears_only_what_it_knows();
     test_a_seat_misused_drops_the_program();
     test_the_keys_are_what_the_mac_says();
+    test_the_pointer_looks_as_the_program_under_it_says();
     printf("test_wm_seat: %d checks passed\n", checks);
     return 0;
 }

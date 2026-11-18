@@ -7,7 +7,8 @@
  * strings, descriptors of a file that may be shorter than said), the whole
  * exchange that opens a window with sizes from the input and takes the
  * pointer and the keyboard, what programs do with the clipboard (copies of
- * any kind, pastes into pipes that are read or left alone), frames, what
+ * any kind, pastes into pipes that are read or left alone) and say of the
+ * pointer's shape (shapes there are and are none of), frames, what
  * the Mac says of the pointer and the keys (any window, any position, any
  * key, any table of keys) and of its clipboard (text, bytes that are none,
  * more than a pipe holds), what MonadHost says on its channel (lines well
@@ -73,6 +74,8 @@ typedef struct {
     uint32_t next;
     /* Its clipboard objects, once it has a window with them (0: none). */
     uint32_t manager, device;
+    /* Its pointer, and what it says the pointer's shape with (0: none). */
+    uint32_t pointer, shape;
 } program;
 
 static void check(const mwm_server *s) {
@@ -98,6 +101,7 @@ static void check(const mwm_server *s) {
     bool wants[MWM_MAX_SOCKETS + 1];
     if (mwm_server_sockets(s, fds, wants, MWM_MAX_SOCKETS + 1) > PROGRAMS + MWM_MAX_TRANSFERS) fail("more programs and pipes than there may be");
     (void)mwm_server_wants_frame(s);
+    if (mwm_server_cursor(s) < MWM_CURSOR_HIDDEN || mwm_server_cursor(s) > MWM_CURSOR_LAST) fail("a pointer shape there is none of");
     windows_seen += n;
 }
 
@@ -235,7 +239,19 @@ static void open_window(program *p, input *in) {
     mwm_put_uint(p->conn, 1 + byte(in) % 5);
     mwm_put_uint(p->conn, seat);
     mwm_put_end(p->conn);
-    words(p, seat, 0, 1, (uint32_t[]){p->next++}); /* get_pointer */
+    p->pointer = p->next++;
+    words(p, seat, 0, 1, &p->pointer); /* get_pointer */
+    if (byte(in) % 2) { /* and a way to say how the pointer is to look */
+        uint32_t shapes = p->next++;
+        p->shape = p->next++;
+        mwm_put_begin(p->conn, registry, 0);
+        mwm_put_uint(p->conn, 9);
+        mwm_put_string(p->conn, "wp_cursor_shape_manager_v1");
+        mwm_put_uint(p->conn, 1 + byte(in) % 2);
+        mwm_put_uint(p->conn, shapes);
+        mwm_put_end(p->conn);
+        words(p, shapes, 1, 2, (uint32_t[]){p->shape, p->pointer});
+    }
     words(p, seat, 1, 1, (uint32_t[]){p->next++}); /* get_keyboard */
     static const char *names[] = {"wl_compositor", "wl_shm", "xdg_wm_base"};
     uint32_t ids[] = {compositor, shm, wm};
@@ -352,7 +368,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             p->conn = mwm_conn_new(sv[0]);
             p->server_fd = sv[1];
             p->next = 2;
-            p->manager = p->device = 0;
+            p->manager = p->device = p->pointer = p->shape = 0;
             if (!p->conn || !mwm_server_add_client(s, sv[1])) fail("a program could not connect");
         }
         if (mwm_ctl_fd(ctl) < 0) { /* MonadHost connects, again when it was dropped */
@@ -430,11 +446,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             mwm_ctl_service(ctl, true, true, time);
             break;
         }
-        case 11: /* the clipboard in use: a window in front, and its program copies, pastes what it was offered, or lets an offer go */
+        case 11: /* a window in front and under the pointer, and its program copies, pastes what it was offered, lets an offer go, or says how the pointer is to look */
             if (byte(&in) % 2) mwm_server_focus(s, 1 + byte(&in) % 6);
-            switch (byte(&in) % 4) {
+            if (byte(&in) % 2) mwm_server_pointer(s, 1 + byte(&in) % 6, 256, 256, time);
+            switch (byte(&in) % 6) {
             case 0: if (p->device) copy(p, &in); break;
             case 1: words(p, 0xff000000u + byte(&in) % 4, 2, 0, NULL); break;
+            case 2: if (p->shape) words(p, p->shape, 1, 2, (uint32_t[]){number(&in), byte(&in) % 40}); break; /* shapes there are, and are none of */
+            case 3: if (p->pointer) words(p, p->pointer, 0, 4, (uint32_t[]){number(&in), byte(&in) % 2 ? 0 : 1 + byte(&in) % 24, 0, 0}); break;
             default: paste(p, &in); break;
             }
             break;

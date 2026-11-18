@@ -73,6 +73,7 @@ static void pointer_leave(mwm_server *s, bool tell) {
         }
     }
     s->seat.pointer = NULL;
+    s->seat.cursor = MWM_CURSOR_DEFAULT; /* over nothing, and over the next window until its program says */
 }
 
 void mwm_server_pointer(mwm_server *s, uint32_t window_id, int32_t x, int32_t y, uint32_t time_ms) {
@@ -304,6 +305,7 @@ bool mwm_seat_init(mwm_server *s) {
     int count;
     const mwm_key *keys = mwm_keymap_us(&count);
     s->seat.keymap_fd = -1;
+    s->seat.cursor = MWM_CURSOR_DEFAULT;
     return mwm_server_keymap(s, keys, count);
 }
 
@@ -357,13 +359,17 @@ void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
         seat_request(s, c, o, m);
         break;
     case T_POINTER:
-        if (m->opcode == 0) { /* set_cursor: the Mac draws the pointer; which one, later */
+        if (m->opcode == 0) { /* set_cursor: no surface hides the pointer; a picture of the program's own the Mac does not draw */
             (void)mwm_get_uint(m);
             uint32_t surface_id = mwm_get_uint(m);
             (void)mwm_get_int(m);
             (void)mwm_get_int(m);
             if (m->bad) return;
-            if (surface_id != 0 && !mwm_find_as(c, surface_id, T_SURFACE)) mwm_fail(c, m->object, E_INVALID_OBJECT, "not a surface");
+            if (surface_id != 0 && !mwm_find_as(c, surface_id, T_SURFACE)) {
+                mwm_fail(c, m->object, E_INVALID_OBJECT, "not a surface");
+            } else if (owner(s->seat.pointer) == c) {
+                s->seat.cursor = surface_id == 0 ? MWM_CURSOR_HIDDEN : MWM_CURSOR_DEFAULT;
+            }
         } else if (m->opcode == 1 && o->version >= 3) { /* release */
             mwm_del(c, m->object);
         } else {
@@ -373,6 +379,39 @@ void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
     case T_KEYBOARD:
         if (m->opcode == 0 && o->version >= 3) mwm_del(c, m->object); /* release */
         else mwm_fail(c, m->object, E_INVALID_METHOD, "wl_keyboard has no such request");
+        break;
+    case T_SHAPE_MANAGER: /* wp_cursor_shape_manager_v1 */
+        if (m->opcode == 0) {
+            mwm_del(c, m->object);
+        } else if (m->opcode == 1) { /* get_pointer */
+            uint32_t id = mwm_get_uint(m), pointer = mwm_get_uint(m);
+            uint8_t version = o->version; /* read now: a new object may move them all */
+            if (m->bad) return;
+            if (!mwm_is(c, pointer, T_POINTER)) {
+                mwm_fail(c, m->object, E_INVALID_OBJECT, "not a pointer");
+            } else if (mwm_add(c, id, T_SHAPE_DEVICE, NULL)) {
+                c->objects[id].version = version;
+            }
+        } else { /* a tablet's pen: there is none */
+            mwm_fail(c, m->object, E_INVALID_METHOD, "wp_cursor_shape_manager_v1 has no such request");
+        }
+        break;
+    case T_SHAPE_DEVICE: /* wp_cursor_shape_device_v1 */
+        if (m->opcode == 0) {
+            mwm_del(c, m->object);
+        } else if (m->opcode == 1) { /* set_shape: how the pointer is to look, by name */
+            (void)mwm_get_uint(m);
+            uint32_t shape = mwm_get_uint(m);
+            if (m->bad) return;
+            /* The first list of shapes ends at zoom_out (34); the second has two more. */
+            if (shape < MWM_CURSOR_DEFAULT || shape > (o->version >= 2 ? MWM_CURSOR_LAST : 34)) {
+                mwm_fail(c, m->object, 1, "no such cursor shape");
+            } else if (owner(s->seat.pointer) == c) { /* only where the pointer is over a window of its own */
+                s->seat.cursor = (int)shape;
+            }
+        } else {
+            mwm_fail(c, m->object, E_INVALID_METHOD, "wp_cursor_shape_device_v1 has no such request");
+        }
         break;
     default:
         break;
@@ -404,3 +443,5 @@ void mwm_seat_surface_gone(mwm_server *s, surface *f) {
     if (s->seat.pointer && s->seat.pointer->surface == f) pointer_leave(s, false);
     if (s->seat.keyboard && s->seat.keyboard->surface == f) keyboard_leave(s, false);
 }
+
+int mwm_server_cursor(const mwm_server *s) { return s->seat.cursor; }

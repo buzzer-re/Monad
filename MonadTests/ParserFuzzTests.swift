@@ -118,7 +118,7 @@ final class ParserFuzzTests: XCTestCase {
         let seeds = ["monad-wm 1 1920 1200\nwindows 3 2\nwindow 1 0 0 696 468 1 0 0 696 468 0 0 0 foot foot\n" +
                      "window 2 712 0 800 600 2 26 23 748 554 0 0 0 org.gnome.Calculator 50%25%20of%20caf%C3%A9%E2%80%AE\nend\n",
                      "monad-wm 1 8192 8192\nwindows 1 1\nwindow 4294967295 8000 8000 192 192 4 0 0 192 192 0 0 0 - -\nend\n",
-                     "monad-wm 1 64 64\nwindows 9 0\nend\ncursor text\nwindows 10 1\nwindow 7 0 0 64 64 1 1 1 1 1 0 0 0 %00%0A%1B %FF\nend\n",
+                     "monad-wm 1 64 64\nwindows 9 0\nend\nbell 1\ncursor 9\nwindows 10 1\nwindow 7 0 0 64 64 1 1 1 1 1 0 0 0 %00%0A%1B %FF\nend\ncursor 0\n",
                      "monad-wm 1 1920 1200\nwindows 4 3\nwindow 1 0 0 400 300 2 0 0 400 300 0 0 0 app W\n" +
                      "window 2 416 0 120 80 2 4 4 112 72 1 20 88 - -\nwindow 3 552 0 60 40 2 0 0 60 40 2 -30 -500 - -\nend\n",
                      "monad-wm 1 1920 1200\ncopied 14\ncaf\u{E9}\n\ttab\u{1B}[0m\ncopied 0\nwindows 1 0\nend\ncopied 3\nabc"]
@@ -127,6 +127,7 @@ final class ParserFuzzTests: XCTestCase {
             var reader = GuestWindowReader()
             let bytes = r.mutate(seeds.map { Array($0.utf8) })
             for event in reader.feed(Data(bytes)) {
+                if case .cursor(let shape) = event { XCTAssertTrue((0...GuestCursor.lastShape).contains(shape)) }
                 if case .copied(let text) = event {
                     XCTAssertLessThanOrEqual(text.utf8.count, GuestWindowReader.maxCopyBytes)
                     XCTAssertFalse(text.unicodeScalars.contains { scalar in

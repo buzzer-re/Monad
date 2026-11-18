@@ -36,6 +36,7 @@ static const struct {
     {"wl_subcompositor", 1, T_SUBCOMPOSITOR},
     {"wl_data_device_manager", 3, T_DATA_MANAGER},
     {"zxdg_decoration_manager_v1", 1, T_DECORATION_MANAGER},
+    {"wp_cursor_shape_manager_v1", 2, T_SHAPE_MANAGER},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -368,6 +369,8 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_SEAT:
     case T_POINTER:
     case T_KEYBOARD:
+    case T_SHAPE_MANAGER:
+    case T_SHAPE_DEVICE:
         mwm_seat_request(s, c, o, m);
         break;
     case T_WM_BASE:

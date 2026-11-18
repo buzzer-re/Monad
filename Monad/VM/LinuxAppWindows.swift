@@ -37,6 +37,8 @@ protocol GuestWindowPresenting: AnyObject {
     func show(_ windows: [GuestWindow])
     /// The window manager says what was copied in the VM (nothing: something the Mac cannot have).
     func copied(_ text: String)
+    /// How the pointer is to look over these windows (a number of GuestCursor's).
+    func cursor(_ shape: Int)
     /// The window manager is gone: so are its windows.
     func disconnected()
 }
@@ -100,6 +102,8 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private var cascade = NSPoint.zero
     private var clipboard = GuestClipboard()
     private var board = MacClipboard.general
+    /// How the pointer looks over these windows: the word of the program it is over.
+    fileprivate var pointerCursor = GuestCursor.arrow
 
     private struct Shown {
         let window: NSWindow
@@ -133,6 +137,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         keysDown = []
         buttonsDown = []
         clipboard = GuestClipboard() // a window manager that just started holds nothing of the Mac's
+        pointerCursor = .arrow
         sayScale()
         sayKeys()
         if layoutObserver == nil {
@@ -162,7 +167,18 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         clipboard.wrote(changeCount: board.changeCount())
     }
 
+    /// One of the Mac's own cursors, by the program's word for it; set at
+    /// once when the Mac's pointer is over the window the program has it in.
+    func cursor(_ shape: Int) {
+        let cursor = GuestCursor(shape: shape)
+        guard cursor != pointerCursor else { return }
+        pointerCursor = cursor
+        if pointerIsOverItsWindow { cursor.mac.set() }
+    }
+
     func disconnected() {
+        if pointerIsOverItsWindow, pointerCursor != .arrow { NSCursor.arrow.set() }
+        pointerCursor = .arrow
         windows = []
         for id in Array(shown.keys) { close(id) }
         stopKeys()
@@ -295,6 +311,8 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     }
 
     private func close(_ id: UInt32) {
+        // The window under the pointer goes, and with it how the pointer looked there.
+        if saidPointer == id, pointerCursor != .arrow, pointerIsOverItsWindow { NSCursor.arrow.set() }
         guard let entry = shown.removeValue(forKey: id) else { return }
         entry.window.delegate = nil
         entry.window.parent?.removeChildWindow(entry.window)
@@ -482,7 +500,14 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         // While a button is down the window keeps the pointer, wherever it is dragged.
         guard buttonsDown.isEmpty, saidPointer == id else { return }
         saidPointer = 0
+        if pointerCursor != .arrow { NSCursor.arrow.set() } // what it looked like in the window it does not outside it
         onCommand?(.pointer(window: 0, x: 0, y: 0))
+    }
+
+    /// Whether the Mac's pointer is over the content of the window the VM was told it is in.
+    private var pointerIsOverItsWindow: Bool {
+        guard let entry = shown[saidPointer] else { return false }
+        return entry.content.bounds.contains(entry.content.convert(entry.window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
     fileprivate func button(_ id: UInt32, number: Int, down: Bool, at point: NSPoint, inside: Bool, flags: NSEvent.ModifierFlags) {
@@ -533,11 +558,15 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
             super.updateTrackingAreas()
             if let tracking { removeTrackingArea(tracking) }
             // A popup's window is never the key window: the pointer over it counts all the same.
-            let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, popup ? .activeAlways : .activeInKeyWindow, .inVisibleRect],
+            let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate,
+                                                             popup ? .activeAlways : .activeInKeyWindow, .inVisibleRect],
                                       owner: self, userInfo: nil)
             addTrackingArea(area)
             tracking = area
         }
+
+        /// The pointer came over the window: it looks as the program under it said.
+        override func cursorUpdate(with event: NSEvent) { (owner?.pointerCursor ?? .arrow).mac.set() }
 
         private func here(_ event: NSEvent) -> NSPoint { convert(event.locationInWindow, from: nil) }
 
@@ -578,7 +607,8 @@ extension LinuxAppWindows {
                 + ", content \(content.width)×\(content.height), display behind it at \(display.minX),\(display.minY) \(display.width)×\(display.height)"
                 + ", visible \(entry.window.isVisible), drawn \(entry.window.occlusionState.contains(.visible)), key \(entry.window.isKeyWindow)"
                 + ", scale \(entry.window.backingScaleFactor), framebuffers \(surfaces.isEmpty ? "none" : surfaces.joined(separator: ", "))"
-        }.joined(separator: "\n") + (board.standsIn ? "\nclipboard (a stand-in for the Mac's): “\(board.text() ?? "")”" : "")
+        }.joined(separator: "\n") + "\npointer: \(pointerCursor)"
+            + (board.standsIn ? "\nclipboard (a stand-in for the Mac's): “\(board.text() ?? "")”" : "")
     }
 
     /// What a window's view of the display holds, cut to what the window

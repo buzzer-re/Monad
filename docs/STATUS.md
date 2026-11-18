@@ -62,20 +62,21 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   window (`LinuxAppWindows.swift`) with the Mac's pointer, the Mac's keyboard layout as it is,
   resize and close; a popup as a frameless window on its window. ⌘V gives the VM the Mac's text
   and ⌘C or ⌘X brings the program's copy back as text, on those keys only
-  (`GuestClipboard.swift`). Checked in Debug VMs, the last one made new with Display and the
-  profile: foot at Retina scale, typed into, resized, a second one, closed, back after a
-  restart, rebuilt at boot when Monad's sources changed; GNOME's Calculator clicked through a
-  sum and its mode menu; text pasted into Calculator and foot and copied back out, with a
-  clipboard of the test's own in the place of the Mac's. All of it through the Debug tools
-  `drive_window` and `read_windows`, which call what the windows' own events call and read what
-  their views hold. Nobody has looked at these windows on the screen or used them with a real
-  pointer and keyboard yet, and the Mac's real clipboard was not read or set (macOS may ask
-  before MonadHost reads it).
-  Next: the pointer's shape, Xwayland, a Dock icon and menus for MonadHost, the desktop and the
-  windows at once, GTK's own title bar under the Mac's, popups with round corners (black where
-  cut out), pictures and files on the clipboard. Not tried: Qt programs, a program that shrinks
-  its shared memory under the window manager (the guard is written, not run), more windows than
-  fit on the display, two screens of different scales.
+  (`GuestClipboard.swift`). The pointer looks as the program under it names it, as one of the
+  Mac's own cursors (`GuestCursor.swift`). Checked in Debug VMs, the last one made new with
+  Display and the profile: foot at Retina scale, typed into, resized, a second one, closed, back
+  after a restart, rebuilt at boot when Monad's sources changed; GNOME's Calculator clicked
+  through a sum and its mode menu; text pasted into Calculator and foot and copied back out,
+  with a clipboard of the test's own in the place of the Mac's; the I-beam named over foot and
+  Calculator's entry. All of it through the Debug tools `drive_window` and `read_windows`, which
+  call what the windows' own events call and read what their views hold. Nobody has looked at
+  these windows on the screen or used them with a real pointer and keyboard yet, and the Mac's
+  real clipboard was not read or set (macOS may ask before MonadHost reads it).
+  Next: Xwayland, a Dock icon and menus for MonadHost, the desktop and the windows at once,
+  GTK's own title bar under the Mac's, popups with round corners (black where cut out), pictures
+  and files on the clipboard, cursors programs draw themselves. Not tried: Qt programs, a
+  program that shrinks its shared memory under the window manager (the guard is written, not
+  run), more windows than fit on the display, two screens of different scales.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, Desktop, App windows, custom),

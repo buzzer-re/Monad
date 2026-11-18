@@ -22,6 +22,8 @@ struct mwm_ctl {
     /* The windows as MonadHost was last told them. */
     uint32_t told;
     bool told_any;
+    /* How the pointer is to look, as MonadHost was last told. */
+    int told_cursor;
     /* A table of keys being read: how many are still to come. */
     mwm_key keys[MWM_MAX_KEYS];
     int key_count, keys_expected;
@@ -164,8 +166,19 @@ static void tell_windows(mwm_ctl *c) {
     c->told_any = true;
 }
 
+/* How the pointer is to look, when that changed and MonadHost has read
+ * what was said before (a program may change it without end). */
+static void tell_cursor(mwm_ctl *c) {
+    int cursor = mwm_server_cursor(c->server);
+    if (c->fd < 0 || c->out_len > 0 || cursor == c->told_cursor) return;
+    say(c, "cursor %d\n", cursor);
+    c->told_cursor = cursor;
+}
+
 void mwm_ctl_update(mwm_ctl *c) {
     tell_windows(c);
+    flush(c);
+    tell_cursor(c);
     flush(c);
 }
 
@@ -182,6 +195,7 @@ void mwm_ctl_attach(mwm_ctl *c, int fd) {
 #endif
     c->fd = fd;
     c->told_any = false;
+    c->told_cursor = MWM_CURSOR_DEFAULT; /* what MonadHost takes it to be until told */
     int width, height;
     mwm_server_size(c->server, &width, &height);
     say(c, "monad-wm %d %d %d\n", MWM_CTL_VERSION, width, height);

@@ -842,6 +842,8 @@ final class VMLifecycleTests: XCTestCase {
         // What the user copied in the VM is handed to what shows its windows (which decides whether the Mac takes it).
         channel.agentSays("copied 5\nhello")
         await assertEventually { shown.copies == ["hello"] }
+        channel.agentSays("cursor 9\n")
+        await assertEventually { shown.cursors == [9] }
 
         channel.hangUp()
         await assertEventually { shown.disconnects == 1 }

@@ -499,6 +499,74 @@ static void test_the_clipboards_meet_when_the_user_says(void) {
     mwm_server_free(s);
 }
 
+/* MonadHost is told how the pointer is to look, when that changes: a
+ * number it knows the shapes of. The arrow is what it takes it to be. */
+static void test_the_pointers_shape_is_told(void) {
+    mwm_server *s = server();
+    mwm_ctl *c = mwm_ctl_new(s);
+    client a = connect_client(s);
+    uint32_t seat = bind_global(&a, "wl_seat", 5), pointer = a.next++;
+    uint32_t shapes = bind_global(&a, "wp_cursor_shape_manager_v1", 1), device = a.next++;
+    request(&a, seat, 0, 1, pointer);
+    request(&a, shapes, 1, 2, device, pointer);
+    pump(s, &a);
+    forget(&a);
+    window one = open_window(s, &a, "One", "app.one", 0x00110000, 64, 32);
+    forget(&a);
+    host h = attach(c);
+    for (const char *got; (got = line(c, &h)) != NULL;) CHECK(strncmp(got, "cursor", 6) != 0); /* the arrow goes without saying */
+
+    char text[100];
+    snprintf(text, sizeof text, "pointer %u 256 256\n", one.id);
+    say(c, &h, text);
+    request(&a, device, 1, 2, 1, 9); /* text */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(line_is(c, &h, "cursor 9"));
+    request(&a, device, 1, 2, 1, 9); /* the same again: nothing to say */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(line(c, &h) == NULL);
+    request(&a, pointer, 0, 4, 1, 0, 0, 0); /* no cursor at all */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(line_is(c, &h, "cursor 0"));
+    say(c, &h, "pointer 0 0 0\n"); /* over no window: the arrow */
+    CHECK(line_is(c, &h, "cursor 1"));
+
+    /* A MonadHost that connects while the pointer looks like something is told so. */
+    say(c, &h, text);
+    request(&a, device, 1, 2, 1, 4);
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(line_is(c, &h, "cursor 4"));
+    close(h.fd);
+    h = attach(c);
+    bool told = false;
+    for (const char *got; (got = line(c, &h)) != NULL;) told = told || strcmp(got, "cursor 4") == 0;
+    CHECK(told);
+
+    /* A program that changes it without end, and a MonadHost that does not read: it hears the last, not each. */
+    for (int i = 0; i < 20000; i++) {
+        request(&a, device, 1, 2, 1, 1 + i % 30);
+        pump(s, &a);
+        forget(&a);
+        mwm_ctl_update(c);
+    }
+    request(&a, device, 1, 2, 1, 33);
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(mwm_ctl_fd(c) >= 0);
+    long lines = 0;
+    char last[MWM_CTL_LINE + 1] = "";
+    for (const char *got; (got = line(c, &h)) != NULL; lines++) snprintf(last, sizeof last, "%s", got);
+    CHECK(strcmp(last, "cursor 33") == 0 && lines < 20000);
+    close(h.fd);
+    mwm_conn_free(a.c);
+    mwm_ctl_free(c);
+    mwm_server_free(s);
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     test_the_windows_are_told();
@@ -506,6 +574,7 @@ int main(void) {
     test_lines_that_make_no_sense_do_nothing();
     test_one_monadhost_at_a_time();
     test_the_clipboards_meet_when_the_user_says();
+    test_the_pointers_shape_is_told();
     printf("test_wm_ctl: %d checks passed\n", checks);
     return 0;
 }

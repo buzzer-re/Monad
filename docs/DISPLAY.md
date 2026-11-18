@@ -77,9 +77,9 @@ its first boot began, and 11 seconds after a restart.
 **In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
 takes the display and speaks Wayland to programs with code of its own (the wire format,
 `wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows and popups,
-`wl_seat`, xdg-decoration). Each window gets a place of its own on the display, in rows, a gap
-from the next; what the program drew is drawn there from its buffers, only where it says
-something changed, at the scale it drew at (programs are told the Mac screen's). A menu, a
+`wl_seat`, xdg-decoration, cursor-shape). Each window gets a place of its own on the display, in
+rows, a gap from the next; what the program drew is drawn there from its buffers, only where it
+says something changed, at the scale it drew at (programs are told the Mac screen's). A menu, a
 tooltip or a list that drops down is a window too, told with the window it is on and where the
 program put it there; a menu that asked for the keyboard has it while it is up. Programs that
 ask are told the frame is not theirs to draw. The pointer and the keyboard are not read from the
@@ -87,8 +87,10 @@ VM's devices: the window manager is told which window the pointer is over and wh
 front, and only the program owning that window hears of it. The clipboard is the programs' own
 (`wl_data_device`): what one copies the one in front can paste, in every kind it is offered in,
 written by the copier into the paster's pipe; only the program in front sets it or is told what
-is on it, and nothing is dragged. It is C, compiled in the guest by the distribution's `cc`:
-Xcode cannot build Linux programs, and Monad ships no binary it did not build.
+is on it, and nothing is dragged. How the pointer is to look is the word of the program it is
+over, by name (`wp_cursor_shape_v1`: text, pointer, a resize), or none when the program hides
+it. It is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux
+programs, and Monad ships no binary it did not build.
 
 **Between the two**, one channel: lines of text on vsock port 1025, which MonadHost dials when
 the guest's installer says the window manager is set up, and which the window manager takes
@@ -117,6 +119,11 @@ user is still in that VM's windows. A copy that is no text (a picture) stays in 
 Mac's older text is not pasted over it. A program in the VM never reads the Mac's clipboard and
 never sets it by itself; Copy chosen from a program's own menu stays in the VM.
 
+**The pointer** is the Mac's, drawn by the Mac (`GuestCursor.swift`): an I-beam over text, a
+hand over a link, the Mac's resize cursors, by the number of the shape the program named. No
+picture comes from the VM: a program that draws a cursor of its own gets the arrow, and one that
+hides the pointer hides it over its own window only.
+
 Run in Debug VMs (first with the window manager installed by hand, then in a new VM made with
 Display and the profile): foot opened as a Mac window "foot — wm-try" at Retina scale; a command
 typed into it through this Mac's layout ran; a second foot opened as a second window; resizing
@@ -126,14 +133,16 @@ its mode menu opened as a popup under its button, and choosing Advanced there cl
 and widened the window to the new layout. With a clipboard of the test's own in the place of the
 Mac's: ⌘V typed its `7*6` into Calculator, Return, ⌘A and ⌘C brought `42` back, ⇧⌘V in foot then
 pasted that 42 (one program's copy into another, the Mac's being no newer), and 306,000 bytes
-pasted into `cat` in foot arrived whole within a second. The typing, clicking, resizing and
-closing were done through the Debug tool `drive_window`, which calls what the window's own
-events call, and what a window shows was read from its view (`read_windows`): nobody has looked
-at these windows on the screen yet, or used them with a real pointer and keyboard, and the Mac's
-real clipboard was never read or set (macOS may ask before MonadHost reads it; not seen).
+pasted into `cat` in foot arrived whole within a second. The pointer's shape, as the window
+manager told it, was the I-beam over foot and over Calculator's entry and the arrow over its
+buttons. The typing, clicking, resizing and closing were done through the Debug tool
+`drive_window`, which calls what the window's own events call, and what a window shows was read
+from its view (`read_windows`): nobody has looked at these windows on the screen yet, or used
+them with a real pointer and keyboard (so the cursor itself was not seen), and the Mac's real
+clipboard was never read or set (macOS may ask before MonadHost reads it; not seen).
 
 Not there yet: the clipboard carries text only between the Mac and the VM (a picture or files
-copied in the VM paste in the VM); the pointer's shape (always the Mac's arrow); X11
+copied in the VM paste in the VM); a cursor a program draws itself (the arrow in its place); X11
 programs through Xwayland; programs that draw their own title bar whatever they are told
 (GTK's) get the Mac's above it; a popup that is not a rectangle (GTK 4's menus have round
 corners and a point) is black where it is cut out; a popup is where the program put it, with

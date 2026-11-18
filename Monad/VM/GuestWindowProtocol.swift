@@ -52,6 +52,9 @@ enum GuestWindowEvent: Equatable, Sendable {
     /// it was something the Mac cannot have (a picture, too much). The
     /// guest may say it unasked: who takes it decides (GuestClipboard).
     case copied(String)
+    /// How the pointer is to look over the window it is in: a number of
+    /// GuestCursor's (0: not at all), never a picture.
+    case cursor(Int)
 }
 
 /// A key of the Mac's keyboard for the VM: the Linux kernel's code for it,
@@ -208,6 +211,10 @@ struct GuestWindowReader {
             copy = []
             copy.reserveCapacity(count)
             return nil
+        case "cursor":
+            guard display != nil, expected == nil, words.count == 2, let shape = Self.number(words[1], 0...GuestCursor.lastShape)
+            else { return broken() }
+            return .cursor(shape)
         default:
             return nil // a word a newer window manager may say
         }

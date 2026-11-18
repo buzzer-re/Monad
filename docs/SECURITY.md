@@ -292,6 +292,10 @@ Not promised:
   stands; one put elsewhere on the screen is not shown), it never takes the keys, and a popup
   must be on a window the guest told, by way of no more than eight popups
   (`GuestWindowLayoutTests.testAPopupAwayFromItsWindowIsNotShown`, `GuestWindowProtocolTests`).
+  How the pointer looks over a guest's window is the guest's word, as a number: MonadHost draws
+  one of the Mac's own cursors for it and takes no picture from the guest; a number that is no
+  shape ends the connection, and a guest can hide the pointer over its own windows only
+  (`GuestCursorTests`, `GuestWindowProtocolTests`, `test_wm_seat.c`).
   Not done yet, and a way a guest can annoy: it can open up to 64 windows on the Mac, and they
   are not kept from covering the screen.
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app

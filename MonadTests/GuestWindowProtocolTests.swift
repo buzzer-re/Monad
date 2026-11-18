@@ -50,7 +50,7 @@ final class GuestWindowProtocolTests: XCTestCase {
     /// A word the window manager of a newer Monad may say is skipped.
     func testALineItDoesNotKnowIsSkipped() {
         var reader = GuestWindowReader()
-        XCTAssertEqual(read("monad-wm 1 1920 1200\ncursor text\nwindows 1 0\nend\n", into: &reader),
+        XCTAssertEqual(read("monad-wm 1 1920 1200\nbell 1\nwindows 1 0\nend\n", into: &reader),
                        [.hello(display: GuestDisplaySize(width: 1920, height: 1200)), .windows([])])
         XCTAssertFalse(reader.isBroken)
     }
@@ -193,6 +193,24 @@ final class GuestWindowProtocolTests: XCTestCase {
         // What would do something where it is pasted (an escape sequence ending a terminal's paste, say) is taken out.
         XCTAssertEqual(read("copied 14\na\u{1B}[201~b\r\n\tc\u{7F}\u{08}", into: &reader), [.copied("a[201~b\r\n\tc")])
         XCTAssertFalse(reader.isBroken)
+    }
+
+    /// How the pointer is to look is a number of the shapes there are, and nothing else.
+    func testThePointersShapeIsANumberOfTheShapesThereAre() {
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &reader)
+        XCTAssertEqual(read("cursor 9\ncursor 0\ncursor \(GuestCursor.lastShape)\nwindows 1 0\nend\ncursor 1\n", into: &reader),
+                       [.cursor(9), .cursor(0), .cursor(GuestCursor.lastShape), .windows([]), .cursor(1)])
+        XCTAssertFalse(reader.isBroken)
+        for bad in ["cursor \(GuestCursor.lastShape + 1)\n", "cursor -1\n", "cursor\n", "cursor 1 2\n", "cursor 09\n", "cursor text\n",
+                    "windows 1 1\ncursor 1\n"] {
+            var reader = GuestWindowReader()
+            XCTAssertEqual(read("monad-wm 1 1920 1200\n" + bad, into: &reader).count, 1, bad)
+            XCTAssertTrue(reader.isBroken, bad)
+        }
+        var early = GuestWindowReader()
+        XCTAssertEqual(read("cursor 1\n", into: &early), [], "before it said what it is")
+        XCTAssertTrue(early.isBroken)
     }
 
     func testACopyThatDoesNotFitBreaksTheConnection() {

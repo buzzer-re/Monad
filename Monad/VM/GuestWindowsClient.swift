@@ -23,6 +23,8 @@ final class GuestWindowsClient {
     var onWindows: (([GuestWindow]) -> Void)?
     /// What the guest says was copied (GuestClipboard decides whether the Mac takes it).
     var onCopied: ((String) -> Void)?
+    /// How the pointer is to look over the guest's windows (a number of GuestCursor's).
+    var onCursor: ((Int) -> Void)?
     /// The guest hung up, said nonsense or stopped reading. Not called for `stop()`.
     var onDisconnect: (() -> Void)?
 
@@ -105,6 +107,7 @@ final class GuestWindowsClient {
             case .hello(let display): onDisplay?(display)
             case .windows(let windows): onWindows?(windows)
             case .copied(let text): onCopied?(text)
+            case .cursor(let shape): onCursor?(shape)
             }
         }
     }

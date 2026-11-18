@@ -46,6 +46,8 @@ typedef enum {
     T_DECORATION,
     T_POPUP,
     T_DATA_OFFER,
+    T_SHAPE_MANAGER,
+    T_SHAPE_DEVICE,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -238,6 +240,8 @@ struct mwm_server {
         /* The window the pointer is over, and where in it. */
         window *pointer;
         int32_t x, y;
+        /* How the pointer is to look there (MWM_CURSOR_*): the word of the program under it. */
+        int cursor;
         /* The window in front as the Mac said it (0: none), and the window
          * that gets the keys: that one, or a menu of its that took them. */
         uint32_t wanted;
