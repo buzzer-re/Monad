@@ -60,7 +60,13 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   channel to MonadHost on a vsock port only the Mac can dial. On the Mac, MonadHost dials it
   when the guest says it is there, reads its windows as hostile text, and shows each as a Mac
   window (`LinuxAppWindows.swift`) with the Mac's pointer, the Mac's keyboard layout as it is,
-  resize and close; a popup as a frameless window on its window. ⌘V gives the VM the Mac's text
+  resize and close; a popup as a frameless window on its window, cut to the shape the program
+  drew (round corners, a menu's arrow). One title bar: programs that draw a header bar of their
+  own (GTK) draw no window buttons in it and no round corners under the Mac's frame, the Mac's
+  title bar takes the header's colour, and dragging or double-clicking the header moves or zooms
+  the Mac's window. A VM's programs are in its "…" menu under Apps, with their icons, a search
+  and favourites (`GuestApps.swift`, `monad-apps.sh`); turning Display on adds the App windows
+  profile where it can be installed. ⌘V gives the VM the Mac's text
   and ⌘C or ⌘X brings the program's copy back as text, on those keys only
   (`GuestClipboard.swift`). The pointer looks as the program under it names it, as one of the
   Mac's own cursors (`GuestCursor.swift`). Checked in Debug VMs, the last one made new with
@@ -69,14 +75,19 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   through a sum and its mode menu; text pasted into Calculator and foot and copied back out,
   with a clipboard of the test's own in the place of the Mac's; the I-beam named over foot and
   Calculator's entry. All of it through the Debug tools `drive_window` and `read_windows`, which
-  call what the windows' own events call and read what their views hold. Nobody has looked at
-  these windows on the screen or used them with a real pointer and keyboard yet, and the Mac's
-  real clipboard was not read or set (macOS may ask before MonadHost reads it).
-  Next: Xwayland, a Dock icon and menus for MonadHost, the desktop and the windows at once,
-  GTK's own title bar under the Mac's, popups with round corners (black where cut out), pictures
-  and files on the clipboard, cursors programs draw themselves. Not tried: Qt programs, a
-  program that shrinks its shared memory under the window manager (the guard is written, not
-  run), more windows than fit on the display, two screens of different scales.
+  call what the windows' own events call and read what their views hold. Calculator, a GTK 3
+  program, foot and a Qt editor (FeatherPad) have been looked at on the screen and used with a
+  real pointer; the Apps panel and menu have not been looked at, and the Mac's real clipboard
+  was not read or set (macOS may ask before MonadHost reads it).
+  Slow: Apple's display device costs about a Mac core for as long as anything in a window moves
+  (measured: 60% in the VM's process and 40% in WindowServer for one spinner, the same at
+  3840×2160 and 7680×4320), which shows as lag. The way out is a pixel path of Monad's own
+  (`docs/DISPLAY.md`), not built.
+  Next: that pixel path and drawing by the Mac's GPU, Xwayland, a Dock icon and menus for
+  MonadHost, the desktop and the windows at once, pictures and files on the clipboard, cursors
+  programs draw themselves. Not tried: a program that shrinks its shared memory under the window
+  manager (the guard is written, not run), more windows than fit on the display (one with no
+  room is not shown), two screens of different scales.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, Desktop, App windows, custom),

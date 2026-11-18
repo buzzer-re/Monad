@@ -296,6 +296,26 @@ Not promised:
   one of the Mac's own cursors for it and takes no picture from the guest; a number that is no
   shape ends the connection, and a guest can hide the pointer over its own windows only
   (`GuestCursorTests`, `GuestWindowProtocolTests`, `test_wm_seat.c`).
+  The frame of a guest's window is the Mac's, with the Mac's buttons; a program that draws a bar
+  of its own can give the Mac's title bar that bar's colour (six hex digits, nothing else of
+  it), and its title still ends with the VM's name. A popup's shape is the guest's word too:
+  rows inside the popup's own rectangle, 128 at most, which can only take away from what is
+  shown; rows that do not add up to the popup end the connection. What a program asks of its
+  window (to be moved, zoomed, put in the Dock) is a wish: MonadHost does it only as the user's
+  doing, a move while the left button is down in that window (pressed within five seconds),
+  the others within a second of the user's click or key there, so a guest cannot move, enlarge
+  or hide its windows by itself (`GuestWindowLayoutTests.testAProgramsWishIsDoneOnlyAsTheUsersDoing`,
+  `GuestWindowProtocolTests`, `test_wm_frame.c`, `test_wm_popup.c`).
+  The VM's programs in the Apps menu are the guest's word as well (`monad-apps.sh` over the
+  VM's ssh connection, read by `GuestApps.swift`): an exact grammar, at most 256 programs, ids
+  of letters, digits and `._-` only (an id is the one thing sent back, to start a program, and
+  is checked again before it is), names made fit to show as window titles are. An icon is taken
+  only as a PNG file of at most 256 KiB, kept in the VM's folder by MonadHost, which never
+  decodes it; the app decodes it with Monad's own bounded PNG decoder, at 96 pixels at most.
+  Starting a program runs that entry's command in the guest, as the user's click in the guest's
+  own menu would; nothing of it runs on the Mac (`GuestAppsTests`, `test_apps.sh`).
+  In the guest, Monad's session script names the desktop `Monad` and adds one settings override
+  for that name (no window buttons in GTK's headers); it changes no setting of the user's.
   Not done yet, and a way a guest can annoy: it can open up to 64 windows on the Mac, and they
   are not kept from covering the screen.
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
