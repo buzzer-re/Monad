@@ -175,12 +175,60 @@ static void test_clients_are_bounded(void) {
     mwm_server_free(s);
 }
 
+/* A program that asks who draws its window's frame is told the Mac does
+ * (it then draws no title bar of its own), whatever it would rather. */
+static void test_the_frame_is_the_macs_to_draw(void) {
+    enum { CLIENT_SIDE = 1, SERVER_SIDE = 2 };
+    mwm_server *s = server();
+    client a = connect_client(s);
+    uint32_t manager = bind_global(&a, "zxdg_decoration_manager_v1", 1);
+    window v = open_window(s, &a, "W", "app", 0x00110000, 64, 32);
+    uint32_t decoration = a.next++;
+    request(&a, manager, 1, 2, decoration, v.toplevel); /* get_toplevel_decoration */
+    pump(s, &a);
+    mwm_msg m = event(&a);
+    CHECK(m.object == decoration && m.opcode == 0 && mwm_get_uint(&m) == SERVER_SIDE && mwm_msg_done(&m));
+    m = event(&a);
+    CHECK(m.object == v.toplevel && m.opcode == 0); /* and a configure, which the mode comes with */
+    m = event(&a);
+    CHECK(m.object == v.xdg && m.opcode == 0);
+    CHECK(no_event(&a));
+    request(&a, decoration, 1, 1, CLIENT_SIDE); /* set_mode: it would rather draw its own */
+    pump(s, &a);
+    m = event(&a);
+    CHECK(m.object == decoration && m.opcode == 0 && mwm_get_uint(&m) == SERVER_SIDE);
+    m = event(&a);
+    CHECK(m.object == v.toplevel && m.opcode == 0);
+    m = event(&a);
+    CHECK(m.object == v.xdg && m.opcode == 0);
+    request(&a, decoration, 2, 0); /* unset_mode */
+    pump(s, &a);
+    m = event(&a);
+    CHECK(m.object == decoration && m.opcode == 0 && mwm_get_uint(&m) == SERVER_SIDE);
+    while (mwm_conn_next(a.c, &m)) {}
+
+    /* The window goes before its decoration object: what is asked of it then goes nowhere, and breaks nothing. */
+    request(&a, v.toplevel, 0, 0);
+    request(&a, decoration, 1, 1, SERVER_SIDE);
+    request(&a, decoration, 0, 0);
+    request(&a, manager, 0, 0);
+    pump(s, &a);
+    while (mwm_conn_next(a.c, &m)) CHECK(m.object == 1 && m.opcode == DISPLAY_DELETE_ID);
+
+    uint32_t object;
+    manager = bind_global(&a, "zxdg_decoration_manager_v1", 1);
+    request(&a, manager, 1, 2, a.next++, v.surface); /* of something that is no window */
+    CHECK(dropped_with(s, &a, &object) == ERROR_INVALID_OBJECT && object == manager);
+    mwm_server_free(s);
+}
+
 int main(void) {
     test_windows_stand_side_by_side();
     test_a_new_buffer_releases_the_old_one();
     test_a_client_that_breaks_the_protocol_is_dropped();
     test_a_window_too_large_is_cut_at_the_edge();
     test_clients_are_bounded();
+    test_the_frame_is_the_macs_to_draw();
     printf("test_wm_server: %d checks passed\n", checks);
     return 0;
 }

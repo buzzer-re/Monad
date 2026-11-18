@@ -35,6 +35,7 @@ static const struct {
     {"wl_seat", 5, T_SEAT},
     {"wl_subcompositor", 1, T_SUBCOMPOSITOR},
     {"wl_data_device_manager", 3, T_DATA_MANAGER},
+    {"zxdg_decoration_manager_v1", 1, T_DECORATION_MANAGER},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -356,6 +357,8 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_POSITIONER:
     case T_XDG_SURFACE:
     case T_TOPLEVEL:
+    case T_DECORATION_MANAGER:
+    case T_DECORATION:
         mwm_shell_request(s, c, o, m);
         break;
     case T_DATA_MANAGER:

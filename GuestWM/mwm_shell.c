@@ -177,8 +177,47 @@ static void toplevel_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
     }
 }
 
+/* Who draws a window's frame (zxdg_toplevel_decoration_v1): the Mac does,
+ * whatever the program would rather. Told with a configure, as the mode
+ * comes with one. */
+static void decorate(mwm_server *s, client *c, uint32_t id, uint32_t toplevel) {
+    enum { SERVER_SIDE = 2 };
+    xdg *x = mwm_find_as(c, toplevel, T_TOPLEVEL);
+    if (!x) return; /* the window went before its decoration object */
+    mwm_event_uint(c, id, 0, SERVER_SIDE);
+    if (x->configured) configure(s, c, x);
+}
+
 void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
     switch ((obj_type)o->type) {
+    case T_DECORATION_MANAGER:
+        if (m->opcode == 0) {
+            mwm_del(c, m->object);
+        } else if (m->opcode == 1) { /* get_toplevel_decoration */
+            uint32_t id = mwm_get_uint(m), toplevel = mwm_get_uint(m);
+            if (m->bad) return;
+            if (!mwm_is(c, toplevel, T_TOPLEVEL)) {
+                mwm_fail(c, m->object, E_INVALID_OBJECT, "not a top-level window");
+                return;
+            }
+            /* Kept by the window's id, not its memory: the window may go first. */
+            if (mwm_add(c, id, T_DECORATION, (void *)(uintptr_t)toplevel)) decorate(s, c, id, toplevel);
+        } else {
+            mwm_fail(c, m->object, E_INVALID_METHOD, "zxdg_decoration_manager_v1 has no such request");
+        }
+        break;
+    case T_DECORATION: {
+        uint32_t toplevel = (uint32_t)(uintptr_t)o->data;
+        if (m->opcode == 0) {
+            mwm_del(c, m->object);
+        } else if (m->opcode == 1 || m->opcode == 2) { /* set_mode, unset_mode */
+            if (m->opcode == 1) (void)mwm_get_uint(m);
+            if (!m->bad) decorate(s, c, m->object, toplevel);
+        } else {
+            mwm_fail(c, m->object, E_INVALID_METHOD, "zxdg_toplevel_decoration_v1 has no such request");
+        }
+        break;
+    }
     case T_WM_BASE:
         wm_base_request(c, m);
         break;

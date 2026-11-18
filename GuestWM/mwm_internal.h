@@ -42,6 +42,8 @@ typedef enum {
     T_DATA_MANAGER,
     T_DATA_SOURCE,
     T_DATA_DEVICE,
+    T_DECORATION_MANAGER,
+    T_DECORATION,
 } obj_type;
 
 /* wl_display.error codes. */
