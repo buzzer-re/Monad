@@ -400,17 +400,57 @@ final class CloudInitTests: XCTestCase {
         XCTAssertEqual(CloudInit.guestInstallCommand, "sudo -n sh -s")
     }
 
-    /// The installer says whether the guest has Monad's window manager set
-    /// up (the Desktop profile's doing): MonadHost dials it only then.
-    func testTheInstallerSaysWhetherTheGuestHasTheWindowManager() throws {
-        let script = try CloudInit.guestInstallScript(guest: ubuntu)
-        let line = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then echo windows-ok; fi\n"
-        let said = try XCTUnwrap(script.range(of: line), script)
-        XCTAssertLessThan(said.lowerBound, try XCTUnwrap(script.range(of: "echo agent-ok\n")).lowerBound)
+    /// A Linux VM with a display gets, at every boot, the window manager's
+    /// sources as this Monad has them, the script that builds them with the
+    /// VM's own compiler, and its service; once the Windows profile turned
+    /// the service on, the installer keeps the program built from those
+    /// sources and says so, and MonadHost dials it only then.
+    func testAVMWithADisplayGetsTheWindowManagerToBuild() throws {
+        func b64(_ text: String) -> String { Data(text.utf8).base64EncodedString() }
+        let sources = try CloudInit.windowManagerSources()
+        let names = sources.map(\.name)
+        XCTAssertEqual(names, names.sorted())
+        for needed in ["mwm_main.c", "mwm_server.c", "mwm_server.h", "mwm_wire.c", "mwm_ctl.c", "mwm_internal.h"] {
+            XCTAssertTrue(names.contains(needed), needed)
+        }
+        XCTAssertTrue(names.allSatisfy { $0.range(of: "^mwm_[a-z_]+\\.[ch]$", options: .regularExpression) != nil }, "\(names)")
+
+        let script = try CloudInit.guestInstallScript(guest: ubuntu, windowsUser: "dev")
+        for source in sources {
+            XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/wm/\(source.name) 0644 '\(b64(source.text))'\n"), source.name)
+        }
+        XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/wm-build 0755 '\(b64(try CloudInit.windowManagerBuildScript()))'\n"))
+        let unit = try CloudInit.windowManagerUnit(user: "dev")
+        XCTAssertTrue(script.contains("install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(unit))'\n"))
+        // A source this Monad no longer has would be built into the program: it goes.
+        let kept = names.joined(separator: "|")
+        XCTAssertTrue(script.contains("for f in /usr/local/lib/monad/wm/*; do\n    case ${f##*/} in \(kept)) ;; *) rm -f \"$f\" ;; esac\ndone\n"), script)
+        let said = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then\n"
+            + "    if [ \"$(sh /usr/local/lib/monad/wm-build)\" = built ]; then systemctl restart monad-wm.service || true; fi\n"
+            + "    echo windows-ok\nfi\n"
+        let at = try XCTUnwrap(script.range(of: said), script)
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "systemctl daemon-reload")).lowerBound, at.lowerBound, "the service is known first")
+        XCTAssertLessThan(at.lowerBound, try XCTUnwrap(script.range(of: "echo agent-ok\n")).lowerBound)
+
+        // The service: the display taken as root, the programs' side as the VM's user, MonadHost on the port only the Mac can dial.
+        XCTAssertTrue(unit.contains("ConditionPathExists=/dev/dri/card0\n"))
+        XCTAssertTrue(unit.contains("Conflicts=monad-display.service\n"), "one of the two has the display")
+        XCTAssertTrue(unit.contains("--owner \"$$uid\" --control vsock:\(CloudInit.windowsVsockPort)"), "a $ for the shell is $$ in a unit")
+        XCTAssertTrue(unit.contains("id -u dev"))
+        XCTAssertTrue(unit.contains("WantedBy=multi-user.target\n"))
+        XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: "dev; rm -rf /"), "a name that is none is not written into a unit")
+        XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: ""))
+
+        // A VM without a display has nothing to show windows of: none of it.
+        let plain = try CloudInit.guestInstallScript(guest: ubuntu)
+        XCTAssertFalse(plain.contains("monad-wm"))
+        XCTAssertFalse(plain.contains("windows-ok"))
+
         XCTAssertTrue(CloudInit.saysWindows("windows-ok\nagent-ok\n"))
         XCTAssertFalse(CloudInit.saysWindows("agent-ok\n"))
         XCTAssertFalse(CloudInit.saysWindows("no windows-ok here\nagent-ok\n"), "the line, not the words somewhere")
         XCTAssertEqual(CloudInit.windowsVsockPort, 1025)
+        XCTAssertEqual(CloudInit.windowsCheckCommand, "systemctl is-enabled --quiet monad-wm.service 2>/dev/null && echo windows-ok || true")
     }
 
     /// A Lima VM's seed keeps Lima working on the same disk (Phase 9): the

@@ -1253,8 +1253,10 @@ final class VMInstance: ObservableObject, Identifiable {
                     r = try await self.sshSteadily(MacSetup.agentInstallCommand, stdin: Data(try MacSetup.guestInstallScript().utf8),
                                                    timeout: 60)
                 } else {
+                    // A VM with a display gets its window manager too (docs/DISPLAY.md).
                     let script = try CloudInit.guestInstallScript(guest: guest, lima: self.config.attached != nil,
-                                                                  bootMessages: self.env.bootMessages())
+                                                                  bootMessages: self.env.bootMessages(),
+                                                                  windowsUser: self.config.display ? self.config.user : nil)
                     r = try await self.sshSteadily(CloudInit.guestInstallCommand, stdin: Data(script.utf8), timeout: 60)
                 }
                 guard self.state == .ready else { return }
@@ -2154,8 +2156,22 @@ final class VMInstance: ObservableObject, Identifiable {
             applied.applied[id] = Date()
             try? applied.save(paths.appliedProfiles)
             Log.vm.notice("\(self.name, privacy: .public): \(id, privacy: .public) is set up")
+            askForGuestWindows()
         } else {
             Log.vm.error("\(self.name, privacy: .public): \(id, privacy: .public) failed: \(self.profileRuns[index].message ?? "", privacy: .public)")
+        }
+    }
+
+    /// A profile may have turned the guest's window manager on (the Windows
+    /// profile does) after the installer asked: a VM with a display that
+    /// is not connected to one asks again, and dials when there is one.
+    private func askForGuestWindows() {
+        guard state == .ready, config.display, config.guestOS == .linux, guestWindowsTask == nil else { return }
+        Task { [weak self] in
+            guard let self, let answer = try? await self.ssh(CloudInit.windowsCheckCommand, timeout: 30),
+                  self.state == .ready, self.guestWindowsTask == nil, CloudInit.saysWindows(answer.stdoutString) else { return }
+            self.debug("windows: the guest has the window manager now")
+            self.connectGuestWindows()
         }
     }
 

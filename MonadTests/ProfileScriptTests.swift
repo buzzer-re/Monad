@@ -327,6 +327,53 @@ final class ProfileScriptTests: XCTestCase {
         XCTAssertEqual(logLines().last, "systemctl restart monad-display.service")
     }
 
+    /// The App windows profile's step: Monad's window manager is built from
+    /// the sources Monad's installer put in the VM and its service turned
+    /// on, in place of the Desktop profile's session; programs started from
+    /// a tab then find it. Without the sources (the VM's Display is off) it
+    /// says what to do.
+    func testTheWindowManagerIsBuiltAndTurnedOn() throws {
+        try makeStubs()
+        let fm = FileManager.default
+        let systemctl = bin.appendingPathComponent("systemctl")
+        try "#!/bin/sh\necho \"systemctl $*\" >> '\(log.path)'\n".write(to: systemctl, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: systemctl.path)
+        let step = try XCTUnwrap(try ProfileCatalog.bundled().profile("app-windows")?.steps.first { $0.id == "window-manager" })
+        let p = ProfileConfig(id: "mine", name: "Mine", summary: "", steps: [step])
+        let impatient = "MONAD_WM_WAIT=0\nexport MONAD_WM_WAIT\n" // it waits a minute for the installer, in a VM
+
+        var r = try runScript(impatient + (try render(p)))
+        XCTAssertNotEqual(r.status, 0)
+        XCTAssertTrue(r.output.contains("turn on Display in the VM's settings in Monad, restart it"), r.output)
+        XCTAssertTrue(logLines().filter { $0.hasPrefix("systemctl") }.isEmpty, "nothing was turned on")
+
+        // The installer was here: its build script, which this step runs on the folder it is in.
+        let lib = root.appendingPathComponent("usr/local/lib/monad")
+        try fm.createDirectory(at: lib, withIntermediateDirectories: true)
+        try "echo \"wm-build $*\" >> '\(log.path)'\n[ ! -e '\(lib.path)/fails' ]\n"
+            .write(to: lib.appendingPathComponent("wm-build"), atomically: true, encoding: .utf8)
+        r = try runScript(impatient + (try render(p)))
+        XCTAssertEqual(r.status, 0, r.output)
+        XCTAssertEqual(logLines().filter { $0.hasPrefix("wm-build") || $0.hasPrefix("systemctl") },
+                       ["wm-build \(lib.path)", "systemctl daemon-reload", "systemctl disable --now monad-display.service",
+                        "systemctl enable monad-wm.service"], "not started: this VM has no display")
+        let environment = try String(contentsOf: root.appendingPathComponent("etc/profile.d/monad-windows.sh"), encoding: .utf8)
+        XCTAssertTrue(environment.contains("WAYLAND_DISPLAY=wayland-0"), environment)
+        XCTAssertTrue(environment.contains("[ -S "), "only while the window manager is there")
+
+        // With a display the window manager starts at once.
+        try fm.createDirectory(at: root.appendingPathComponent("dev/dri"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("dev/dri/card0"))
+        XCTAssertEqual(try runScript(impatient + (try render(p))).status, 0)
+        XCTAssertEqual(logLines().last, "systemctl restart monad-wm.service")
+
+        // A build that fails is the step's failure, and nothing is turned on.
+        try Data().write(to: lib.appendingPathComponent("fails"))
+        let before = logLines().filter { $0.hasPrefix("systemctl") }.count
+        XCTAssertNotEqual(try runScript(impatient + (try render(p))).status, 0)
+        XCTAssertEqual(logLines().filter { $0.hasPrefix("systemctl") }.count, before)
+    }
+
     private func serverStep(_ id: String) throws -> ProfileConfig {
         let step = try XCTUnwrap(try ProfileCatalog.bundled().profile("server")?.steps.first { $0.id == id })
         return ProfileConfig(id: "mine", name: "Mine", summary: "", steps: [step])

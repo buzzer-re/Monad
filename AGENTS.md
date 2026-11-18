@@ -123,7 +123,7 @@ App and host state lives on the main actor (`VMInstance`, `VMManager`, `HostServ
 | `scripts` | `install.sh` (what users run), `release.sh` (Release builds and packages), `hygiene.sh` (CI's first checks) | |
 | `Tools`, `Design` | Generators: the Unicode width table, the app icon | |
 
-The Xcode project uses folder-synchronized groups: a file added under `Monad/` is in both the app and MonadHost automatically. App-only files (UI) are listed as exceptions for MonadHost in the project; add a new UI file there if MonadHost can't compile it. Resources (JSON, scripts) are bundled by their file name, flat, into `Contents/Resources`.
+The Xcode project uses folder-synchronized groups: a file added under `Monad/` is in both the app and MonadHost automatically. App-only files (UI) are listed as exceptions for MonadHost in the project; add a new UI file there if MonadHost can't compile it. Resources (JSON, scripts) are bundled by their file name, flat, into `Contents/Resources`. `GuestWM/` is the one folder bundled as it is (`Contents/Resources/GuestWM`): its C files are sent to VMs and built there, never compiled into Monad, and a file added to it needs nothing in the project.
 
 C and Objective-C reach Swift through `Monad/Backend/Monad-Bridging-Header.h`.
 

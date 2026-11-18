@@ -19,11 +19,11 @@ final class ProfileConfigTests: XCTestCase {
 
     func testTheBuiltInProfiles() throws {
         let catalog = try ProfileCatalog.bundled()
-        XCTAssertEqual(catalog.builtIn.map(\.id), ["agentic", "desktop", "server"])
+        XCTAssertEqual(catalog.builtIn.map(\.id), ["agentic", "app-windows", "desktop", "server"])
         for p in catalog.builtIn {
             XCTAssertNoThrow(try p.validate(runtimes: ["nodejs"]), p.id)
-            // Desktop: where it was run (Ubuntu); the others' names are not known to be right yet.
-            for manager in p.id == "desktop" ? ["apt"] : ["apt", "dnf", "zypper"] {
+            // Desktop and App windows: where they were run (Ubuntu); the others' names are not known to be right yet.
+            for manager in ["desktop", "app-windows"].contains(p.id) ? ["apt"] : ["apt", "dnf", "zypper"] {
                 XCTAssertTrue(p.supports(packageManager: manager), "\(p.id) on \(manager)")
             }
         }
@@ -31,6 +31,11 @@ final class ProfileConfigTests: XCTestCase {
         XCTAssertEqual(desktop.steps.map(\.kind), [.packages, .script])
         XCTAssertEqual(desktop.steps[0].packages?["apt"]?.prefix(2), ["labwc", "xwayland"])
         XCTAssertEqual(desktop.steps[1].commands, ["gui"])
+        // App windows: the compiler Monad's window manager is built with in the VM, then the step that builds it.
+        let windows = try XCTUnwrap(catalog.profile("app-windows"))
+        XCTAssertEqual(windows.steps.map(\.kind), [.packages, .script])
+        XCTAssertEqual(windows.steps[0].packages?["apt"]?.prefix(2), ["gcc", "libc6-dev"])
+        XCTAssertEqual(windows.steps[0].commands, ["cc", "foot"])
         let agentic = try XCTUnwrap(catalog.profile("agentic"))
         XCTAssertEqual(agentic.steps.map(\.kind), [.packages, .runtime, .npm, .script])
         XCTAssertEqual(agentic.steps[1].runtime, "nodejs")
@@ -137,7 +142,7 @@ final class ProfileConfigTests: XCTestCase {
         try store.save(profile([tools], id: "agentic"))
         try store.save(profile([tools], id: "mine"))
         let catalog = try ProfileCatalog.bundled(custom: store)
-        XCTAssertEqual(catalog.all.map(\.id), ["agentic", "desktop", "server", "mine"])
+        XCTAssertEqual(catalog.all.map(\.id), ["agentic", "app-windows", "desktop", "server", "mine"])
         XCTAssertEqual(catalog.profile("agentic")?.name, "Mine", "the user's version")
         XCTAssertEqual(catalog.shipped("agentic")?.name, "Agentic")
         XCTAssertTrue(catalog.isBuiltIn("agentic"))

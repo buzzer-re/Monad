@@ -53,13 +53,26 @@ the distribution's full kernel first.
 | Can a program of Monad's own drive the display? | Yes: kernel mode setting through ioctls alone (no library), compiled in the guest with its `cc`; a test pattern and then real programs' windows were read back on the Mac |
 | First start with the profile | About a minute to install it; the session is up 9 seconds after a later start |
 
-## Each Linux program as a Mac window: built as far as a terminal, by hand
+## Each Linux program as a Mac window: the App windows profile, for a terminal so far
 
-Today the Desktop profile puts the programs inside one window, the VM's display. The other way
-is being built: Monad's own window manager in the guest lays every program's window out on one
-large display and tells MonadHost where each is; on the Mac each becomes a window showing its
-part of the display, so the pixels still go from the VM to the screen without a copy; keys,
-clicks and scrolling go back to the guest over Monad's own channel.
+The Desktop profile puts the programs inside one window, the VM's display. The App windows
+profile is the other way, and takes the display in its place: Monad's own window manager in the
+guest lays every program's window out on one large display and tells MonadHost where each is;
+on the Mac each becomes a window showing its part of the display, so the pixels still go from
+the VM to the screen without a copy; keys, clicks and scrolling go back to the guest over
+Monad's own channel.
+
+**Setting it up** (`Monad/Profiles/app-windows.profile.json`, for distributions with apt; run on
+Ubuntu 26.04): a VM with Display on and the App windows profile. The window manager is C, and a
+Mac cannot build a Linux program, so the VM builds it: Monad's installer puts its sources
+(`GuestWM/`, as they are in the app), a build script (`monad-wm-build.sh`) and its service
+(`monad-wm.service`, off) in every VM with a display at each boot; the profile installs a C
+compiler and a terminal (foot), builds the program and turns the service on. From then on the
+installer rebuilds it at a boot where this Monad's sources are not the ones it was built from, so
+the window manager is always this Monad's. The service takes the display as root and goes on as
+the VM's user. A program started from a tab (`foot &`) opens as a window on the Mac. A new VM
+made with Display and the profile had its window manager answering MonadHost 80 seconds after
+its first boot began, and 11 seconds after a restart.
 
 **In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
 takes the display and speaks Wayland to programs with code of its own (the wire format,
@@ -87,21 +100,23 @@ as Control (⌘C, ⌘V, ⌘S, ⌘Q, ⌘W do in a Linux program what they do on t
 as Alt, the right Option as the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the
 Mac's.
 
-Run in a Debug VM, with the window manager installed by hand as a service: foot opened as a Mac
-window "foot — wm-dev" at Retina scale; a command typed into it through this Mac's layout ran; a
-second foot opened as a second window; resizing the Mac's window resized the terminal (40 rows by
-138 columns at 897×520 points); closing it ended foot. The typing, clicking, resizing and closing
-were done through the Debug tool `drive_window`, which calls what the window's own events call,
-and what a window shows was read from its view (`read_windows`): nobody has looked at these
-windows on the screen yet, or used them with a real pointer and keyboard.
+Run in Debug VMs (first with the window manager installed by hand, then in a new VM made with
+Display and the profile): foot opened as a Mac window "foot — wm-try" at Retina scale; a command
+typed into it through this Mac's layout ran; a second foot opened as a second window; resizing
+the Mac's window resized the terminal (40 rows by 138 columns at 897×520 points); closing it
+ended foot. The typing, clicking, resizing and closing were done through the Debug tool
+`drive_window`, which calls what the window's own events call, and what a window shows was read
+from its view (`read_windows`): nobody has looked at these windows on the screen yet, or used
+them with a real pointer and keyboard.
 
-Not there yet: installing it (the Desktop profile still sets up labwc, and the choice between
-the two is no setting yet); menus and other popups (a program that opens one is dropped, so
-GTK and Qt programs are not usable); the clipboard (programs may bind its interface, and nothing
-is carried, so even copy and paste inside foot does nothing); the pointer's shape (always the
-Mac's arrow); X11 programs through Xwayland; programs that draw their own title bar whatever
-they are told (GTK's) get the Mac's as well; a window with no room left on the display is not
-shown; MonadHost has no Dock icon or menus, so these windows are not in ⌘Tab.
+Not there yet: menus and other popups (a program that opens one is dropped, so GTK and Qt
+programs are not usable); the clipboard (programs may bind its interface, and nothing is
+carried, so even copy and paste inside foot does nothing); the pointer's shape (always the Mac's
+arrow); X11 programs through Xwayland; programs that draw their own title bar whatever they are
+told (GTK's) get the Mac's as well; a window with no room left on the display is not shown;
+MonadHost has no Dock icon or menus, so these windows are not in ⌘Tab; the desktop and the
+windows cannot be had at once (each profile turns the other's service off; Open Desktop on a VM
+with App windows shows the display the windows are laid out on); distributions without apt.
 
 **Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
 Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls

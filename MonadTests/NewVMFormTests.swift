@@ -116,7 +116,7 @@ final class NewVMFormTests: XCTestCase {
     func testProfilesAreChosenForTheDistro() throws {
         var f = try form()
         f.setProfiles(ProfileCatalog(builtIn: try ProfileCatalog.bundled().builtIn, custom: [aptOnly]))
-        XCTAssertEqual(f.profileChoices.map(\.id), ["agentic", "desktop", "server", "apt-only"])
+        XCTAssertEqual(f.profileChoices.map(\.id), ["agentic", "app-windows", "desktop", "server", "apt-only"])
         XCTAssertTrue(f.profileChoices.allSatisfy(\.supported), "Ubuntu uses apt")
         f.toggleProfile("agentic")
         f.toggleProfile("apt-only")

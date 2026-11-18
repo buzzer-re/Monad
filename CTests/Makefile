@@ -184,6 +184,8 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then UPDATE_SHELL=bash sh test_update.sh $(BUILD)/update-bash; fi
 	@HYGIENE_SHELL=sh sh test_hygiene.sh $(BUILD)/hygiene-sh
 	@if command -v bash >/dev/null; then HYGIENE_SHELL=bash sh test_hygiene.sh $(BUILD)/hygiene-bash; fi
+	@WM_BUILD_SHELL=sh sh test_wm_build.sh $(BUILD)/wm-build-sh
+	@if command -v bash >/dev/null; then WM_BUILD_SHELL=bash sh test_wm_build.sh $(BUILD)/wm-build-bash; fi
 	@sh test_agent_live.sh
 
 clean:

@@ -886,6 +886,57 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertTrue(vmLog(vm).contains("windows: the guest's window manager is gone"), vmLog(vm))
     }
 
+    /// The installer of a VM with a display carries the window manager's
+    /// sources, for the VM's user; one without a display carries none.
+    func testOnlyAVMWithADisplayIsSentTheWindowManager() async throws {
+        var vm = try windowsVM(installer: "agent-ok\n")
+        vm.start()
+        await assertEventually { vm.agentAvailable }
+        var payload = String(decoding: try XCTUnwrap(agentInstalls.last?.stdin), as: UTF8.self)
+        XCTAssertTrue(payload.contains("install_file /usr/local/lib/monad/wm/mwm_main.c 0644 "))
+        XCTAssertTrue(payload.contains(Data(try CloudInit.windowManagerUnit(user: vm.config.user).utf8).base64EncodedString()))
+        await vm.stop()
+
+        vm = try windowsVM(display: false, installer: "agent-ok\n")
+        vm.start()
+        await assertEventually { vm.agentAvailable && self.agentInstalls.count == 2 }
+        payload = String(decoding: try XCTUnwrap(agentInstalls.last?.stdin), as: UTF8.self)
+        XCTAssertFalse(payload.contains("monad-wm"))
+    }
+
+    /// The Windows profile turns the window manager on after the installer
+    /// ran: once a profile is set up the guest is asked again, and dialed
+    /// when it then has one.
+    func testAfterAProfileIsSetUpTheGuestIsAskedForItsWindowManagerAgain() async throws {
+        var asked = 0
+        runner.setHandler { [ssh] call in
+            if let r = ssh!.handle(call) { return r }
+            if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
+            if call.arguments.last == CloudInit.guestInstallCommand { return .ok("agent-ok\n") }
+            if call.arguments.last == VMInstance.profileCommand { return .ok(self.doneOutput) }
+            if call.arguments.last == CloudInit.windowsCheckCommand {
+                asked += 1
+                return .ok("windows-ok\n")
+            }
+            return .ok()
+        }
+        let vm = try makeInstance(profiles: ProfileCatalog(builtIn: [markProfile], custom: [])) { $0.display = true }
+        vm.start()
+        await assertEventually { vm.agentAvailable }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(windowDials, 0)
+        XCTAssertEqual(asked, 0)
+        try vm.runProfiles(["mark"])
+        await assertEventually { vm.profileRuns.first?.state == .done }
+        await assertEventually { asked == 1 && self.windowDials >= 1 }
+
+        // Already connected, or no display: it is not asked.
+        try vm.runProfiles(["mark"])
+        await assertEventually { self.profileCalls.count == 2 && vm.profileRuns.first?.state == .done }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(asked, 1)
+    }
+
     // MARK: Lima VMs
 
     /// A Lima VM does not start while Lima runs it, and Monad forgets the

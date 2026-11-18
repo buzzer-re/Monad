@@ -66,7 +66,9 @@ Tick a profile in New VM and the VM is set up on its first boot. Agentic brings 
 
 ## Linux programs with windows
 
-Turn on Display for a Linux VM (New VM, or its settings) and tick the Desktop profile: the VM gets a display, and its ⋯ menu's Open Desktop shows it in a window on your Mac, the size of the window and sharp on a Retina screen. `gui firefox` in a tab starts a program there; ⌘V in the window brings your Mac's text to the VM's clipboard. The Linux programs are inside that one window for now, and what they draw is drawn by the VM's CPUs: Apple passes no GPU to a Linux VM ([docs/DISPLAY.md](docs/DISPLAY.md) says what was measured and what is planned).
+Turn on Display for a Linux VM (New VM, or its settings) and tick the Desktop profile: the VM gets a display, and its ⋯ menu's Open Desktop shows it in a window on your Mac, the size of the window and sharp on a Retina screen. `gui firefox` in a tab starts a program there; ⌘V in the window brings your Mac's text to the VM's clipboard. What the programs draw is drawn by the VM's CPUs: Apple passes no GPU to a Linux VM.
+
+With the App windows profile instead, each Linux program's window is a window on your Mac, with your Mac's keyboard layout. That is new and works for a terminal (`foot &` in a tab) and not yet for programs with menus ([docs/DISPLAY.md](docs/DISPLAY.md) says what is built, what was measured and what is missing).
 
 ## Splits and contexts
 

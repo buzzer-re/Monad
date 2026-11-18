@@ -24,6 +24,60 @@ enum CloudInit {
         answer.split(separator: "\n").contains("windows-ok")
     }
 
+    /// Asks a running guest the same, after something may have set the window manager up (a profile).
+    static let windowsCheckCommand = "systemctl is-enabled --quiet monad-wm.service 2>/dev/null && echo windows-ok || true"
+
+    // MARK: The window manager (GuestWM)
+
+    /// Everything of the window manager's lives here in the guest: its
+    /// sources in `wm/`, the script that builds them, the program.
+    static let windowManagerDirectory = "/usr/local/lib/monad"
+
+    /// monad-wm's C sources, shipped inside the app bundle as they are in
+    /// the repository (GuestWM/): the guest builds them with its own
+    /// compiler, since a Mac cannot build a Linux program and Monad ships
+    /// none it did not build. By name, in order.
+    static func windowManagerSources() throws -> [(name: String, text: String)] {
+        guard let folder = Bundle.main.resourceURL?.appendingPathComponent("GuestWM"),
+              let files = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
+            throw MonadError("The window manager's sources (GuestWM) are missing from the app bundle")
+        }
+        let names = files.filter { $0.range(of: "^mwm_[a-z_]+\\.[ch]$", options: .regularExpression) != nil }.sorted()
+        guard !names.isEmpty else { throw MonadError("The window manager's sources (GuestWM) are missing from the app bundle") }
+        return try names.map { ($0, try String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8)) }
+    }
+
+    /// Builds the window manager in the guest when its sources changed (Guest/monad-wm-build.sh).
+    static func windowManagerBuildScript() throws -> String { try bundled("monad-wm-build", "sh") }
+
+    /// The window manager's service. It takes the display as root and goes
+    /// on as the VM's user, whose programs connect to it; MonadHost reaches
+    /// it on a vsock port. Not on while the Desktop profile's session has
+    /// the display. Off until the Windows profile turns it on.
+    static func windowManagerUnit(user: String) throws -> String {
+        guard InstanceConfig.isValidUser(user) else {
+            throw MonadError("“\(user)” is no user name to start the window manager as.")
+        }
+        return """
+            [Unit]
+            Description=Monad: the VM's programs as windows on the Mac
+            ConditionPathExists=/dev/dri/card0
+            Conflicts=monad-display.service
+            After=systemd-user-sessions.service
+
+            [Service]
+            # $$ is systemd's way to write a $ meant for the shell.
+            ExecStartPre=/bin/sh -c 'loginctl enable-linger \(user) && systemctl start "user@$$(id -u \(user)).service"'
+            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --owner "$$uid" --control vsock:\(windowsVsockPort)'
+            Restart=on-failure
+            RestartSec=2
+
+            [Install]
+            WantedBy=multi-user.target
+
+            """
+    }
+
     /// The guest agent, shipped inside the app bundle.
     static func agentScript() throws -> String {
         guard let url = Bundle.main.url(forResource: "monad-agent", withExtension: "sh") else {
@@ -235,10 +289,27 @@ enum CloudInit {
     /// every VM runs the agent (and sshd unit) that matches this Monad version,
     /// in the Mac's time zone. A Lima VM's boot is Lima's: its kernel console
     /// and time zone are left as they are.
+    /// `windowsUser`: the VM has a display; its window manager's sources,
+    /// build script and service come too, for programs of that user.
     static func guestInstallScript(guest: DistroConfig.GuestProfile, lima: Bool = false,
                                    bootMessages: BootMessages = .quiet,
-                                   timeZone: String = TimeZone.current.identifier) throws -> String {
+                                   timeZone: String = TimeZone.current.identifier,
+                                   windowsUser: String? = nil) throws -> String {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
+        var windowFiles = "", windowsSaid = ""
+        if let windowsUser {
+            let sources = try windowManagerSources()
+            let lib = windowManagerDirectory
+            windowFiles = sources.map { "install_file \(lib)/wm/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
+                // A source this Monad no longer has would be built into the program.
+                + "for f in \(lib)/wm/*; do\n    case ${f##*/} in \(sources.map(\.name).joined(separator: "|"))) ;; *) rm -f \"$f\" ;; esac\ndone\n"
+                + "install_file \(lib)/wm-build 0755 '\(b64(try windowManagerBuildScript()))'\n"
+                + "install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(try windowManagerUnit(user: windowsUser)))'\n"
+            // Once the Windows profile turned the service on: the program is kept built from these sources.
+            windowsSaid = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then\n"
+                + "    if [ \"$(sh \(lib)/wm-build)\" = built ]; then systemctl restart monad-wm.service || true; fi\n"
+                + "    echo windows-ok\nfi\n"
+        }
         let agent = try agentScript()
         let report = try reportScript()
         let health = try healthScript()
@@ -285,13 +356,12 @@ enum CloudInit {
             install_file \(selinuxModulePath) 0644 '\(b64(cil))'
             install_file \(selinuxScriptPath) 0755 '\(b64(selinux))'
             install_file /etc/profile.d/monad.sh 0644 '\(b64(GuestDiscovery.profileScript))'
-            \(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
+            \(windowFiles)\(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
             systemctl enable monad-health.service >/dev/null 2>&1 || true
             if [ "$health_changed" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi
-            if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then echo windows-ok; fi
-            \(console)\(clock)echo agent-ok
+            \(windowsSaid)\(console)\(clock)echo agent-ok
 
             """
     }

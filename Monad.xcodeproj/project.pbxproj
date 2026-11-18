@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		B5CC8705306ABD7400E22590 /* MonadHost in Embed MonadHost */ = {isa = PBXBuildFile; fileRef = B5CC864B306ABD7400E22590 /* MonadHost */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		B5CC8706306ABD7400E22590 /* dev.monad.host.plist in Embed Launch Agent */ = {isa = PBXBuildFile; fileRef = B5CC8707306ABD7400E22590 /* dev.monad.host.plist */; };
+		B5A000023070000000000002 /* GuestWM in Resources */ = {isa = PBXBuildFile; fileRef = B5A000013070000000000001 /* GuestWM */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 /* Begin PBXFileReference section */
 		B5CC864B306ABD7400E22590 /* MonadHost */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MonadHost; sourceTree = BUILT_PRODUCTS_DIR; };
 		B5CC8707306ABD7400E22590 /* dev.monad.host.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = dev.monad.host.plist; sourceTree = "<group>"; };
+		B5A000013070000000000001 /* GuestWM */ = {isa = PBXFileReference; lastKnownFileType = folder; path = GuestWM; sourceTree = "<group>"; };
 		B5FF529A3069650700A5543D /* Monad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Monad.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B5FF52A73069650800A5543D /* MonadTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MonadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B5FF52B13069650800A5543D /* MonadUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MonadUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -202,6 +204,7 @@
 				B5FF52AA3069650800A5543D /* MonadTests */,
 				B5FF52B43069650800A5543D /* MonadUITests */,
 				B5CC864C306ABD7400E22590 /* MonadHost */,
+				B5A000013070000000000001 /* GuestWM */,
 				B5CC8708306ABD7400E22590 /* LaunchAgents */,
 				B5FF529B3069650700A5543D /* Products */,
 			);
@@ -356,6 +359,7 @@
 		B5FF52983069650700A5543D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				B5A000023070000000000002 /* GuestWM in Resources */,
 			);
 		};
 		B5FF52A53069650800A5543D /* Resources */ = {
