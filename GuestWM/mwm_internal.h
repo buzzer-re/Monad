@@ -1,0 +1,133 @@
+/*
+ * mwm_internal.h — what the parts of the window manager's server share:
+ * a program's objects, its surfaces and buffers, the windows on the
+ * display. mwm_server.c has the core (clients, the registry, surfaces,
+ * shared memory, the display); mwm_shell.c has windows as programs ask for
+ * them (xdg_wm_base).
+ */
+#ifndef MWM_INTERNAL_H
+#define MWM_INTERNAL_H
+
+#include "mwm_server.h"
+#include "mwm_wire.h"
+
+typedef enum {
+    T_NONE = 0,
+    T_DISPLAY,
+    T_CALLBACK,
+    T_REGISTRY,
+    T_COMPOSITOR,
+    T_SURFACE,
+    T_REGION,
+    T_SHM,
+    T_POOL,
+    T_BUFFER,
+    T_OUTPUT,
+    T_WM_BASE,
+    T_POSITIONER,
+    T_XDG_SURFACE,
+    T_TOPLEVEL,
+} obj_type;
+
+/* wl_display.error codes. */
+enum { E_INVALID_OBJECT = 0, E_INVALID_METHOD = 1, E_NO_MEMORY = 2, E_IMPLEMENTATION = 3 };
+enum { MAX_FRAMES = 16, TEXT = 128 };
+
+typedef struct client client;
+typedef struct surface surface;
+
+typedef struct {
+    uint8_t type;
+    void *data;
+} object;
+
+/* Shared memory a program handed over; kept while any of its buffers is. */
+typedef struct {
+    int refs;
+    int fd;
+    uint8_t *map;
+    size_t size;
+} pool;
+
+typedef struct {
+    client *owner;
+    /* 0 once the program destroyed it while a surface still shows it. */
+    uint32_t id;
+    pool *pool;
+    int32_t offset, width, height, stride;
+    /* The surfaces showing it. */
+    int shown;
+} buffer;
+
+typedef struct {
+    bool used;
+    uint32_t id;
+    int x, y, width, height;
+    surface *surface;
+} window;
+
+/* A top-level window's role on a surface (xdg_surface and xdg_toplevel). */
+typedef struct {
+    surface *surface;
+    uint32_t id, toplevel;
+    bool configured;
+    char title[TEXT], app_id[TEXT];
+} xdg;
+
+struct surface {
+    client *owner;
+    uint32_t id;
+    buffer *pending;
+    bool attached; /* an attach waits for the commit */
+    buffer *current;
+    uint32_t frames_pending[MAX_FRAMES], frames_waiting[MAX_FRAMES];
+    int pending_count, waiting_count;
+    xdg *xdg;
+    window *window;
+};
+
+struct client {
+    mwm_server *server;
+    mwm_conn *conn;
+    object *objects;
+    uint32_t object_cap;
+    bool dead;
+};
+
+struct mwm_server {
+    mwm_screen screen;
+    client *clients[MWM_MAX_CLIENTS];
+    window windows[MWM_MAX_WINDOWS];
+    /* The windows in the order they came (indexes into `windows`). */
+    int order[MWM_MAX_WINDOWS];
+    int window_count;
+    uint32_t next_window, serial, generation;
+};
+
+/* Objects and errors (mwm_server.c). */
+
+/* The program broke the protocol: it is told why, once, and dropped. */
+void mwm_fail(client *c, uint32_t id, uint32_t code, const char *why);
+void *mwm_find_as(client *c, uint32_t id, obj_type type);
+/* Registers an object under the id the program chose for it; false (and
+ * the program failed) when it may not have that id. */
+bool mwm_add(client *c, uint32_t id, obj_type type, void *data);
+/* The id is free again, and the program is told it may reuse it. */
+void mwm_del(client *c, uint32_t id);
+void mwm_event_uint(client *c, uint32_t id, uint16_t opcode, uint32_t v);
+/* For a request whose arguments mean nothing here. */
+void mwm_skip_arguments(mwm_msg *m);
+
+/* The display (mwm_server.c). */
+
+/* The window leaves the display, and its place is cleared. */
+void mwm_window_gone(mwm_server *s, window *w);
+
+/* Windows as programs ask for them (mwm_shell.c). */
+
+/* A request to xdg_wm_base or one of its objects. */
+void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m);
+/* The surface was committed: a window not yet told its size is told. */
+void mwm_shell_commit(mwm_server *s, client *c, surface *f);
+
+#endif

@@ -81,7 +81,10 @@ $(BUILD)/fuzz_decoders: fuzz_decoders.c $(SRC)/mnd_qcow2.c $(SRC)/mnd_tar.c $(SR
 $(BUILD)/fuzz_vt: fuzz_vt.c $(VT_SRC) $(wildcard $(SRC)/vt/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
-$(BUILD)/fuzz_wm: fuzz_wm.c $(WM)/mwm_server.c $(WM)/mwm_wire.c $(WM)/mwm_server.h $(WM)/mwm_wire.h | $(BUILD)
+# The window manager's server, as the tests and its fuzzer build it.
+WM_SERVER := $(WM)/mwm_server.c $(WM)/mwm_shell.c $(WM)/mwm_wire.c $(wildcard $(WM)/*.h) wm_test_client.h
+
+$(BUILD)/fuzz_wm: fuzz_wm.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 # Longer runs: make fuzz FUZZ_ITERS=200000 [FUZZ_SEED=n]
@@ -139,7 +142,7 @@ $(BUILD)/test_diskcheck: test_diskcheck.c $(SRC)/mnd_diskcheck.c $(SRC)/mnd_disk
 $(BUILD)/test_wm_wire: test_wm_wire.c $(WM)/mwm_wire.c $(WM)/mwm_wire.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
-$(BUILD)/test_wm_server: test_wm_server.c $(WM)/mwm_server.c $(WM)/mwm_wire.c $(WM)/mwm_server.h $(WM)/mwm_wire.h | $(BUILD)
+$(BUILD)/test_wm_server: test_wm_server.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/disk_cloud.regions: gen_disk_fixtures.py | $(BUILD)
