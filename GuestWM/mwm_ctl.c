@@ -25,13 +25,19 @@ struct mwm_ctl {
     /* A table of keys being read: how many are still to come. */
     mwm_key keys[MWM_MAX_KEYS];
     int key_count, keys_expected;
+    /* The Mac's text being read (`paste`): its bytes so far, and how many are still to come. */
+    char *paste;
+    size_t paste_len, paste_left;
 };
+
+static void copied(void *ctx, const char *text, size_t len);
 
 mwm_ctl *mwm_ctl_new(mwm_server *server) {
     mwm_ctl *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     c->server = server;
     c->fd = -1;
+    mwm_server_on_copied(server, copied, c);
     return c;
 }
 
@@ -41,10 +47,14 @@ static void drop(mwm_ctl *c) {
     c->in_len = 0;
     c->out_len = 0;
     c->keys_expected = 0;
+    free(c->paste);
+    c->paste = NULL;
+    c->paste_left = 0;
 }
 
 void mwm_ctl_free(mwm_ctl *c) {
     if (!c) return;
+    mwm_server_on_copied(c->server, NULL, NULL);
     drop(c);
     free(c->out);
     free(c);
@@ -56,6 +66,18 @@ bool mwm_ctl_wants_write(const mwm_ctl *c) { return c->fd >= 0 && c->out_len > 0
 /* ------------------------------------------------------------------------ */
 /* To MonadHost                                                              */
 
+/* Room for `n` more bytes to say; false when there is none to be had. */
+static bool room(mwm_ctl *c, size_t n) {
+    if (c->out_len + n <= c->out_cap) return true;
+    size_t cap = c->out_cap ? c->out_cap : 4096;
+    while (cap < c->out_len + n) cap *= 2;
+    char *grown = realloc(c->out, cap);
+    if (!grown) return false;
+    c->out = grown;
+    c->out_cap = cap;
+    return true;
+}
+
 static void say(mwm_ctl *c, const char *format, ...) {
     if (c->fd < 0) return;
     char line[MWM_CTL_LINE];
@@ -63,23 +85,26 @@ static void say(mwm_ctl *c, const char *format, ...) {
     va_start(ap, format);
     int n = vsnprintf(line, sizeof line, format, ap);
     va_end(ap);
-    if (n < 0 || (size_t)n >= sizeof line || c->out_len + (size_t)n > MWM_CTL_OUT) {
-        drop(c); /* a line that cannot be said, or a MonadHost that does not read */
+    /* A line that cannot be said, or a MonadHost that does not read. */
+    if (n < 0 || (size_t)n >= sizeof line || c->out_len + (size_t)n > MWM_CTL_OUT || !room(c, (size_t)n)) {
+        drop(c);
         return;
-    }
-    if (c->out_len + (size_t)n > c->out_cap) {
-        size_t cap = c->out_cap ? c->out_cap : 4096;
-        while (cap < c->out_len + (size_t)n) cap *= 2;
-        char *grown = realloc(c->out, cap);
-        if (!grown) {
-            drop(c);
-            return;
-        }
-        c->out = grown;
-        c->out_cap = cap;
     }
     memcpy(c->out + c->out_len, line, (size_t)n);
     c->out_len += (size_t)n;
+}
+
+/* What the user copied with ⌘C, for the Mac: `copied <bytes>` and the
+ * bytes. One that has no room behind what MonadHost has not read yet is
+ * said as none, as is one that was no text. */
+static void copied(void *ctx, const char *text, size_t len) {
+    mwm_ctl *c = ctx;
+    if (c->fd < 0) return;
+    if (len > MWM_MAX_COPY || c->out_len + len + 32 > MWM_CTL_OUT || !room(c, len + 32)) len = 0;
+    say(c, "copied %zu\n", len);
+    if (c->fd < 0 || len == 0) return;
+    memcpy(c->out + c->out_len, text, len);
+    c->out_len += len;
 }
 
 static void flush(mwm_ctl *c) {
@@ -237,6 +262,18 @@ static void command(mwm_ctl *c, char *text, uint32_t time_ms) {
         if (numbers(rest, 1, n) && is_uint(n[0])) mwm_server_close(s, (uint32_t)n[0]);
     } else if (IS("dismiss")) {
         if (numbers(rest, 1, n) && is_uint(n[0])) mwm_server_dismiss(s, (uint32_t)n[0]);
+    } else if (IS("copy")) {
+        if (*rest == 0) mwm_server_copy(s, time_ms);
+    } else if (IS("paste")) {
+        if (!numbers(rest, 1, n) || n[0] < 0) return;
+        if (n[0] == 0) {
+            (void)mwm_server_paste(s, "", 0);
+        } else if (n[0] > MWM_MAX_CLIPBOARD || !(c->paste = malloc((size_t)n[0]))) {
+            drop(c); /* its bytes follow, and cannot be told from lines: there is no going on */
+        } else {
+            c->paste_len = 0;
+            c->paste_left = (size_t)n[0];
+        }
     }
 #undef IS
 }
@@ -253,11 +290,26 @@ void mwm_ctl_service(mwm_ctl *c, bool readable, bool writable, uint32_t time_ms)
         }
         c->in_len += (size_t)got;
         char *start = c->in, *end = c->in + c->in_len, *newline;
-        while ((newline = memchr(start, '\n', (size_t)(end - start))) != NULL) {
+        while (start < end && c->fd >= 0) {
+            if (c->paste_left > 0) { /* the Mac's text, as it is: no lines in it */
+                size_t take = (size_t)(end - start) < c->paste_left ? (size_t)(end - start) : c->paste_left;
+                memcpy(c->paste + c->paste_len, start, take);
+                c->paste_len += take;
+                c->paste_left -= take;
+                start += take;
+                if (c->paste_left == 0) {
+                    (void)mwm_server_paste(c->server, c->paste, c->paste_len); /* what is no text is not pasted */
+                    free(c->paste);
+                    c->paste = NULL;
+                }
+                continue;
+            }
+            if (!(newline = memchr(start, '\n', (size_t)(end - start)))) break;
             *newline = 0; /* a line with a NUL inside reads as its beginning, which is no command */
             command(c, start, time_ms);
             start = newline + 1;
         }
+        if (c->fd < 0) break;
         c->in_len = (size_t)(end - start);
         memmove(c->in, start, c->in_len);
         if (c->in_len == sizeof c->in) drop(c); /* a line that never ends */

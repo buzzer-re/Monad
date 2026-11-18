@@ -786,11 +786,12 @@ final class MonadTools {
                     description: "Does in a Linux program's Mac window what the user could, without the Mac's pointer or keyboard: "
                         + "focus; move or click at x, y (points from the content's top left); scroll by x, y; type `text` through "
                         + "this Mac's keyboard layout; key (a Mac key code in `key`, with command, shift, option or control named "
-                        + "in `text`); resize to x by y; close.",
+                        + "in `text`); resize to x by y; close; clipboard (from then on these windows have a clipboard of their "
+                        + "own holding `text` in the place of the Mac's, which read_windows shows: ⌘V and ⌘C without the user's).",
                     schema: Self.schema(["name": Self.vmName, "window": Self.integer("The window's id (read_windows)."),
-                                         "action": Self.string("focus, move, click, scroll, type, key, resize or close."),
+                                         "action": Self.string("focus, move, click, scroll, type, key, resize, close or clipboard."),
                                          "x": Self.integer("Points."), "y": Self.integer("Points."),
-                                         "text": Self.string("What to type, or the modifiers of a key."),
+                                         "text": Self.string("What to type, the modifiers of a key, or what the clipboard holds."),
                                          "key": Self.integer("A Mac virtual key code.")],
                                         required: ["name", "window", "action"]), risk: .normal) { [unowned self] call in
                 let windows = try self.vm(try call.string("name")).debugAppWindows()

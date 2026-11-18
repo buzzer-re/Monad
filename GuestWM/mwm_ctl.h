@@ -38,9 +38,23 @@
  *   size <window> <width> <height>    in units
  *   close <window>
  *   dismiss <window>                  the user clicked away from its popups
+ *   paste <bytes>                     then that many bytes, as they are: the
+ *                                     Mac's text (UTF-8), which a paste in the
+ *                                     VM gives from now on; 0: nothing of the
+ *                                     Mac's does. The user pressed ⌘V.
+ *   copy                              the user pressed ⌘C (or ⌘X): what the
+ *                                     program in front copies next is for the Mac
+ *
+ * To MonadHost, after `copy`, at most once for each:
+ *
+ *   copied <bytes>                    then that many bytes (UTF-8, at most
+ *                                     MWM_MAX_COPY): the text the program
+ *                                     copied; 0 when it copied something the
+ *                                     Mac cannot have (no text, or too much)
  *
  * A line it does not know is skipped (a newer Monad may say more); one
- * longer than MWM_CTL_LINE ends the connection.
+ * longer than MWM_CTL_LINE ends the connection, as does a paste of more
+ * than MWM_MAX_CLIPBOARD bytes.
  */
 #ifndef MWM_CTL_H
 #define MWM_CTL_H

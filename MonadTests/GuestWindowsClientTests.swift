@@ -115,4 +115,55 @@ final class GuestWindowsClientTests: XCTestCase {
         await assertEventually { ended == 1 }
         await assertEventually { channel.closed }
     }
+
+    /// What the user copied in the VM arrives as text.
+    func testACopyArrives() async {
+        let channel = SocketPairChannel()
+        let client = GuestWindowsClient(channel: channel)
+        var copies: [String] = []
+        client.onCopied = { copies.append($0) }
+        client.start()
+        channel.agentSays("monad-wm 1 1920 1200\ncopied 11\nfor\nthe Mac")
+        await assertEventually { copies == ["for\nthe Mac"] }
+        client.stop()
+    }
+
+    /// The Mac's text for a paste may be more than otherwise waits for a
+    /// guest: it waits whole, with what was said before and after it in
+    /// order. One paste at a time: with a guest that does not read, a
+    /// second is left out rather than added to what MonadHost holds.
+    func testAPasteWaitsWholeForAGuestThatIsSlow() async {
+        let channel = SocketPairChannel()
+        let client = GuestWindowsClient(channel: channel)
+        var ended = 0
+        client.onDisconnect = { ended += 1 }
+        client.start()
+        let first = String(repeating: "a", count: GuestClipboard.maxPaste), second = String(repeating: "b", count: GuestClipboard.maxPaste)
+        client.send(.focus(window: 1))
+        client.send(.paste(first))
+        client.send(.key(code: 47, down: true))
+        client.send(.paste(second))
+        client.send(.key(code: 47, down: false))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(ended, 0, "the user's paste is no guest that stopped reading")
+        var sent = ""
+        await assertEventually(timeout: 10) {
+            sent += channel.hostSent()
+            return sent.hasSuffix("key 47 0\n")
+        }
+        XCTAssertEqual(sent.count, "focus 1\npaste \(first.utf8.count)\n".count + first.count + "key 47 1\nkey 47 0\n".count)
+        XCTAssertTrue(sent.hasPrefix("focus 1\npaste \(first.utf8.count)\naaaa"))
+        XCTAssertTrue(sent.hasSuffix("aaaakey 47 1\nkey 47 0\n"))
+        XCTAssertFalse(sent.contains("b"))
+        XCTAssertEqual(ended, 0)
+
+        // Lines still add up to the bound behind a paste nobody reads, and the connection ends.
+        client.send(.paste(first))
+        for _ in 0..<200_000 where ended == 0 {
+            client.send(.key(code: 30, down: true))
+            client.send(.key(code: 30, down: false))
+            if ended == 0 { await Task.yield() }
+        }
+        await assertEventually { ended == 1 }
+    }
 }

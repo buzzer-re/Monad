@@ -1449,6 +1449,7 @@ final class VMInstance: ObservableObject, Identifiable {
             presenter.connected(display: display)
         }
         client.onWindows = { windows in presenter.show(windows) }
+        client.onCopied = { text in presenter.copied(text) }
         return AsyncStream<Void> { cont in client.onDisconnect = { cont.finish() } }
     }
 

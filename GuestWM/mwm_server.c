@@ -54,6 +54,10 @@ void mwm_fail(client *c, uint32_t id, uint32_t code, const char *why) {
 }
 
 static object *find(client *c, uint32_t id) {
+    if (id >= SERVER_ID) { /* one the server made for it */
+        object *o = id - SERVER_ID < SERVER_IDS ? &c->server_objects[id - SERVER_ID] : NULL;
+        return o && o->type != T_NONE ? o : NULL;
+    }
     if (id == 0 || id >= c->object_cap || c->objects[id].type == T_NONE) return NULL;
     return &c->objects[id];
 }
@@ -94,7 +98,20 @@ bool mwm_add(client *c, uint32_t id, obj_type type, void *data) {
     return true;
 }
 
+uint32_t mwm_add_server(client *c, obj_type type, void *data) {
+    for (uint32_t i = 0; !c->dead && i < SERVER_IDS; i++) {
+        if (c->server_objects[i].type != T_NONE) continue;
+        c->server_objects[i] = (object){.type = (uint8_t)type, .data = data};
+        return SERVER_ID + i;
+    }
+    return 0;
+}
+
 void mwm_del(client *c, uint32_t id) {
+    if (id >= SERVER_ID) { /* the server's own id: free to give again, and nothing to tell */
+        if (id - SERVER_ID < SERVER_IDS) c->server_objects[id - SERVER_ID] = (object){.type = T_NONE};
+        return;
+    }
     if (id == 0 || id >= c->object_cap) return;
     c->objects[id] = (object){.type = T_NONE};
     if (c->dead) return;
@@ -365,6 +382,7 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_DATA_MANAGER:
     case T_DATA_SOURCE:
     case T_DATA_DEVICE:
+    case T_DATA_OFFER:
         mwm_data_request(s, c, o, m);
         break;
     case T_DISPLAY:
@@ -379,6 +397,7 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
 
 static void client_free(mwm_server *s, client *c) {
     c->dead = true; /* nothing more is said to it */
+    mwm_data_client_gone(s, c);
     /* Surfaces first (they hold buffers), then the rest. */
     for (uint32_t i = 0; i < c->object_cap; i++) {
         if (c->objects[i].type == T_SURFACE) {
@@ -390,7 +409,7 @@ static void client_free(mwm_server *s, client *c) {
         object *o = &c->objects[i];
         switch ((obj_type)o->type) {
         case T_BUFFER: buffer_destroy(c, o->data, false); break;
-        case T_XDG_SURFACE: case T_SUBSURFACE: case T_POSITIONER: free(o->data); break;
+        case T_XDG_SURFACE: case T_SUBSURFACE: case T_POSITIONER: case T_DATA_SOURCE: free(o->data); break;
         default: continue;
         }
         o->type = T_NONE;
@@ -413,6 +432,7 @@ mwm_server *mwm_server_new(const mwm_screen *screen) {
         free(s);
         return NULL;
     }
+    mwm_data_init(s);
     return s;
 }
 
@@ -421,6 +441,7 @@ void mwm_server_free(mwm_server *s) {
     for (int i = 0; i < MWM_MAX_CLIENTS; i++)
         if (s->clients[i]) client_free(s, s->clients[i]);
     mwm_seat_free(s);
+    mwm_data_free(s);
     free(s);
 }
 
@@ -451,7 +472,7 @@ int mwm_server_sockets(const mwm_server *s, int *fds, bool *wants_write, int max
         wants_write[n] = mwm_conn_wants_write(s->clients[i]->conn);
         n++;
     }
-    return n;
+    return n + mwm_data_sockets(s, fds + n, wants_write + n, max - n);
 }
 
 void mwm_flush(mwm_server *s) {
@@ -468,9 +489,11 @@ void mwm_flush(mwm_server *s) {
 
 void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable) {
     (void)writable; /* what waits is sent below, for every client */
+    bool programs = false;
     for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
         client *c = s->clients[i];
         if (!c || mwm_conn_fd(c->conn) != fd) continue;
+        programs = true;
         if (readable) {
             int got;
             do {
@@ -485,11 +508,13 @@ void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable) {
         }
         break;
     }
+    if (!programs) (void)mwm_data_service(s, fd); /* a pipe of the clipboard's */
     mwm_flush(s);
 }
 
 void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
     s->frame_time = time_ms;
+    mwm_data_frame(s, time_ms);
     for (int i = 0; s->frames_waiting > 0 && i < MWM_MAX_CLIENTS; i++) {
         client *c = s->clients[i];
         if (!c || c->dead) continue;
@@ -507,7 +532,7 @@ void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
     mwm_flush(s);
 }
 
-bool mwm_server_wants_frame(const mwm_server *s) { return s->frames_waiting > 0; }
+bool mwm_server_wants_frame(const mwm_server *s) { return s->frames_waiting > 0 || mwm_data_waits(s); }
 
 void mwm_server_size(const mwm_server *s, int *width, int *height) {
     *width = s->screen.width;

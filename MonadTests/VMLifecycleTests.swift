@@ -839,6 +839,10 @@ final class VMLifecycleTests: XCTestCase {
             return sent == "focus 1\nkey 30 1\n"
         }
 
+        // What the user copied in the VM is handed to what shows its windows (which decides whether the Mac takes it).
+        channel.agentSays("copied 5\nhello")
+        await assertEventually { shown.copies == ["hello"] }
+
         channel.hangUp()
         await assertEventually { shown.disconnects == 1 }
         XCTAssertTrue(shown.windows.isEmpty)

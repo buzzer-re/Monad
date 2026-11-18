@@ -9,6 +9,7 @@
 #include "mwm_ctl.h"
 
 #include <errno.h>
+#include <signal.h>
 
 /* MonadHost's end of the channel, and what it read and has not looked at. */
 typedef struct {
@@ -374,12 +375,137 @@ static void test_one_monadhost_at_a_time(void) {
     mwm_server_free(s);
 }
 
+/* The newest offer the program got from its clipboard device (0: told there is nothing; -1: told nothing). */
+static int64_t selection(client *k, uint32_t device) {
+    int64_t offer = -1;
+    mwm_msg m;
+    while (mwm_conn_next(k->c, &m)) {
+        if (m.object == device && m.opcode == 5) offer = mwm_get_uint(&m); /* selection */
+        int fd = mwm_get_fd(&m);
+        if (fd >= 0) close(fd);
+    }
+    return offer;
+}
+
+/* Asks for an offer's text and reads it to its end, the server writing meanwhile. */
+static const char *pasted(mwm_server *s, client *k, uint32_t offer) {
+    static char text[4096];
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    mwm_put_begin(k->c, offer, 1); /* receive */
+    mwm_put_string(k->c, "text/plain;charset=utf-8");
+    mwm_put_fd(k->c, fds[1]);
+    mwm_put_end(k->c);
+    close(fds[1]);
+    pump(s, k);
+    size_t len = 0;
+    ssize_t n;
+    while ((n = read(fds[0], text + len, sizeof text - 1 - len)) > 0) len += (size_t)n;
+    CHECK(n == 0);
+    close(fds[0]);
+    text[len] = 0;
+    return text;
+}
+
+/* The Mac's clipboard comes as `paste <bytes>` and that many bytes, whatever
+ * they are; a copy the user asked for goes back as `copied <bytes>` and its
+ * bytes, and one the Mac cannot have as `copied 0`. */
+static void test_the_clipboards_meet_when_the_user_says(void) {
+    mwm_server *s = server();
+    mwm_ctl *c = mwm_ctl_new(s);
+    client a = connect_client(s);
+    uint32_t seat = bind_global(&a, "wl_seat", 5), manager = bind_global(&a, "wl_data_device_manager", 3), device = a.next++;
+    request(&a, manager, 1, 2, device, seat); /* get_data_device */
+    pump(s, &a);
+    forget(&a);
+    window one = open_window(s, &a, "One", "app.one", 0x00110000, 64, 32);
+    forget(&a);
+    host h = attach(c);
+    while (line(c, &h)) {}
+    char text[200];
+    snprintf(text, sizeof text, "focus %u\n", one.id);
+    say(c, &h, text);
+    drain(s, &a);
+    CHECK(selection(&a, device) == 0);
+
+    /* The bytes are the text's, newlines and all: the line after them is read as a line. */
+    say(c, &h, "paste 10\none\ntwo \xc3\xa9" "paste 3\nabc");
+    drain(s, &a);
+    int64_t offer = selection(&a, device);
+    CHECK(offer > 0);
+    CHECK(strcmp(pasted(s, &a, (uint32_t)offer), "abc") == 0); /* the second paste, so the first ended where it said */
+    /* In pieces, as a stream brings it. */
+    say(c, &h, "paste 1");
+    say(c, &h, "0\none\ntw");
+    drain(s, &a);
+    CHECK(selection(&a, device) == -1); /* not until all of it came */
+    say(c, &h, "o \xc3\xa9");
+    drain(s, &a);
+    offer = selection(&a, device);
+    CHECK(offer > 0 && strcmp(pasted(s, &a, (uint32_t)offer), "one\ntwo \xc3\xa9") == 0);
+    /* What is no text is not pasted, and the lines after it are read as ever. */
+    say(c, &h, "paste 4\nab\xff\n" "paste 0\n");
+    drain(s, &a);
+    CHECK(selection(&a, device) == 0); /* only the `paste 0` did anything: nothing of the Mac's is there now */
+    say(c, &h, "paste\npaste -1\npaste 1 2\npaste x\n");
+    drain(s, &a);
+    CHECK(no_event(&a) && mwm_ctl_fd(c) >= 0);
+
+    /* ⌘C on the Mac, and the program copies. */
+    say(c, &h, "copy\n");
+    uint32_t source = a.next++;
+    request(&a, manager, 0, 1, source);
+    mwm_put_begin(a.c, source, 0);
+    mwm_put_string(a.c, "text/plain;charset=utf-8");
+    mwm_put_end(a.c);
+    request(&a, device, 1, 2, source, 1);
+    pump(s, &a);
+    (void)mwm_conn_read(a.c); /* what comes with a descriptor comes apart from what was sent before it */
+    mwm_msg m;
+    int to_fill = -1;
+    while (mwm_conn_next(a.c, &m))
+        if (m.object == source && m.opcode == 1) to_fill = mwm_get_fd(&m); /* send */
+    CHECK(to_fill >= 0);
+    CHECK(write(to_fill, "for\nthe Mac", 11) == 11);
+    close(to_fill);
+    int fds[MWM_MAX_SOCKETS];
+    bool wants[MWM_MAX_SOCKETS];
+    int count = mwm_server_sockets(s, fds, wants, MWM_MAX_SOCKETS);
+    for (int i = 0; i < count; i++)
+        if (fds[i] != a.server_fd) mwm_server_service(s, fds[i], true, false);
+    CHECK(line_is(c, &h, "copied 11"));
+    CHECK(h.len == 11 && memcmp(h.text, "for\nthe Mac", 11) == 0); /* the bytes, and no newline of the channel's after them */
+    h.len = 0;
+
+    /* A copy that is no text: the Mac is told there was one, and gets nothing. */
+    say(c, &h, "copy\n");
+    source = a.next++;
+    request(&a, manager, 0, 1, source);
+    mwm_put_begin(a.c, source, 0);
+    mwm_put_string(a.c, "image/png");
+    mwm_put_end(a.c);
+    request(&a, device, 1, 2, source, 1);
+    pump(s, &a);
+    CHECK(line_is(c, &h, "copied 0"));
+    CHECK(line(c, &h) == NULL && h.len == 0);
+
+    /* More than a paste may be: what follows cannot be told from its bytes, so the connection ends. */
+    snprintf(text, sizeof text, "paste %d\n", MWM_MAX_CLIPBOARD + 1);
+    say(c, &h, text);
+    CHECK(mwm_ctl_fd(c) == -1);
+    close(h.fd);
+    mwm_conn_free(a.c);
+    mwm_ctl_free(c);
+    mwm_server_free(s);
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     test_the_windows_are_told();
     test_the_macs_pointer_and_keys_arrive();
     test_lines_that_make_no_sense_do_nothing();
     test_one_monadhost_at_a_time();
+    test_the_clipboards_meet_when_the_user_says();
     printf("test_wm_ctl: %d checks passed\n", checks);
     return 0;
 }

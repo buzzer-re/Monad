@@ -84,9 +84,11 @@ tooltip or a list that drops down is a window too, told with the window it is on
 program put it there; a menu that asked for the keyboard has it while it is up. Programs that
 ask are told the frame is not theirs to draw. The pointer and the keyboard are not read from the
 VM's devices: the window manager is told which window the pointer is over and which one is in
-front, and only the program owning that window hears of it. It is C, compiled in the guest by
-the distribution's `cc`: Xcode cannot build Linux programs, and Monad ships no binary it did not
-build.
+front, and only the program owning that window hears of it. The clipboard is the programs' own
+(`wl_data_device`): what one copies the one in front can paste, in every kind it is offered in,
+written by the copier into the paster's pipe; only the program in front sets it or is told what
+is on it, and nothing is dragged. It is C, compiled in the guest by the distribution's `cc`:
+Xcode cannot build Linux programs, and Monad ships no binary it did not build.
 
 **Between the two**, one channel: lines of text on vsock port 1025, which MonadHost dials when
 the guest's installer says the window manager is set up, and which the window manager takes
@@ -105,19 +107,33 @@ keys included, sent again when the layout changes. Command is sent as Control (�
 ⌘W do in a Linux program what they do on the Mac), the left Option as Alt, the right Option as
 the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the Mac's.
 
+**The Mac's clipboard and the VM's** meet on those keys and at no other time
+(`GuestClipboard.swift`). ⌘V (⇧⌘V in a terminal) gives the VM the Mac's text before the program
+hears the key, when something was copied on the Mac since the VM last had its clipboard: at
+most 1 MiB, text only, and from then on it is what a paste in the VM gives. ⌘C and ⌘X ask the
+window manager for what the program in front copies next: its text comes back once, within two
+seconds, at most 100 KiB, without control characters, and becomes the Mac's clipboard while the
+user is still in that VM's windows. A copy that is no text (a picture) stays in the VM, and the
+Mac's older text is not pasted over it. A program in the VM never reads the Mac's clipboard and
+never sets it by itself; Copy chosen from a program's own menu stays in the VM.
+
 Run in Debug VMs (first with the window manager installed by hand, then in a new VM made with
 Display and the profile): foot opened as a Mac window "foot — wm-try" at Retina scale; a command
 typed into it through this Mac's layout ran; a second foot opened as a second window; resizing
 the Mac's window resized the terminal (40 rows by 138 columns at 897×520 points); closing it
 ended foot. GNOME's Calculator (GTK 4) opened as a window; clicks on its buttons gave 7+5=12;
 its mode menu opened as a popup under its button, and choosing Advanced there closed the menu
-and widened the window to the new layout. The typing, clicking, resizing and closing were done
-through the Debug tool `drive_window`, which calls what the window's own events call, and what
-a window shows was read from its view (`read_windows`): nobody has looked at these windows on
-the screen yet, or used them with a real pointer and keyboard.
+and widened the window to the new layout. With a clipboard of the test's own in the place of the
+Mac's: ⌘V typed its `7*6` into Calculator, Return, ⌘A and ⌘C brought `42` back, ⇧⌘V in foot then
+pasted that 42 (one program's copy into another, the Mac's being no newer), and 306,000 bytes
+pasted into `cat` in foot arrived whole within a second. The typing, clicking, resizing and
+closing were done through the Debug tool `drive_window`, which calls what the window's own
+events call, and what a window shows was read from its view (`read_windows`): nobody has looked
+at these windows on the screen yet, or used them with a real pointer and keyboard, and the Mac's
+real clipboard was never read or set (macOS may ask before MonadHost reads it; not seen).
 
-Not there yet: the clipboard (programs may bind its interface, and nothing is carried, so even
-copy and paste inside foot does nothing); the pointer's shape (always the Mac's arrow); X11
+Not there yet: the clipboard carries text only between the Mac and the VM (a picture or files
+copied in the VM paste in the VM); the pointer's shape (always the Mac's arrow); X11
 programs through Xwayland; programs that draw their own title bar whatever they are told
 (GTK's) get the Mac's above it; a popup that is not a rectangle (GTK 4's menus have round
 corners and a point) is black where it is cut out; a popup is where the program put it, with

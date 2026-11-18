@@ -249,6 +249,7 @@ final class FakeGuestWindows: GuestWindowPresenting {
     private(set) var windows: [GuestWindow] = []
     private(set) var connects = 0
     private(set) var disconnects = 0
+    private(set) var copies: [String] = []
 
     func connected(display: GuestDisplaySize) {
         self.display = display
@@ -256,6 +257,8 @@ final class FakeGuestWindows: GuestWindowPresenting {
     }
 
     func show(_ windows: [GuestWindow]) { self.windows = windows }
+
+    func copied(_ text: String) { copies.append(text) }
 
     func disconnected() {
         windows = []

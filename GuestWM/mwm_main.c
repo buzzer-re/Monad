@@ -213,17 +213,17 @@ int main(int argc, char **argv) {
     uint32_t last_frame = now_ms();
     while (!stopping) {
         enum { FIXED = 3 };
-        struct pollfd fds[FIXED + MWM_MAX_CLIENTS];
-        int sockets[MWM_MAX_CLIENTS];
-        bool wants[MWM_MAX_CLIENTS];
-        int n = mwm_server_sockets(server, sockets, wants, MWM_MAX_CLIENTS);
+        struct pollfd fds[FIXED + MWM_MAX_SOCKETS];
+        int sockets[MWM_MAX_SOCKETS];
+        bool wants[MWM_MAX_SOCKETS];
+        int n = mwm_server_sockets(server, sockets, wants, MWM_MAX_SOCKETS);
         fds[0] = (struct pollfd){.fd = listener, .events = POLLIN};
         fds[1] = (struct pollfd){.fd = host_listener, .events = POLLIN};
         fds[2] = (struct pollfd){.fd = mwm_ctl_fd(ctl), .events = (short)(POLLIN | (mwm_ctl_wants_write(ctl) ? POLLOUT : 0))};
         for (int i = 0; i < n; i++) {
             fds[FIXED + i] = (struct pollfd){.fd = sockets[i], .events = (short)(POLLIN | (wants[i] ? POLLOUT : 0))};
         }
-        /* With no program waiting to draw, there is nothing to wake up for. */
+        /* With no program waiting to draw (and no copy waited for), there is nothing to wake up for. */
         uint32_t now = now_ms();
         int wait = !mwm_server_wants_frame(server) ? -1 : now - last_frame >= FRAME_MS ? 0 : (int)(FRAME_MS - (now - last_frame));
         int ready = poll(fds, (nfds_t)(FIXED + n), wait);

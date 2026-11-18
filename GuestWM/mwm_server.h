@@ -22,6 +22,7 @@
 #define MWM_SERVER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* The display's pixels (XRGB, one word each) and how to show a change. */
@@ -68,6 +69,16 @@ enum {
     MWM_MAX_KEYS = MWM_MAX_KEYCODE,
     /* The widest and the tallest a window can be asked to be: the largest display there is. */
     MWM_MAX_SIDE = 8192,
+    /* Texts on their way through pipes at once (the clipboard's), and with
+     * the programs' sockets, all there is to poll. */
+    MWM_MAX_TRANSFERS = 8,
+    MWM_MAX_SOCKETS = MWM_MAX_CLIENTS + MWM_MAX_TRANSFERS,
+    /* The most text of the Mac's a paste in the VM gives, and the most a
+     * copy in the VM gives the Mac (as much as a terminal may set, ClipboardPolicy). */
+    MWM_MAX_CLIPBOARD = 1 << 20,
+    MWM_MAX_COPY = 100 << 10,
+    /* How long after the user's ⌘C a program's copy is still the answer to it. */
+    MWM_COPY_MS = 2000,
 };
 
 /* A key of the keyboard: its code, and the symbol (X's number for it) it
@@ -88,11 +99,12 @@ void mwm_server_free(mwm_server *s);
  * when there are as many as there may be. */
 bool mwm_server_add_client(mwm_server *s, int fd);
 
-/* The clients' sockets, for poll: how many were written to `fds` and
- * `wants_write` (at most `max`). */
+/* What there is to poll: the programs' sockets, and the pipes text is on
+ * its way through. How many were written to `fds` and `wants_write` (at
+ * most `max`; MWM_MAX_SOCKETS holds them all). */
 int mwm_server_sockets(const mwm_server *s, int *fds, bool *wants_write, int max);
 
-/* A client's socket has something to read, or room to write. */
+/* One of those has something to read, or room to write. */
 void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable);
 
 /* A frame's time has come (about 60 times a second): programs that asked
@@ -124,6 +136,25 @@ void mwm_server_close(mwm_server *s, uint32_t window);
  * another app): the program is told each is done with, the one on top
  * first, and takes them down. */
 void mwm_server_dismiss(mwm_server *s, uint32_t window);
+
+/*
+ * The clipboard. Programs in the VM copy and paste among themselves. The
+ * Mac's clipboard and the VM's meet only when the user says so, on the
+ * Mac's keyboard: ⌘V makes the Mac's text what a paste gives; after ⌘C
+ * (or ⌘X), what the program in front copies next is handed out for the
+ * Mac, once. A program in the VM never reads the Mac's clipboard by
+ * itself, and never sets it by itself.
+ */
+
+/* The Mac's text (UTF-8, at most MWM_MAX_CLIPBOARD bytes) is what a paste
+ * gives from now on; none (len 0): nothing of the Mac's is. False, and
+ * nothing changed, when it is no text or too much. */
+bool mwm_server_paste(mwm_server *s, const char *text, size_t len);
+/* The user pressed ⌘C: what the program in front copies within MWM_COPY_MS is for the Mac. */
+void mwm_server_copy(mwm_server *s, uint32_t time_ms);
+/* Who is handed such a copy (UTF-8, at most MWM_MAX_COPY bytes, not NUL-terminated). */
+typedef void (*mwm_copied)(void *ctx, const char *text, size_t len);
+void mwm_server_on_copied(mwm_server *s, mwm_copied copied, void *ctx);
 
 /*
  * Input. The pointer and the keyboard are the Mac's: whoever shows the

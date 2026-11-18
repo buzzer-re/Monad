@@ -6,15 +6,19 @@
  * input (any object, any opcode, numbers small, large and negative,
  * strings, descriptors of a file that may be shorter than said), the whole
  * exchange that opens a window with sizes from the input and takes the
- * pointer and the keyboard, frames, what the Mac says of the pointer and
- * the keys (any window, any position, any key, any table of keys), what
- * MonadHost says on its channel (lines well formed or not, and bytes), and
- * programs leaving. After every step: every window is inside the display
- * and has a size, no two windows share a pixel, there are no more windows
- * or programs than there may be, a pixel outside every window is black,
- * and what MonadHost was told is lines of plain printable ASCII no longer
- * than they may be, whatever the programs called their windows. The
- * sanitizers check the rest.
+ * pointer and the keyboard, what programs do with the clipboard (copies of
+ * any kind, pastes into pipes that are read or left alone), frames, what
+ * the Mac says of the pointer and the keys (any window, any position, any
+ * key, any table of keys) and of its clipboard (text, bytes that are none,
+ * more than a pipe holds), what MonadHost says on its channel (lines well
+ * formed or not, and bytes), and programs leaving. After every step: every
+ * window is inside the display and has a size, no two windows share a
+ * pixel, there are no more windows, programs or pipes than there may be, a
+ * pixel outside every window is black, and what MonadHost was told is
+ * lines of plain printable ASCII no longer than they may be, whatever the
+ * programs called their windows, but for a copy the Mac asked for, which
+ * is as many bytes as its line says, no more than a copy may be, and text.
+ * The sanitizers check the rest.
  *
  * Built with -fsanitize=fuzzer (clang), LLVMFuzzerTestOneInput is the
  * target. Otherwise main() is a deterministic driver: `fuzz_wm [iterations]
@@ -67,6 +71,8 @@ typedef struct {
     mwm_conn *conn; /* the program's end; NULL once it left */
     int server_fd;
     uint32_t next;
+    /* Its clipboard objects, once it has a window with them (0: none). */
+    uint32_t manager, device;
 } program;
 
 static void check(const mwm_server *s) {
@@ -88,25 +94,49 @@ static void check(const mwm_server *s) {
     }
     for (int i = 0; i < W * H; i++)
         if (!covered[i] && pixels[i] != 0) fail("something drawn where no window is");
-    int fds[MWM_MAX_CLIENTS + 1];
-    bool wants[MWM_MAX_CLIENTS + 1];
-    if (mwm_server_sockets(s, fds, wants, MWM_MAX_CLIENTS + 1) > PROGRAMS) fail("more programs than connected");
+    int fds[MWM_MAX_SOCKETS + 1];
+    bool wants[MWM_MAX_SOCKETS + 1];
+    if (mwm_server_sockets(s, fds, wants, MWM_MAX_SOCKETS + 1) > PROGRAMS + MWM_MAX_TRANSFERS) fail("more programs and pipes than there may be");
+    (void)mwm_server_wants_frame(s);
     windows_seen += n;
 }
 
-/* What the server sent is read and dropped: a program that reads. */
+/* Pipes a program asked to have the clipboard written into, and reads or does not. */
+enum { KEPT = 6 };
+static int kept[KEPT] = {-1, -1, -1, -1, -1, -1};
+static unsigned turn;
+
+static void keep(int fd) {
+    int *slot = &kept[turn++ % KEPT];
+    if (*slot >= 0) close(*slot);
+    *slot = fd;
+    if (fd >= 0 && fcntl(fd, F_SETFL, O_NONBLOCK) != 0) fail("a pipe that cannot be set up");
+}
+
+/* What the server sent is read and dropped: a program that reads. A
+ * descriptor is the keymap's file, or a pipe the program is to write its
+ * copy into: it writes something there (text, or bytes that are none, or
+ * nothing), which the keymap's file refuses. */
 static void drain(program *p) {
     if (!p->conn) return;
     mwm_msg m;
     while (mwm_conn_read(p->conn) > 0)
         while (mwm_conn_next(p->conn, &m)) {
-            int fd = mwm_get_fd(&m); /* the keymap's file, when it is one */
-            if (fd >= 0) close(fd);
+            int fd = mwm_get_fd(&m);
+            if (fd < 0) continue;
+            static const char *const answers[] = {"copied text", "caf\xc3\xa9\nand a line", "", "bad \xff bytes", "nul\0inside"};
+            static const size_t lengths[] = {11, 16, 0, 9, 10};
+            unsigned which = turn++ % 6;
+            if (which < 5 && write(fd, answers[which], lengths[which]) < 0) { /* the keymap: not to be written */ }
+            if (which == 5) keep(fd); /* asked, and never answers */
+            else close(fd);
         }
 }
 
-/* How far into a line MonadHost's end is; a new connection starts a new line. */
-static size_t said;
+/* What MonadHost's end is in the middle of: a line (how far into it, and
+ * how it began), or the bytes of a copy (how many are still to come). */
+static size_t said, copy_left;
+static char said_line[24];
 
 /* What MonadHost was sent: read, and looked at as MonadHost may rely on it. */
 static void check_said(int host) {
@@ -114,10 +144,23 @@ static void check_said(int host) {
     ssize_t n;
     while (host >= 0 && (n = read(host, text, sizeof text)) > 0) {
         for (ssize_t i = 0; i < n; i++) {
-            if (text[i] == '\n') {
+            if (copy_left > 0) {
+                if (text[i] == 0) fail("MonadHost was sent a copy that is no text");
+                copy_left--;
+            } else if (text[i] == '\n') {
+                said_line[said < sizeof said_line ? said : sizeof said_line - 1] = 0;
+                unsigned long bytes;
+                char after;
+                if (strncmp(said_line, "copied ", 7) == 0) {
+                    if (sscanf(said_line + 7, "%lu%c", &bytes, &after) != 1 || bytes > MWM_MAX_COPY) fail("a copy larger than MonadHost takes");
+                    copy_left = bytes;
+                }
                 said = 0;
-            } else if (text[i] < 0x20 || text[i] > 0x7e || ++said >= MWM_CTL_LINE) {
+            } else if (text[i] < 0x20 || text[i] > 0x7e || said + 1 >= MWM_CTL_LINE) {
                 fail("MonadHost was sent something that is not a line of plain text");
+            } else {
+                if (said < sizeof said_line - 1) said_line[said] = text[i];
+                said++;
             }
         }
     }
@@ -150,9 +193,38 @@ static void words(program *p, uint32_t object, uint16_t opcode, int count, const
     mwm_put_end(p->conn);
 }
 
+/* Kinds of data a copy is offered in and a paste asks for: text, what is none, and no name at all. */
+static const char *const kinds[] = {"text/plain;charset=utf-8", "UTF8_STRING", "image/png", "text/html", ""};
+
+/* A paste: the program asks for an offer it may have been made, in some kind, into a pipe it reads later or never. */
+static void paste(program *p, input *in) {
+    int ends[2];
+    if (pipe(ends) != 0) fail("no pipe");
+    mwm_put_begin(p->conn, 0xff000000u + byte(in) % 4, 1); /* receive */
+    mwm_put_string(p->conn, kinds[byte(in) % 5]);
+    mwm_put_fd(p->conn, ends[1]);
+    mwm_put_end(p->conn);
+    close(ends[1]);
+    keep(ends[0]);
+}
+
+/* A copy: a source offered in some kinds (more than may be, sometimes), set as the clipboard, or the clipboard taken back. */
+static void copy(program *p, input *in) {
+    uint32_t source = p->next++;
+    words(p, p->manager, 0, 1, &source);
+    for (int offers = byte(in) % 20; offers > 0; offers--) {
+        mwm_put_begin(p->conn, source, 0);
+        mwm_put_string(p->conn, kinds[byte(in) % 5]);
+        mwm_put_end(p->conn);
+    }
+    words(p, p->device, 1, 2, (uint32_t[]){byte(in) % 4 ? source : 0, 1});
+    if (byte(in) % 4 == 0) words(p, source, 1, 0, NULL); /* and gone again */
+}
+
 /* The exchange that opens a window, its sizes from the input, with a part
- * on it (a subsurface) somewhere, in some order, at some scale, and a
- * menu (a popup, with one of its own) that may take the keyboard. */
+ * on it (a subsurface) somewhere, in some order, at some scale, a menu (a
+ * popup, with one of its own) that may take the keyboard, and a copy of
+ * some kinds set as the clipboard. */
 static void open_window(program *p, input *in) {
     uint32_t registry = p->next++, compositor = p->next++, shm = p->next++, wm = p->next++, surface = p->next++, xdg = p->next++,
              toplevel = p->next++, pool = p->next++, buffer = p->next++, seat = p->next++;
@@ -234,6 +306,19 @@ static void open_window(program *p, input *in) {
         words(p, menu, 6, 0, NULL);
         parent = role;
     }
+    if (byte(in) % 2) { /* the clipboard: a copy of some kinds, and at once a paste of what it may have been offered */
+        p->manager = p->next++;
+        p->device = p->next++;
+        mwm_put_begin(p->conn, registry, 0);
+        mwm_put_uint(p->conn, 7);
+        mwm_put_string(p->conn, "wl_data_device_manager");
+        mwm_put_uint(p->conn, 1 + byte(in) % 3);
+        mwm_put_uint(p->conn, p->manager);
+        mwm_put_end(p->conn);
+        words(p, p->manager, 1, 2, (uint32_t[]){p->device, seat});
+        copy(p, in);
+        for (int pastes = byte(in) % 3; pastes > 0; pastes--) paste(p, in);
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
@@ -267,6 +352,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             p->conn = mwm_conn_new(sv[0]);
             p->server_fd = sv[1];
             p->next = 2;
+            p->manager = p->device = 0;
             if (!p->conn || !mwm_server_add_client(s, sv[1])) fail("a program could not connect");
         }
         if (mwm_ctl_fd(ctl) < 0) { /* MonadHost connects, again when it was dropped */
@@ -274,10 +360,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             if (host >= 0) close(host);
             if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0) fail("no socket pair");
             host = sv[0];
-            said = 0;
+            said = copy_left = 0;
             mwm_ctl_attach(ctl, sv[1]);
         }
-        switch (byte(&in) % 12) {
+        switch (byte(&in) % 13) {
         case 0: { /* bytes as they are */
             uint8_t raw[64];
             size_t n = byte(&in) % sizeof raw;
@@ -292,18 +378,27 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 4: case 5:
             open_window(p, &in);
             break;
-        case 6:
-            mwm_server_frame(s, time += 16);
+        case 6: /* time passes: a frame, or long enough for a copy that was asked for to be given up on */
+            mwm_server_frame(s, time += byte(&in) % 8 ? 16 : 3000);
             break;
         case 7: case 8: { /* what the Mac says of the pointer and the keys */
             uint32_t window = byte(&in) % 12;
-            switch (byte(&in) % 7) {
+            switch (byte(&in) % 9) {
             case 0: mwm_server_pointer(s, window, (int32_t)number(&in), (int32_t)number(&in), time); break;
             case 1: mwm_server_button(s, 0x110 + byte(&in) % 3, byte(&in) % 2, time); break;
             case 2: mwm_server_scroll(s, (int32_t)number(&in), (int32_t)number(&in), time); break;
             case 3: mwm_server_focus(s, window); break;
             case 4: mwm_server_key(s, number(&in) % 300, byte(&in) % 2, time); break;
             case 5: mwm_server_modifiers(s, number(&in), number(&in)); break;
+            case 6: { /* ⌘V: the Mac's text, or what is none, or more than a pipe holds at once */
+                static char text[200 << 10];
+                size_t n = byte(&in) % 4 == 0 ? sizeof text : byte(&in) % 64;
+                bool plain = byte(&in) % 4 != 0;
+                for (size_t i = 0; i < n; i++) text[i] = n > 64 ? (char)('a' + i % 26) : plain ? (char)(0x20 + byte(&in) % 0x5f) : (char)byte(&in);
+                (void)mwm_server_paste(s, text, n);
+                break;
+            }
+            case 7: mwm_server_copy(s, time); break;
             default: {
                 mwm_key keys[4];
                 int count = byte(&in) % 5;
@@ -317,14 +412,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             break;
         }
         case 9: case 10: { /* what MonadHost says, well formed or not */
-            static const char *const names[] = {"pointer", "button", "scroll", "focus", "key", "mods", "keys", "k", "size", "close", "dismiss", "scale", "dance", ""};
+            static const char *const names[] = {"pointer", "button", "scroll", "focus", "key", "mods", "keys", "k", "size", "close", "dismiss", "scale", "paste", "copy", "dance", ""};
             char text[256];
             size_t n = 0;
             if (byte(&in) % 4 == 0) {
                 n = byte(&in) % 200;
                 for (size_t i = 0; i < n; i++) text[i] = (char)byte(&in);
             } else {
-                n = (size_t)snprintf(text, sizeof text, "%s", names[byte(&in) % 14]);
+                n = (size_t)snprintf(text, sizeof text, "%s", names[byte(&in) % 16]);
                 for (int args = byte(&in) % 8; args > 0; args--) {
                     long long v = byte(&in) % 2 ? (long long)(byte(&in) % 16) : (long long)(int32_t)number(&in) * (byte(&in) % 3);
                     n += (size_t)snprintf(text + n, sizeof text - n, " %lld", v);
@@ -335,6 +430,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             mwm_ctl_service(ctl, true, true, time);
             break;
         }
+        case 11: /* the clipboard in use: a window in front, and its program copies, pastes what it was offered, or lets an offer go */
+            if (byte(&in) % 2) mwm_server_focus(s, 1 + byte(&in) % 6);
+            switch (byte(&in) % 4) {
+            case 0: if (p->device) copy(p, &in); break;
+            case 1: words(p, 0xff000000u + byte(&in) % 4, 2, 0, NULL); break;
+            default: paste(p, &in); break;
+            }
+            break;
         default: /* the program leaves */
             mwm_conn_free(p->conn);
             p->conn = NULL;
@@ -352,8 +455,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             drain(p);
         }
         check(s);
+        { /* the clipboard's pipes: what programs wrote is read, what they read is written on */
+            int fds[MWM_MAX_SOCKETS];
+            bool wants[MWM_MAX_SOCKETS];
+            int count = mwm_server_sockets(s, fds, wants, MWM_MAX_SOCKETS);
+            for (int i = 0; i < count; i++) {
+                bool a_program = false;
+                for (int k = 0; k < PROGRAMS; k++) a_program = a_program || (programs[k].conn && programs[k].server_fd == fds[i]);
+                if (!a_program) mwm_server_service(s, fds[i], true, true);
+            }
+            char taken[4096];
+            int reader = kept[byte(&in) % KEPT];
+            if (reader >= 0 && read(reader, taken, sizeof taken) < 0) { /* nothing there now, or the writing end of nothing */ }
+        }
+        check(s);
         mwm_ctl_update(ctl);
         check_said(host);
+    }
+    for (int i = 0; i < KEPT; i++) {
+        if (kept[i] >= 0) close(kept[i]);
+        kept[i] = -1;
     }
     for (int i = 0; i < PROGRAMS; i++)
         if (programs[i].conn) mwm_conn_free(programs[i].conn);

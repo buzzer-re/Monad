@@ -45,6 +45,7 @@ typedef enum {
     T_DECORATION_MANAGER,
     T_DECORATION,
     T_POPUP,
+    T_DATA_OFFER,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -58,7 +59,15 @@ enum {
     MAX_DEPTH = 8,
     /* A program draws at the screen's scale: 1, or 2 on a Retina screen; some ask for 3. */
     MAX_SCALE = 4,
+    /* Kinds of data one copy may offer, and how long a kind's name may be. */
+    MAX_MIMES = 16,
+    MIME = 64,
+    /* Objects the server makes for a program (what the clipboard offers it), kept by ids from SERVER_ID up. */
+    SERVER_IDS = 32,
 };
+
+/* Ids at and above this are the server's to give (Wayland's rule). */
+#define SERVER_ID 0xff000000u
 
 typedef struct client client;
 typedef struct surface surface;
@@ -190,8 +199,26 @@ struct client {
     mwm_conn *conn;
     object *objects;
     uint32_t object_cap;
+    object server_objects[SERVER_IDS];
     bool dead;
 };
+
+/* What a program copied and offers to whoever pastes (wl_data_source). */
+typedef struct {
+    client *owner;
+    uint32_t id;
+    char mimes[MAX_MIMES][MIME];
+    int mime_count;
+} source;
+
+/* Text on its way through a pipe: the Mac's into a program that pastes, or a program's copy out for the Mac. */
+typedef struct {
+    int fd; /* -1: free */
+    bool out;
+    char *data;
+    size_t len, done;
+    uint32_t started;
+} transfer;
 
 struct mwm_server {
     mwm_screen screen;
@@ -223,6 +250,24 @@ struct mwm_server {
         int keymap_fd;
         uint32_t keymap_size;
     } seat;
+    /* The clipboard (mwm_data.c). */
+    struct {
+        /* What a paste gives: a program's copy, or the Mac's text, or nothing. */
+        source *source;
+        char *mac;
+        size_t mac_len;
+        /* Counts what was on the clipboard: an offer of something older gives nothing. */
+        uint32_t generation;
+        /* The program that was last told what is on it, and of which. */
+        client *told;
+        uint32_t told_generation;
+        /* The user pressed ⌘C on the Mac at that time: the next copy is the Mac's to have. */
+        bool armed;
+        uint32_t armed_at;
+        mwm_copied copied;
+        void *copied_ctx;
+        transfer transfers[MWM_MAX_TRANSFERS];
+    } clipboard;
 };
 
 /* Objects and errors (mwm_server.c). */
@@ -294,9 +339,26 @@ void mwm_seat_keyboard(mwm_server *s, window *w);
 /* The surface is being destroyed: nothing more is said about it. */
 void mwm_seat_surface_gone(mwm_server *s, surface *f);
 
-/* The clipboard's interface (mwm_data.c). */
+/* The clipboard (mwm_data.c). */
 
-/* A request to wl_data_device_manager, wl_data_source or wl_data_device. */
+/* A request to wl_data_device_manager, wl_data_source, wl_data_device or wl_data_offer. */
 void mwm_data_request(mwm_server *s, client *c, object *o, mwm_msg *m);
+/* The program has the keyboard: it is told what is on the clipboard, unless it knows. */
+void mwm_data_focus(mwm_server *s, client *c);
+/* The program is gone: what it copied is nobody's to paste. Its objects' memory is freed with them. */
+void mwm_data_client_gone(mwm_server *s, client *c);
+void mwm_data_init(mwm_server *s);
+void mwm_data_free(mwm_server *s);
+/* The pipes text is on its way through, for poll: how many were written. */
+int mwm_data_sockets(const mwm_server *s, int *fds, bool *wants_write, int max);
+/* One of those pipes can be read or written; false when the descriptor is none of them. */
+bool mwm_data_service(mwm_server *s, int fd);
+/* Time passed: a copy the Mac asked for and never got is given up on. */
+void mwm_data_frame(mwm_server *s, uint32_t time_ms);
+/* Whether the clipboard waits for time to pass. */
+bool mwm_data_waits(const mwm_server *s);
+
+/* An object of the server's own making for the program; its id, or 0 when it has as many as it may. */
+uint32_t mwm_add_server(client *c, obj_type type, void *data);
 
 #endif

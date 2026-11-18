@@ -241,9 +241,9 @@ static int dropped_with(mwm_server *s, client *k, uint32_t *object) {
             CHECK(mwm_get_string(&m, &len) != NULL);
         }
     }
-    int fds[MWM_MAX_CLIENTS];
-    bool wants[MWM_MAX_CLIENTS];
-    int n = mwm_server_sockets(s, fds, wants, MWM_MAX_CLIENTS);
+    int fds[MWM_MAX_SOCKETS];
+    bool wants[MWM_MAX_SOCKETS];
+    int n = mwm_server_sockets(s, fds, wants, MWM_MAX_SOCKETS);
     for (int i = 0; i < n; i++) CHECK(fds[i] != k->server_fd); /* gone from the server */
     mwm_conn_free(k->c);
     return code;

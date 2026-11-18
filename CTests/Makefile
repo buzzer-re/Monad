@@ -12,7 +12,7 @@ BUILD ?= build
 
 VT_SRC := $(wildcard $(SRC)/vt/*.c)
 
-TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server test_wm_surface test_wm_popup test_wm_seat test_wm_ctl fuzz_wm
+TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server test_wm_surface test_wm_popup test_wm_seat test_wm_data test_wm_ctl fuzz_wm
 
 all: run
 
@@ -155,6 +155,9 @@ $(BUILD)/test_wm_surface: test_wm_surface.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/test_wm_popup: test_wm_popup.c $(WM_SERVER) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+$(BUILD)/test_wm_data: test_wm_data.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/disk_cloud.regions: gen_disk_fixtures.py | $(BUILD)

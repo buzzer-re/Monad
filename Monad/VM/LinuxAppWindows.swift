@@ -17,7 +17,8 @@
 //  a title always ends with the VM's name; a new window comes in front and
 //  takes the keys only when the user is in Monad already (one of these
 //  windows, or the app), and otherwise opens without them; and the number
-//  of windows is the protocol's bound.
+//  of windows is the protocol's bound. The Mac's clipboard is the VM's to
+//  read or set only on the user's ⌘V and ⌘C here (GuestClipboard.swift).
 //
 
 import AppKit
@@ -34,8 +35,47 @@ protocol GuestWindowPresenting: AnyObject {
     func connected(display: GuestDisplaySize)
     /// All the windows there are now.
     func show(_ windows: [GuestWindow])
+    /// The window manager says what was copied in the VM (nothing: something the Mac cannot have).
+    func copied(_ text: String)
     /// The window manager is gone: so are its windows.
     func disconnected()
+}
+
+/// The Mac's clipboard as these windows read and set it. The Debug tools
+/// put one of their own in its place, so that working on Monad never
+/// reads or replaces what the user copied.
+struct MacClipboard {
+    /// The Mac's count of what was put on it.
+    var changeCount: () -> Int
+    var text: () -> String?
+    var set: (String) -> Void
+    var standsIn = false
+
+    static let general = MacClipboard(
+        changeCount: { NSPasteboard.general.changeCount },
+        text: { NSPasteboard.general.string(forType: .string) },
+        set: { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        })
+
+    /// One that is nobody's but its holder's, with `text` on it, put
+    /// there after what `count` counted (the Mac's count never goes back).
+    static func standIn(holding text: String, after count: Int) -> MacClipboard {
+        final class Held {
+            var count: Int
+            var text: String
+            init(_ text: String, _ count: Int) {
+                self.text = text
+                self.count = count
+            }
+        }
+        let held = Held(text, count + 1)
+        return MacClipboard(changeCount: { held.count }, text: { held.text }, set: { text in
+            held.text = text
+            held.count += 1
+        }, standsIn: true)
+    }
 }
 
 @MainActor
@@ -58,6 +98,8 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private var buttonsDown: Set<UInt32> = []
     /// Where the next new window goes.
     private var cascade = NSPoint.zero
+    private var clipboard = GuestClipboard()
+    private var board = MacClipboard.general
 
     private struct Shown {
         let window: NSWindow
@@ -90,6 +132,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         saidPointer = 0
         keysDown = []
         buttonsDown = []
+        clipboard = GuestClipboard() // a window manager that just started holds nothing of the Mac's
         sayScale()
         sayKeys()
         if layoutObserver == nil {
@@ -109,6 +152,14 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         for window in changes.changed { update(window) }
         for window in changes.opened { open(window) }
         if shown.isEmpty { stopKeys() }
+    }
+
+    /// Taken as the Mac's clipboard only as the answer to the user's ⌘C in
+    /// one of these windows, which the user is still in (GuestClipboard).
+    func copied(_ text: String) {
+        guard clipboard.copied(text, at: Date(), inFront: saidFocus != 0, changeCount: board.changeCount()) else { return }
+        board.set(text)
+        clipboard.wrote(changeCount: board.changeCount())
     }
 
     func disconnected() {
@@ -353,13 +404,36 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
                 return true
             }
             say(event.modifierFlags)
-            if !event.isARepeat, let code = MacKeys.linuxCode(event.keyCode) { sayKey(code, down: true) }
+            if !event.isARepeat, let code = MacKeys.linuxCode(event.keyCode) {
+                if event.modifierFlags.contains(.command) { meetClipboards(event) } // before the program hears the key
+                sayKey(code, down: true)
+            }
         case .keyUp:
             if let code = MacKeys.linuxCode(event.keyCode) { sayKey(code, down: false) }
         default:
             return false
         }
         return true
+    }
+
+    /// ⌘V: the VM is given the Mac's text when that is the newer of the
+    /// two clipboards. ⌘C, ⌘X: the window manager is asked for what the
+    /// program copies next. Nothing else brings the two together.
+    private func meetClipboards(_ event: NSEvent) {
+        let typed = [event.characters, event.charactersIgnoringModifiers].compactMap { $0 }.first { !$0.isEmpty }
+        switch GuestClipboard.shortcut(typed: typed) {
+        case .paste:
+            switch clipboard.paste(changeCount: board.changeCount(), text: board.text()) {
+            case .send(let text): onCommand?(.paste(text))
+            case .refuse: NSSound.beep()
+            case .keep: break
+            }
+        case .copy:
+            clipboard.copyPressed(at: Date())
+            onCommand?(.copy)
+        case nil:
+            break
+        }
     }
 
     /// The shortcuts that are the Mac's about a window, not the program's:
@@ -504,7 +578,7 @@ extension LinuxAppWindows {
                 + ", content \(content.width)×\(content.height), display behind it at \(display.minX),\(display.minY) \(display.width)×\(display.height)"
                 + ", visible \(entry.window.isVisible), drawn \(entry.window.occlusionState.contains(.visible)), key \(entry.window.isKeyWindow)"
                 + ", scale \(entry.window.backingScaleFactor), framebuffers \(surfaces.isEmpty ? "none" : surfaces.joined(separator: ", "))"
-        }.joined(separator: "\n")
+        }.joined(separator: "\n") + (board.standsIn ? "\nclipboard (a stand-in for the Mac's): “\(board.text() ?? "")”" : "")
     }
 
     /// What a window's view of the display holds, cut to what the window
@@ -531,7 +605,10 @@ extension LinuxAppWindows {
     /// (text, through this Mac's layout), "key" (a Mac key code, with
     /// "command", "shift", "option" or "control"), "resize" (to x by y) and
     /// "close". The Mac's own pointer and keyboard are left alone, and no
-    /// other app loses the keys.
+    /// other app loses the keys. "clipboard" puts a clipboard holding
+    /// `text` in the place of the Mac's for these windows, until the VM
+    /// stops: ⌘V and ⌘C are then tried without what the user copied being
+    /// read or replaced.
     func debugDrive(window id: UInt32, action: String, x: Double, y: Double, text: String, keyCode: Int) throws {
         guard let entry = shown[id] else { throw MonadError("There is no window \(id).") }
         let point = NSPoint(x: x, y: y)
@@ -571,6 +648,8 @@ extension LinuxAppWindows {
             entry.window.setContentSize(NSSize(width: x, height: y))
         case "close":
             entry.window.performClose(nil)
+        case "clipboard":
+            board = .standIn(holding: text, after: board.changeCount())
         default:
             throw MonadError("There is no action “\(action)”.")
         }
@@ -578,9 +657,12 @@ extension LinuxAppWindows {
 
     /// A key going down and up with those modifiers held, as the keyboard's events would say it.
     private func debugPress(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, in window: NSWindow) throws {
+        // What the key types plain, as the keyboard's events say it (⌘V is told from it).
+        var typed = ""
+        if case .text(let text)? = MacKeys.currentLayout()?(keyCode, .plain) { typed = text }
         func event(_ type: NSEvent.EventType, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
             guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                                               windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+                                               windowNumber: window.windowNumber, context: nil, characters: typed, charactersIgnoringModifiers: typed,
                                                isARepeat: false, keyCode: keyCode) else { throw MonadError("No key event could be made.") }
             return event
         }

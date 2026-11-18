@@ -193,6 +193,7 @@ void mwm_seat_keyboard(mwm_server *s, window *w) {
     s->seat.keyboard = w;
     client *c = owner(w);
     if (!c) return;
+    mwm_data_focus(s, c); /* what a paste would give it, before the keys are its own (as Wayland has it) */
     uint32_t serial = ++s->serial;
     for (uint32_t id = 0; (id = next_of(c, T_KEYBOARD, id)) != 0;) keyboard_enter(s, c, id, serial);
 }

@@ -9,7 +9,9 @@
 //  lie on the display it was said to have. Anything else ends the
 //  connection, and nothing of it is shown. What programs call their
 //  windows is text to show and nothing more: it is cut, and what would
-//  mislead on screen is taken out.
+//  mislead on screen is taken out. The one thing that is not a line is
+//  a copy the user asked for with ⌘C: as many bytes as its line says,
+//  bounded, which must be text (GuestClipboard decides what becomes of it).
 //
 
 import Foundation
@@ -46,6 +48,10 @@ enum GuestWindowEvent: Equatable, Sendable {
     case hello(display: GuestDisplaySize)
     /// All the windows there are now, oldest first.
     case windows([GuestWindow])
+    /// What the program in front copied after the user's ⌘C; empty when
+    /// it was something the Mac cannot have (a picture, too much). The
+    /// guest may say it unasked: who takes it decides (GuestClipboard).
+    case copied(String)
 }
 
 /// A key of the Mac's keyboard for the VM: the Linux kernel's code for it,
@@ -72,6 +78,10 @@ enum GuestWindowCommand: Equatable, Sendable {
     case close(window: UInt32)
     /// The user clicked away from that window's popups.
     case dismiss(window: UInt32)
+    /// The user pressed ⌘V: the Mac's text, which a paste in the VM gives from now on.
+    case paste(String)
+    /// The user pressed ⌘C (or ⌘X): what the program in front copies next is for the Mac.
+    case copy
 
     /// The lines, as mwm_ctl.c reads them.
     var text: String {
@@ -92,6 +102,11 @@ enum GuestWindowCommand: Equatable, Sendable {
         case .size(let window, let width, let height): return "size \(window) \(width) \(height)\n"
         case .close(let window): return "close \(window)\n"
         case .dismiss(let window): return "dismiss \(window)\n"
+        case .paste(let text):
+            // Its bytes follow as they are, counted: more than the window manager takes would end the connection.
+            guard text.utf8.count <= GuestClipboard.maxPaste else { return "" }
+            return "paste \(text.utf8.count)\n" + text
+        case .copy: return "copy\n"
         }
     }
 }
@@ -114,6 +129,9 @@ struct GuestWindowReader {
     /// How far from its window a popup may say it stands, in pixels: more
     /// than the window manager lets a program ask.
     static let maxOffset = 1 << 23
+    /// The most a copy may be, in bytes: mwm_server.h's MWM_MAX_COPY, as
+    /// much as a terminal may set (ClipboardPolicy).
+    static let maxCopyBytes = 100 * 1024
 
     private(set) var isBroken = false
     private(set) var display: GuestDisplaySize?
@@ -121,13 +139,20 @@ struct GuestWindowReader {
     /// A list being read: how many windows it said, and those read so far.
     private var expected: Int?
     private var list: [GuestWindow] = []
+    /// A copy being read: its bytes so far, and how many are still to come.
+    private var copy: [UInt8] = []
+    private var copyLeft = 0
 
     /// Feed bytes; returns what became whole with them.
     mutating func feed(_ data: Data) -> [GuestWindowEvent] {
         var events: [GuestWindowEvent] = []
         for byte in data {
             if isBroken { break }
-            if byte == 0x0A {
+            if copyLeft > 0 {
+                copy.append(byte)
+                copyLeft -= 1
+                if copyLeft == 0, let event = copied() { events.append(event) }
+            } else if byte == 0x0A {
                 if let event = read(line) { events.append(event) }
                 line.removeAll(keepingCapacity: true)
             } else if byte < 0x20 || byte > 0x7E || line.count >= Self.maxLineLength {
@@ -140,6 +165,8 @@ struct GuestWindowReader {
             line = []
             list = []
             expected = nil
+            copy = []
+            copyLeft = 0
         }
         return events
     }
@@ -173,6 +200,14 @@ struct GuestWindowReader {
             expected = nil
             list = []
             return .windows(whole)
+        case "copied":
+            guard display != nil, expected == nil, words.count == 2, let count = Self.number(words[1], 0...Self.maxCopyBytes)
+            else { return broken() }
+            guard count > 0 else { return .copied("") }
+            copyLeft = count
+            copy = []
+            copy.reserveCapacity(count)
+            return nil
         default:
             return nil // a word a newer window manager may say
         }
@@ -181,6 +216,23 @@ struct GuestWindowReader {
     private mutating func broken() -> GuestWindowEvent? {
         isBroken = true
         return nil
+    }
+
+    /// The bytes of a copy came whole: text, or the connection is broken.
+    /// What is no letter (but tabs and line ends) is taken out, so that
+    /// nothing in it does anything where the user pastes it: an escape
+    /// sequence would, in a terminal.
+    private mutating func copied() -> GuestWindowEvent? {
+        defer { copy = [] }
+        guard !copy.contains(0), let text = String(bytes: copy, encoding: .utf8) else { return broken() }
+        let kept = text.unicodeScalars.filter { scalar in
+            switch scalar.value {
+            case 0x09, 0x0A, 0x0D: return true
+            case 0..<0x20, 0x7F..<0xA0: return false
+            default: return true
+            }
+        }
+        return .copied(String(String.UnicodeScalarView(kept)))
     }
 
     /// Every popup is on a window of the list, by way of no more popups than may be, and never of itself.

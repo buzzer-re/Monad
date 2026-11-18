@@ -172,5 +172,54 @@ final class GuestWindowProtocolTests: XCTestCase {
         let keys = [GuestKey(code: 30, caps: true, symbols: [97, 65, 229, 197]), GuestKey(code: 42, caps: false, symbols: [65505])]
         XCTAssertEqual(GuestWindowCommand.keys(keys).text, "keys 2\nk 30 1 97 65 229 197\nk 42 0 65505 0 0 0\n")
         XCTAssertEqual(GuestWindowCommand.keys([]).text, "", "no table is not said at all")
+        XCTAssertEqual(GuestWindowCommand.copy.text, "copy\n")
+        XCTAssertEqual(GuestWindowCommand.paste("héllo\nx").text, "paste 8\nhéllo\nx", "its bytes counted, and as they are")
+        XCTAssertEqual(GuestWindowCommand.paste("").text, "paste 0\n")
+        XCTAssertEqual(GuestWindowCommand.paste(String(repeating: "x", count: GuestClipboard.maxPaste + 1)).text, "",
+                       "more than the window manager takes is not said at all (it would end the connection)")
+    }
+
+    /// What the user copied in the VM with ⌘C: a line saying how many
+    /// bytes, then the bytes as they are, newlines and all, and after them
+    /// lines again.
+    func testACopyIsRead() {
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &reader)
+        XCTAssertEqual(read("copied 12\nfor\nthe Mac\twindows 1 0\nend\n", into: &reader), [.copied("for\nthe Mac\t"), .windows([])])
+        XCTAssertEqual(read("copied 0\n", into: &reader), [.copied("")], "a copy the Mac cannot have: it is told there was one")
+        var events: [GuestWindowEvent] = []
+        for byte in "copied 5\ncafé\ncopied 2\nok".utf8 { events += reader.feed(Data([byte])) }
+        XCTAssertEqual(events, [.copied("café"), .copied("ok")], "cut anywhere, also inside a letter")
+        // What would do something where it is pasted (an escape sequence ending a terminal's paste, say) is taken out.
+        XCTAssertEqual(read("copied 14\na\u{1B}[201~b\r\n\tc\u{7F}\u{08}", into: &reader), [.copied("a[201~b\r\n\tc")])
+        XCTAssertFalse(reader.isBroken)
+    }
+
+    func testACopyThatDoesNotFitBreaksTheConnection() {
+        let hello = "monad-wm 1 1920 1200\n"
+        let broken: [(String, [UInt8])] = [
+            ("more than the Mac takes", Array("copied \(GuestWindowReader.maxCopyBytes + 1)\n".utf8)),
+            ("bytes that are no text", Array("copied 2\n".utf8) + [0xFF, 0xFE]),
+            ("a letter cut short", Array("copied 1\n".utf8) + [0xC3]),
+            ("a NUL", Array("copied 3\na".utf8) + [0, 0x62]),
+            ("no count", Array("copied\n".utf8)),
+            ("two counts", Array("copied 1 2\n".utf8)),
+            ("a count written oddly", Array("copied 05\n".utf8)),
+            ("a negative count", Array("copied -1\n".utf8)),
+            ("inside a list of windows", Array("windows 1 1\ncopied 1\nx".utf8)),
+        ]
+        for (why, bytes) in broken {
+            var reader = GuestWindowReader()
+            let events = reader.feed(Data(hello.utf8) + Data(bytes))
+            XCTAssertTrue(reader.isBroken, why)
+            XCTAssertEqual(events.count, 1, why)
+        }
+        var reader = GuestWindowReader()
+        XCTAssertEqual(reader.feed(Data("copied 1\nx".utf8)), [], "before it said what it is")
+        XCTAssertTrue(reader.isBroken)
+        // The most there may be is read, and held in no more memory than that.
+        reader = GuestWindowReader()
+        let most = String(repeating: "y", count: GuestWindowReader.maxCopyBytes)
+        XCTAssertEqual(reader.feed(Data((hello + "copied \(most.utf8.count)\n" + most).utf8)).last, .copied(most))
     }
 }
