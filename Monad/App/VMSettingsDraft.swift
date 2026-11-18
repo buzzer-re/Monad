@@ -77,9 +77,9 @@ struct VMSettingsDraft {
     }
 
     /// Display, on or off (it applies at the next start). A display with
-    /// nothing set up to show on it shows nothing, so the App windows
-    /// profile is chosen with it where it can be set up (`offered`: the
-    /// profiles there are for this VM's distribution), and taken back with it.
+    /// nothing set up to show on it shows nothing, so the Desktop profile
+    /// is chosen with it where it can be set up (`offered`: the profiles
+    /// there are for this VM's distribution), and taken back with it.
     mutating func setDisplay(_ on: Bool, offered: [String]) {
         config.display = on
         displayAddedProfile = Self.displayChanged(to: on, profiles: &config.profiles, offered: offered, addedBefore: displayAddedProfile)
@@ -224,31 +224,32 @@ struct VMSettingsDraft {
 
     /// A Linux VM's display (display), in the New VM sheet and the VM's
     /// settings.
-    static let displayDetail = "A display, a keyboard and a pointer for the VM, for a desktop and programs with windows: its ⋯ menu's Open Desktop shows it in a window on this Mac. What is on it is drawn by the VM's CPUs (Apple passes no GPU to a Linux VM). Off: the VM has none of the three devices. Applies at the next start."
+    static let displayDetail = "A display, a keyboard and a pointer for the VM, for a desktop: its ⋯ menu's Open Desktop shows it in a window on this Mac. What is on it is drawn by the VM's CPUs (Apple passes no GPU to a Linux VM). Off: the VM has none of the three devices. Programs as windows of their own need none of them. Applies at the next start."
 
-    /// The profiles that put something on a Linux VM's display: each
-    /// program as a window on the Mac, or a whole desktop in one window.
-    static let displayProfiles = ["app-windows", "desktop"]
+    /// The profile that puts something on a Linux VM's display: a desktop,
+    /// in one window. (The VM's programs as windows of their own, the App
+    /// windows profile, need no display.)
+    static let displayProfile = "desktop"
 
-    static let displayProfileAdded = "The App windows profile was added with it: the VM's programs then open as windows on this Mac, and its ⋯ menu lists them under Apps. For a whole desktop in one window, choose the Desktop profile instead."
-    static let displayNeedsProfile = "Nothing is set up to show on the display. The App windows profile opens the VM's programs as windows on this Mac; the Desktop profile gives a whole desktop in one window (both for distributions with apt)."
+    static let displayProfileAdded = "The Desktop profile was added with it: the VM then has a desktop, which its ⋯ menu's Open Desktop shows in a window on this Mac. Programs as windows of their own (the App windows profile) need no display."
+    static let displayNeedsProfile = "Nothing is set up to show on the display. The Desktop profile gives the VM a desktop (for distributions with apt). Programs as windows of their own (the App windows profile) need no display."
 
-    /// A display with neither profile shows nothing.
+    /// A display without the profile shows nothing.
     static func displayLacksProfile(display: Bool, profiles: [String]) -> Bool {
-        display && Set(profiles).isDisjoint(with: displayProfiles)
+        display && !profiles.contains(displayProfile)
     }
 
     /// Display was turned on or off. On, with nothing chosen to show on
-    /// it: the App windows profile is added where it can be set up
+    /// it: the Desktop profile is added where it can be set up
     /// (`offered`), and true says so. Off: what was added for it
     /// (`addedBefore`) goes again; what the user chose stays.
     static func displayChanged(to on: Bool, profiles: inout [String], offered: [String], addedBefore: Bool) -> Bool {
         if on {
-            guard displayLacksProfile(display: true, profiles: profiles), offered.contains("app-windows") else { return false }
-            profiles.append("app-windows")
+            guard displayLacksProfile(display: true, profiles: profiles), offered.contains(displayProfile) else { return false }
+            profiles.append(displayProfile)
             return true
         }
-        if addedBefore { profiles.removeAll { $0 == "app-windows" } }
+        if addedBefore { profiles.removeAll { $0 == displayProfile } }
         return false
     }
 
@@ -257,7 +258,7 @@ struct VMSettingsDraft {
     static func displayNote(display: Bool, profiles: [String], added: Bool) -> String? {
         guard display else { return nil }
         if displayLacksProfile(display: true, profiles: profiles) { return displayNeedsProfile }
-        return added && profiles.contains("app-windows") ? displayProfileAdded : nil
+        return added ? displayProfileAdded : nil
     }
 
     // MARK: Forwards

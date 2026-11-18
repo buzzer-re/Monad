@@ -168,8 +168,8 @@ struct NewVMForm {
     }
 
     /// Display, on or off. A display with nothing set up to show on it
-    /// shows nothing, so the App windows profile is ticked with it where
-    /// it can be set up, and unticked again with it.
+    /// shows nothing, so the Desktop profile is ticked with it where it
+    /// can be set up, and unticked again with it.
     mutating func setDisplay(_ on: Bool) {
         display = on
         displayAddedProfile = VMSettingsDraft.displayChanged(to: on, profiles: &chosenProfiles,

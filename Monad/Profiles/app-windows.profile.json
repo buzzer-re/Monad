@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "app-windows",
   "name": "App windows",
-  "summary": "For a VM with a display: its programs open as windows on the Mac. Builds Monad's window manager in the VM, and adds a terminal (foot) to start with.",
+  "summary": "The VM's programs open as windows on the Mac, each a window of its own: no display needed. Builds Monad's window manager in the VM, and adds a terminal (foot) to start with.",
   "steps": [
     {
       "id": "compiler",
@@ -23,7 +23,7 @@
     {
       "id": "window-manager",
       "title": "Monad's window manager",
-      "script": "# The VM's programs as windows on the Mac (the VM's Display setting): Monad's\n# own window manager, built here from the sources Monad's installer puts in a\n# VM whose Display is on, with the VM's C compiler (Monad ships no program\n# for Linux it did not build). Its service takes the display in place of the\n# Desktop profile's session. What programs started from a tab need to find it\n# (/etc/profile.d/monad-windows.sh) comes from Monad's installer too.\nlib=\"$MONAD_ROOT/usr/local/lib/monad\"\n# The installer runs at each boot, about when this does: it may still be at it.\nn=0\nwhile [ ! -e \"$lib/wm-build\" ] && [ \"$n\" -lt \"${MONAD_WM_WAIT:-60}\" ]; do\n    sleep 1\n    n=$((n + 1))\ndone\nif [ ! -e \"$lib/wm-build\" ]; then\n    echo \"Monad has put no window manager in this VM. It does for a VM with a display: turn on Display in the VM's settings in Monad, restart it, and set this profile up again.\" >&2\n    exit 69\nfi\nsh \"$lib/wm-build\" \"$lib\" || exit $?\nsystemctl daemon-reload\n# One of the two has the display.\nsystemctl disable --now monad-display.service 2>/dev/null || true\nsystemctl enable monad-wm.service\n# A VM without a display (Display is off in its settings) keeps it for when it has one.\nif [ -e \"$MONAD_ROOT/dev/dri/card0\" ]; then systemctl restart monad-wm.service; fi\n"
+      "script": "# The VM's programs as windows on the Mac: Monad's own window manager, built\n# here from the sources Monad's installer puts in a Linux VM, with the VM's C\n# compiler (Monad ships no program for Linux it did not build). It takes no\n# display: the windows' pixels go to the Mac over Monad's own channel, so it\n# runs beside the Desktop profile's session too. What programs started from a\n# tab need to find it (/etc/profile.d/monad-windows.sh) comes from Monad's\n# installer too.\nlib=\"$MONAD_ROOT/usr/local/lib/monad\"\n# The installer runs at each boot, about when this does: it may still be at it.\nn=0\nwhile [ ! -e \"$lib/wm-build\" ] && [ \"$n\" -lt \"${MONAD_WM_WAIT:-60}\" ]; do\n    sleep 1\n    n=$((n + 1))\ndone\nif [ ! -e \"$lib/wm-build\" ]; then\n    echo \"Monad has put no window manager in this VM yet. It does when the VM starts: restart it, and set this profile up again.\" >&2\n    exit 69\nfi\nsh \"$lib/wm-build\" \"$lib\" || exit $?\nsystemctl daemon-reload\nsystemctl enable monad-wm.service\nsystemctl restart monad-wm.service\n"
     }
   ]
 }

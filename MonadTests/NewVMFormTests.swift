@@ -221,7 +221,7 @@ final class NewVMFormTests: XCTestCase {
         XCTAssertEqual(f.release, "26.04")
     }
 
-    /// Display in the New VM sheet: turned on, the App windows profile is
+    /// Display in the New VM sheet: turned on, the Desktop profile is
     /// ticked with it (a display with nothing to show on it shows nothing),
     /// and the sheet says so.
     func testDisplayTicksTheProfileThatShowsOnIt() throws {
@@ -229,26 +229,32 @@ final class NewVMFormTests: XCTestCase {
         f.setProfiles(try ProfileCatalog.bundled())
         XCTAssertNil(f.displayNote)
         f.setDisplay(true)
-        XCTAssertTrue(f.display && f.isChosen("app-windows"))
+        XCTAssertTrue(f.display && f.isChosen("desktop"))
         XCTAssertEqual(f.displayNote, VMSettingsDraft.displayProfileAdded)
-        XCTAssertEqual(f.apply(to: InstanceConfig.defaults(name: "box")).profiles, ["app-windows"])
+        XCTAssertEqual(f.apply(to: InstanceConfig.defaults(name: "box")).profiles, ["desktop"])
         f.setDisplay(false)
-        XCTAssertFalse(f.display || f.isChosen("app-windows"))
+        XCTAssertFalse(f.display || f.isChosen("desktop"))
         XCTAssertNil(f.displayNote)
 
-        // The user ticked Desktop first: Display adds nothing to it.
+        // The user ticked Desktop first: Display adds nothing to it, and leaves it.
         f.toggleProfile("desktop")
         f.setDisplay(true)
-        XCTAssertFalse(f.isChosen("app-windows"))
         XCTAssertNil(f.displayNote)
         f.setDisplay(false)
         XCTAssertTrue(f.isChosen("desktop"))
 
-        // Fedora (dnf): the profile cannot be set up there, and the sheet says what is missing.
+        // App windows is chosen without a display, and brings none.
         f.toggleProfile("desktop")
+        f.toggleProfile("app-windows")
+        XCTAssertFalse(f.display)
+        XCTAssertNil(f.displayNote)
+        XCTAssertFalse(f.apply(to: InstanceConfig.defaults(name: "box")).display)
+        f.toggleProfile("app-windows")
+
+        // Fedora (dnf): the profile cannot be set up there, and the sheet says what is missing.
         f.distro = "fedora"
         f.setDisplay(true)
-        XCTAssertFalse(f.isChosen("app-windows"))
+        XCTAssertFalse(f.isChosen("desktop"))
         XCTAssertEqual(f.displayNote, VMSettingsDraft.displayNeedsProfile)
     }
 }

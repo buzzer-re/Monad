@@ -25,6 +25,8 @@ struct GuestApp: Codable, Equatable, Sendable, Identifiable {
 }
 
 enum GuestApps {
+    /// The profile that sets up what shows a VM's programs as windows on the Mac.
+    static let profile = "app-windows"
     static let path = "/usr/local/lib/monad/apps"
     static let maxApps = 256
     static let maxListBytes = 256 * 1024

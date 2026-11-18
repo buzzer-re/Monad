@@ -1253,10 +1253,10 @@ final class VMInstance: ObservableObject, Identifiable {
                     r = try await self.sshSteadily(MacSetup.agentInstallCommand, stdin: Data(try MacSetup.guestInstallScript().utf8),
                                                    timeout: 60)
                 } else {
-                    // A VM with a display gets its window manager too (docs/DISPLAY.md).
+                    // With Monad's window manager, off until the App windows profile turns it on (docs/WINDOWS.md).
                     let script = try CloudInit.guestInstallScript(guest: guest, lima: self.config.attached != nil,
                                                                   bootMessages: self.env.bootMessages(),
-                                                                  windowsUser: self.config.display ? self.config.user : nil)
+                                                                  windowsUser: self.config.user)
                     r = try await self.sshSteadily(CloudInit.guestInstallCommand, stdin: Data(script.utf8), timeout: 60)
                 }
                 guard self.state == .ready else { return }
@@ -1265,7 +1265,7 @@ final class VMInstance: ObservableObject, Identifiable {
                     Log.vm.notice("\(self.name, privacy: .public): guest agent installed")
                     self.agentAvailable = true
                     self.connectAgent()
-                    if self.config.display, self.config.guestOS == .linux, CloudInit.saysWindows(r.stdoutString) {
+                    if self.config.guestOS == .linux, CloudInit.saysWindows(r.stdoutString) {
                         self.connectGuestWindows()
                     }
                 } else {
@@ -1402,7 +1402,7 @@ final class VMInstance: ObservableObject, Identifiable {
             var delay: TimeInterval = 1
             while let self, !Task.isCancelled, self.state == .ready {
                 guard let m = self.machine, let presenter = self.guestWindowPresenter ?? m.guestWindowPresenter(title: self.name) else {
-                    self.debug("windows: this VM has no display to show them from")
+                    self.debug("windows: this machine shows no windows")
                     return
                 }
                 self.guestWindowPresenter = presenter
@@ -2166,11 +2166,11 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     }
 
-    /// A profile may have turned the guest's window manager on (the Windows
-    /// profile does) after the installer asked: a VM with a display that
-    /// is not connected to one asks again, and dials when there is one.
+    /// A profile may have turned the guest's window manager on (the App
+    /// windows profile does) after the installer asked: a Linux VM that is
+    /// not connected to one asks again, and dials when there is one.
     private func askForGuestWindows() {
-        guard state == .ready, config.display, config.guestOS == .linux, guestWindowsTask == nil else { return }
+        guard state == .ready, config.guestOS == .linux, guestWindowsTask == nil else { return }
         Task { [weak self] in
             guard let self, let answer = try? await self.ssh(CloudInit.windowsCheckCommand, timeout: 30),
                   self.state == .ready, self.guestWindowsTask == nil, CloudInit.saysWindows(answer.stdoutString) else { return }
@@ -2185,9 +2185,7 @@ final class VMInstance: ObservableObject, Identifiable {
     /// (GuestApps). Their icons are kept in the VM's folder, each asked of
     /// the guest once.
     func guiApps() async throws -> [GuestApp] {
-        guard config.guestOS == .linux, config.display else {
-            throw MonadError("\(name) has no display for programs to open windows on. Turn on Display in its settings.")
-        }
+        guard config.guestOS == .linux else { throw MonadError("\(name) is no Linux VM: its programs are on its own desktop.") }
         guard state == .ready else { throw MonadError("\(name) is not running. Start it to see its programs.") }
         let listed = try await ssh(GuestApps.listCommand, timeout: 30)
         guard listed.status == 0 else {

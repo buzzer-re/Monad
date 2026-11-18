@@ -755,10 +755,13 @@ private struct VMRow: View {
                         .disabled(vm.isRunning || vm.state.isPreparing)
                         .help(vm.isRunning ? "Stop it first: its disk is in use while it runs." : "")
                     Divider()
-                } else if vm.config.display {
+                } else {
+                    // Its programs as windows of their own need no display; its desktop does.
                     GuestAppsMenu(vm: vm, host: host, onError: onError)
-                    Button("Open Desktop") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
-                        .disabled(!vm.isRunning)
+                    if vm.config.display {
+                        Button("Open Desktop") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
+                            .disabled(!vm.isRunning)
+                    }
                     Divider()
                 }
                 if vm.config.guestOS == .linux, vm.config.attached == nil, !vm.config.ephemeral {
@@ -798,9 +801,9 @@ private struct VMRow: View {
         .controlSize(.large)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        // A Linux VM with a display, once it runs: its programs are asked for, for its Apps menu.
-        .task(id: vm.state == .ready && vm.config.display && vm.config.guestOS == .linux) {
-            if vm.state == .ready, vm.config.display, vm.config.guestOS == .linux {
+        // A Linux VM, once it runs: its programs are asked for, for its Apps menu.
+        .task(id: vm.state == .ready && vm.config.guestOS == .linux) {
+            if vm.state == .ready, vm.config.guestOS == .linux {
                 GuestAppsStore.shared.load(vm.name, host: host)
             } else {
                 GuestAppsStore.shared.forget(vm.name)

@@ -518,29 +518,34 @@ final class VMSettingsDraftTests: XCTestCase {
     }
 
     /// A display with nothing set up to show on it shows nothing: turning
-    /// Display on adds the App windows profile, says so, and takes it back
-    /// when Display is turned off again without it having been wanted.
+    /// Display on adds the Desktop profile, says so, and takes it back
+    /// when Display is turned off again without it having been wanted. The
+    /// App windows profile is no part of it: programs as windows of their
+    /// own need no display.
     func testTurningDisplayOnAddsWhatShowsOnIt() {
+        let offered = ["agentic", "app-windows", "desktop"]
         var profiles = ["agentic"]
-        var added = VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: ["agentic", "app-windows", "desktop"], addedBefore: false)
+        var added = VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: offered, addedBefore: false)
         XCTAssertTrue(added)
-        XCTAssertEqual(profiles, ["agentic", "app-windows"])
+        XCTAssertEqual(profiles, ["agentic", "desktop"])
         XCTAssertEqual(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: added), VMSettingsDraft.displayProfileAdded)
         // Off again: what was added for it goes; what the user chose stays.
-        added = VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: ["agentic", "app-windows", "desktop"], addedBefore: true)
+        added = VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: offered, addedBefore: true)
         XCTAssertFalse(added)
         XCTAssertEqual(profiles, ["agentic"])
         XCTAssertNil(VMSettingsDraft.displayNote(display: false, profiles: profiles, added: false))
 
-        // The user has chosen what shows on it already: nothing is added, and nothing said.
-        for chosen in ["desktop", "app-windows"] {
-            profiles = [chosen]
-            XCTAssertFalse(VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: ["app-windows", "desktop"], addedBefore: false))
-            XCTAssertEqual(profiles, [chosen])
-            XCTAssertNil(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: false))
-            XCTAssertFalse(VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: ["app-windows", "desktop"], addedBefore: false))
-            XCTAssertEqual(profiles, [chosen], "the user's own choice is not taken back")
-        }
+        // The user has chosen the desktop already: nothing is added, and nothing said.
+        profiles = ["desktop"]
+        XCTAssertFalse(VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: offered, addedBefore: false))
+        XCTAssertEqual(profiles, ["desktop"])
+        XCTAssertNil(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: false))
+        XCTAssertFalse(VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: offered, addedBefore: false))
+        XCTAssertEqual(profiles, ["desktop"], "the user's own choice is not taken back")
+        // App windows puts nothing on the display: a display beside it still wants its desktop.
+        profiles = ["app-windows"]
+        XCTAssertTrue(VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: offered, addedBefore: false))
+        XCTAssertEqual(profiles, ["app-windows", "desktop"])
 
         // A distribution the profile cannot be set up on (no apt): nothing to add, and that is said.
         profiles = []
@@ -550,6 +555,6 @@ final class VMSettingsDraftTests: XCTestCase {
         // The user unticked what was added: said as well.
         XCTAssertEqual(VMSettingsDraft.displayNote(display: true, profiles: ["agentic"], added: true), VMSettingsDraft.displayNeedsProfile)
         XCTAssertFalse(VMSettingsDraft.displayLacksProfile(display: false, profiles: []))
-        XCTAssertTrue(VMSettingsDraft.displayLacksProfile(display: true, profiles: ["server"]))
+        XCTAssertTrue(VMSettingsDraft.displayLacksProfile(display: true, profiles: ["server", "app-windows"]))
     }
 }

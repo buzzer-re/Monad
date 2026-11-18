@@ -328,10 +328,11 @@ final class ProfileScriptTests: XCTestCase {
     }
 
     /// The App windows profile's step: Monad's window manager is built from
-    /// the sources Monad's installer put in the VM and its service turned
-    /// on, in place of the Desktop profile's session; programs started from
-    /// a tab then find it. Without the sources (the VM's Display is off) it
-    /// says what to do.
+    /// the sources Monad's installer put in the VM, and its service turned
+    /// on and started; programs started from a tab then find it. It needs
+    /// no display, and leaves the Desktop profile's session alone. Without
+    /// the sources (the VM has not started with this Monad yet) it says
+    /// what to do.
     func testTheWindowManagerIsBuiltAndTurnedOn() throws {
         try makeStubs()
         let fm = FileManager.default
@@ -344,7 +345,7 @@ final class ProfileScriptTests: XCTestCase {
 
         var r = try runScript(impatient + (try render(p)))
         XCTAssertNotEqual(r.status, 0)
-        XCTAssertTrue(r.output.contains("turn on Display in the VM's settings in Monad, restart it"), r.output)
+        XCTAssertTrue(r.output.contains("It does when the VM starts: restart it, and set this profile up again."), r.output)
         XCTAssertTrue(logLines().filter { $0.hasPrefix("systemctl") }.isEmpty, "nothing was turned on")
 
         // The installer was here: its build script, which this step runs on the folder it is in.
@@ -355,16 +356,10 @@ final class ProfileScriptTests: XCTestCase {
         r = try runScript(impatient + (try render(p)))
         XCTAssertEqual(r.status, 0, r.output)
         XCTAssertEqual(logLines().filter { $0.hasPrefix("wm-build") || $0.hasPrefix("systemctl") },
-                       ["wm-build \(lib.path)", "systemctl daemon-reload", "systemctl disable --now monad-display.service",
-                        "systemctl enable monad-wm.service"], "not started: this VM has no display")
+                       ["wm-build \(lib.path)", "systemctl daemon-reload", "systemctl enable monad-wm.service",
+                        "systemctl restart monad-wm.service"], "started at once, display or none; the desktop's session is left alone")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("etc/profile.d/monad-windows.sh").path),
                        "what programs need to find the window manager comes from the installer, as this Monad has it")
-
-        // With a display the window manager starts at once.
-        try fm.createDirectory(at: root.appendingPathComponent("dev/dri"), withIntermediateDirectories: true)
-        try Data().write(to: root.appendingPathComponent("dev/dri/card0"))
-        XCTAssertEqual(try runScript(impatient + (try render(p))).status, 0)
-        XCTAssertEqual(logLines().last, "systemctl restart monad-wm.service")
 
         // A build that fails is the step's failure, and nothing is turned on.
         try Data().write(to: lib.appendingPathComponent("fails"))

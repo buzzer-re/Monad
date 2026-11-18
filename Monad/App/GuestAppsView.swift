@@ -120,8 +120,8 @@ struct GuestAppsMenu: View {
             let lists = GuestApps.arrange(listing.apps, favorites: store.favorites(of: vm.name))
             if vm.state != .ready {
                 Button("Start the VM to see its programs") {}.disabled(true)
-            } else if VMSettingsDraft.displayLacksProfile(display: vm.config.display, profiles: vm.config.profiles) {
-                Button("Nothing is set up to show programs yet") {}.disabled(true)
+            } else if !vm.config.profiles.contains(GuestApps.profile) {
+                Button("Programs open as windows on this Mac with the App windows profile") {}.disabled(true)
                 Button("Add the App Windows Profile") { addProfile() }
             } else if listing.apps.isEmpty {
                 Button(listing.loading ? "Looking for programs…" : listing.error ?? "No programs with windows were found") {}.disabled(true)
@@ -152,13 +152,12 @@ struct GuestAppsMenu: View {
         }
     }
 
-    /// The VM has a display and nothing to show on it: the profile that
-    /// shows its programs as windows is added to its settings, which sets
-    /// it up at once in a running VM.
+    /// The profile that shows the VM's programs as windows is added to
+    /// its settings, which sets it up at once in a running VM.
     private func addProfile() {
         var config = vm.config
-        guard !config.profiles.contains("app-windows") else { return }
-        config.profiles.append("app-windows")
+        guard !config.profiles.contains(GuestApps.profile) else { return }
+        config.profiles.append(GuestApps.profile)
         Task { @MainActor in
             do { try await host.update(config) } catch { onError(HostAgent.describe(error)) }
         }

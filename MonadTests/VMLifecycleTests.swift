@@ -800,9 +800,10 @@ final class VMLifecycleTests: XCTestCase {
 
     // MARK: A Linux VM's programs as windows
 
-    /// A VM with a display, whose installer says `windows` when the guest
-    /// has Monad's window manager.
-    private func windowsVM(display: Bool = true, installer: String = "windows-ok\nagent-ok\n") throws -> VMInstance {
+    /// A VM whose installer says `windows` when the guest has Monad's window
+    /// manager. It needs no display for it: the windows' pixels come over
+    /// Monad's channel.
+    private func windowsVM(display: Bool = false, installer: String = "windows-ok\nagent-ok\n") throws -> VMInstance {
         runner.setHandler { [ssh] call in
             if let r = ssh!.handle(call) { return r }
             if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
@@ -861,7 +862,7 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertEqual(windowDials, dials, "a stopped VM is not dialed")
     }
 
-    /// Only a guest that has the window manager is dialed, and only when the VM has a 0 0 0 display.
+    /// Only a guest that has the window manager is dialed.
     func testAGuestWithoutTheWindowManagerIsNotDialed() async throws {
         var vm = try windowsVM(installer: "agent-ok\n")
         vm.start()
@@ -871,11 +872,10 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertTrue(factory.machine.guestWindows.titles.isEmpty)
         await vm.stop()
 
-        vm = try windowsVM(display: false)
+        // With a display or without one: the windows need none.
+        vm = try windowsVM(display: true)
         vm.start()
-        await assertEventually { vm.agentAvailable }
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(windowDials, 0, "no display: nothing to show windows of")
+        await assertEventually { self.windowDials >= 1 }
     }
 
     /// A window manager that says nonsense is hung up on, shows nothing,
@@ -959,9 +959,10 @@ final class VMLifecycleTests: XCTestCase {
         await vm.stop()
     }
 
-    /// The installer of a VM with a display carries the window manager's
-    /// sources, for the VM's user; one without a display carries none.
-    func testOnlyAVMWithADisplayIsSentTheWindowManager() async throws {
+    /// The installer of a Linux VM carries the window manager's sources,
+    /// for the VM's user, whether the VM has a display or not: the App
+    /// windows profile can then be set up in it at any time.
+    func testALinuxVMIsSentTheWindowManager() async throws {
         var vm = try windowsVM(installer: "agent-ok\n")
         vm.start()
         await assertEventually { vm.agentAvailable }
@@ -970,11 +971,11 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertTrue(payload.contains(Data(try CloudInit.windowManagerUnit(user: vm.config.user).utf8).base64EncodedString()))
         await vm.stop()
 
-        vm = try windowsVM(display: false, installer: "agent-ok\n")
+        vm = try windowsVM(display: true, installer: "agent-ok\n")
         vm.start()
         await assertEventually { vm.agentAvailable && self.agentInstalls.count == 2 }
         payload = String(decoding: try XCTUnwrap(agentInstalls.last?.stdin), as: UTF8.self)
-        XCTAssertFalse(payload.contains("monad-wm"))
+        XCTAssertTrue(payload.contains("install_file /usr/local/lib/monad/wm/mwm_main.c 0644 "))
     }
 
     /// The Windows profile turns the window manager on after the installer
@@ -993,7 +994,7 @@ final class VMLifecycleTests: XCTestCase {
             }
             return .ok()
         }
-        let vm = try makeInstance(profiles: ProfileCatalog(builtIn: [markProfile], custom: [])) { $0.display = true }
+        let vm = try makeInstance(profiles: ProfileCatalog(builtIn: [markProfile], custom: []))
         vm.start()
         await assertEventually { vm.agentAvailable }
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -1003,7 +1004,7 @@ final class VMLifecycleTests: XCTestCase {
         await assertEventually { vm.profileRuns.first?.state == .done }
         await assertEventually { asked == 1 && self.windowDials >= 1 }
 
-        // Already connected, or no display: it is not asked.
+        // Already connected: it is not asked.
         try vm.runProfiles(["mark"])
         await assertEventually { self.profileCalls.count == 2 && vm.profileRuns.first?.state == .done }
         try await Task.sleep(nanoseconds: 50_000_000)
