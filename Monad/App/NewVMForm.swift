@@ -52,6 +52,8 @@ struct NewVMForm {
     var firewall = VMFirewall()
     /// Images in the terminal: off unless chosen.
     var inlineImages = false
+    /// A Linux VM's display, keyboard and pointer: off unless chosen.
+    var display = false
 
     init(catalog: DistroCatalog) {
         self.catalog = catalog
@@ -189,6 +191,7 @@ struct NewVMForm {
         c.networks = network.map { [NetworkAttachment(network: $0, macAddress: nil)] } ?? []
         c.firewall = firewall
         c.inlineImages = inlineImages
+        c.display = display && !isMac
         let supported = Set(profileChoices.filter(\.supported).map(\.id))
         c.profiles = chosenProfiles.filter { supported.contains($0) }
         c.restoreImage = isMac && restoreImage != Self.latestRestoreImage ? restoreImage : nil

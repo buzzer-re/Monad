@@ -169,6 +169,27 @@ final class ConfigV2Tests: XCTestCase {
         XCTAssertTrue(try InstanceConfig.decode(c.encoded()).inlineImages)
     }
 
+    /// A Linux VM's display: off by default (the VM then has no graphics,
+    /// keyboard or pointer device at all), written only when on, and not a
+    /// macOS VM's setting (it always has its own).
+    func testADisplayIsOffUnlessChosenAndForLinuxOnly() throws {
+        var c = valid()
+        XCTAssertFalse(c.display)
+        XCTAssertFalse(String(decoding: try c.encoded(), as: UTF8.self).contains("display"))
+        c.display = true
+        XCTAssertNoThrow(try c.validate(maxCPUs: 8, maxMemoryGiB: 16))
+        XCTAssertTrue(String(decoding: try c.encoded(), as: UTF8.self).contains("\"display\" : true"))
+        XCTAssertTrue(try InstanceConfig.decode(c.encoded()).display)
+        var mac = valid()
+        mac.guestOS = .macos
+        mac.memoryGiB = 8
+        mac.diskGiB = 64
+        mac.display = true
+        XCTAssertThrowsError(try mac.validate(maxCPUs: 8, maxMemoryGiB: 16)) { error in
+            XCTAssertEqual(error.localizedDescription, "A macOS VM always has its display: the Display setting is for Linux VMs.")
+        }
+    }
+
     /// Every string field has a rule (F-08): `user` and the rest reach
     /// ssh_config, cloud-init and scripts, where a newline adds lines.
     func testEveryFieldIsValidated() {

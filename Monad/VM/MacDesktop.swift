@@ -1,6 +1,7 @@
 //
-//  MacDesktop.swift — a macOS VM's desktop: a window on its display, for
-//  what needs a person (the developer tools' installer, a system prompt).
+//  MacDesktop.swift — a VM's desktop: a window on its display. A macOS
+//  VM's, for what needs a person (the developer tools' installer, a system
+//  prompt), and a Linux VM's whose Display is on (LinuxDisplay.swift).
 //  Shown by the process that runs the VM (MonadHost, which is otherwise
 //  never on screen), opened from the VM's ⋯ menu; closing the window
 //  leaves the VM running.
@@ -21,11 +22,16 @@ final class MacDesktop {
     /// Machines Monad is typing into (recovery): their desktop only watches.
     private var driven: Set<ObjectIdentifier> = []
     private var closing: [ObjectIdentifier: NSObjectProtocol] = [:]
+    /// Told when a window comes to a screen with another scale.
+    private var scaling: [ObjectIdentifier: NSObjectProtocol] = [:]
 
     /// Opens (or brings forward) the desktop of `machine`, whose queue is
-    /// its own: the view reaches it through Apple's adaptor.
-    func show(_ machine: VZVirtualMachine, title: String, owner: ObjectIdentifier, actions: [DesktopAction] = [],
-              paste: (@MainActor (String) async -> Void)? = nil) throws {
+    /// its own: the view reaches it through Apple's adaptor. `kind`: what
+    /// the title says after the VM's name. `scale` is told the window's
+    /// screen scale (2 on a Retina screen) now and whenever it changes.
+    func show(_ machine: VZVirtualMachine, title: String, kind: String = "macOS Desktop", owner: ObjectIdentifier,
+              actions: [DesktopAction] = [], paste: (@MainActor (String) async -> Void)? = nil,
+              scale: (@MainActor (Int) -> Void)? = nil) throws {
         NSApplication.shared.setActivationPolicy(.accessory)
         if let window = windows[owner] {
             bringForward(window)
@@ -42,7 +48,7 @@ final class MacDesktop {
         view.capturesSystemKeys = true
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "\(title) — macOS Desktop"
+        window.title = "\(title) — \(kind)"
         window.contentView = view
         if !actions.isEmpty { window.addTitlebarAccessoryViewController(Self.buttons(actions)) }
         window.isReleasedWhenClosed = false
@@ -54,6 +60,14 @@ final class MacDesktop {
             MainActor.assumeIsolated { self?.forget(owner) }
         }
         bringForward(window)
+        if let scale {
+            scale(Int(window.backingScaleFactor.rounded()))
+            scaling[owner] = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeBackingPropertiesNotification, object: window, queue: .main
+            ) { [weak window] _ in
+                MainActor.assumeIsolated { if let window { scale(Int(window.backingScaleFactor.rounded())) } }
+            }
+        }
     }
 
     /// The VM stopped: its window goes.
@@ -74,6 +88,7 @@ final class MacDesktop {
     private func forget(_ owner: ObjectIdentifier) {
         windows[owner] = nil
         if let observer = closing.removeValue(forKey: owner) { NotificationCenter.default.removeObserver(observer) }
+        if let observer = scaling.removeValue(forKey: owner) { NotificationCenter.default.removeObserver(observer) }
     }
 
     /// The actions as buttons at the right of the title bar.

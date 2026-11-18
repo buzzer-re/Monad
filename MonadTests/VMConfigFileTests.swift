@@ -121,6 +121,33 @@ final class VMConfigFileTests: XCTestCase {
         XCTAssertTrue(try VMConfigFile.read(try VMConfigFile.export(plain), on: mac()).macAccess.isEmpty)
     }
 
+    /// A display gives the guest three more devices of the Mac's to talk
+    /// to: a file does not bring it in unasked, and an edit that turns it
+    /// on says so.
+    func testADisplayStaysOutUnlessKeptAndIsConfirmedOnEdit() throws {
+        var c = full()
+        c.display = true
+        let imported = try VMConfigFile.read(try VMConfigFile.export(c), on: mac())
+        XCTAssertTrue(imported.macAccess.display)
+        XCTAssertTrue(imported.macAccess.lines.contains("A display, a keyboard and a pointer for the VM, shown in a window on this Mac"),
+                      "\(imported.macAccess.lines)")
+        XCTAssertFalse(imported.config(named: "web", keepingMacAccess: false).display)
+        XCTAssertTrue(imported.config(named: "web", keepingMacAccess: true).display)
+        var only = InstanceConfig.defaults(name: "gui")
+        only.distro = "debian"
+        only.display = true
+        XCTAssertFalse(try VMConfigFile.read(try VMConfigFile.export(only), on: mac()).macAccess.isEmpty)
+
+        c.display = false
+        let check = VMConfigFile.check(try edited(c) { $0["display"] = true }, against: c, on: mac())
+        XCTAssertEqual(check.problems, [])
+        XCTAssertEqual(check.changes, ["display"])
+        XCTAssertEqual(check.reachesIntoMac, ["A display, a keyboard and a pointer for the VM, shown in a window on this Mac"])
+        c.display = true
+        XCTAssertEqual(VMConfigFile.check(try edited(c) { $0["cpus"] = 2 }, against: c, on: mac()).reachesIntoMac, [],
+                       "one it already has needs no word")
+    }
+
     /// A forward through an SSH host passes the VM's firewall with the
     /// user's sign-in to a server: a file does not bring one in unasked, and
     /// a new one in edited settings is confirmed.

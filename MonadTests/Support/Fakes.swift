@@ -148,6 +148,8 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
     private(set) var desktops: [String] = []
     private(set) var desktopActions: [DesktopAction] = []
     private(set) var desktopPaste: (@MainActor (String) async -> Void)?
+    /// What the desktop window tells of its screen's scale.
+    var onDesktopScale: (@MainActor (Int) -> Void)?
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         desktops.append(title)
         desktopActions = actions

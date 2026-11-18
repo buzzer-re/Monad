@@ -491,14 +491,22 @@ static NSError *MNDNoInput(NSString *what) {
         vzc.consoleDevices = @[ console ];
     }
 
-    // A macOS guest's display, keyboard and pointer: its desktop, and
-    // recovery driven by Monad. A Linux guest has none.
+    // A display, keyboard and pointer: a macOS guest's desktop (and
+    // recovery driven by Monad), or a Linux guest's when its Display
+    // setting is on. Without it a Linux guest has none of the three.
     if (c.displayWidth > 0) {
-        VZMacGraphicsDeviceConfiguration *gfx = [[VZMacGraphicsDeviceConfiguration alloc] init];
-        gfx.displays = @[ [[VZMacGraphicsDisplayConfiguration alloc] initWithWidthInPixels:(NSInteger)c.displayWidth
-                                                                             heightInPixels:(NSInteger)c.displayHeight
-                                                                              pixelsPerInch:(NSInteger)c.displayPixelsPerInch] ];
-        vzc.graphicsDevices = @[ gfx ];
+        if (c.virtioDisplay) {
+            VZVirtioGraphicsDeviceConfiguration *gfx = [[VZVirtioGraphicsDeviceConfiguration alloc] init];
+            gfx.scanouts = @[ [[VZVirtioGraphicsScanoutConfiguration alloc] initWithWidthInPixels:(NSInteger)c.displayWidth
+                                                                                    heightInPixels:(NSInteger)c.displayHeight] ];
+            vzc.graphicsDevices = @[ gfx ];
+        } else {
+            VZMacGraphicsDeviceConfiguration *gfx = [[VZMacGraphicsDeviceConfiguration alloc] init];
+            gfx.displays = @[ [[VZMacGraphicsDisplayConfiguration alloc] initWithWidthInPixels:(NSInteger)c.displayWidth
+                                                                                 heightInPixels:(NSInteger)c.displayHeight
+                                                                                  pixelsPerInch:(NSInteger)c.displayPixelsPerInch] ];
+            vzc.graphicsDevices = @[ gfx ];
+        }
         vzc.keyboards = @[ [[VZUSBKeyboardConfiguration alloc] init] ];
         vzc.pointingDevices = @[ [[VZUSBScreenCoordinatePointingDeviceConfiguration alloc] init] ];
     }

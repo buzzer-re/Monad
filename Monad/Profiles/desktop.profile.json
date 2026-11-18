@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "desktop",
+  "name": "Desktop",
+  "summary": "For a VM with a display: a window manager (labwc) with Xwayland and a terminal, and gui to start programs on it.",
+  "steps": [
+    {
+      "id": "session-packages",
+      "title": "Window manager, Xwayland and a terminal",
+      "packages": {
+        "apt": [
+          "labwc",
+          "xwayland",
+          "foot",
+          "wl-clipboard",
+          "wlr-randr",
+          "fonts-dejavu-core",
+          "kbd"
+        ]
+      },
+      "commands": [
+        "labwc",
+        "foot",
+        "wlr-randr"
+      ]
+    },
+    {
+      "id": "session",
+      "title": "The session on the display",
+      "script": "# The session on the VM's display (the VM's Display setting): labwc, a window\n# manager, as the login user on tty7, started at boot when the VM has a\n# display. With it: a script that keeps the display the size its window on the\n# Mac gives it, and gui, which starts a program on the display from a tab.\nlib=\"$MONAD_ROOT/usr/local/lib/monad\"\nmkdir -p \"$lib\" \"$MONAD_ROOT/usr/local/bin\" \"$MONAD_ROOT/etc/systemd/system\"\ncat > \"$lib/display-follow\" <<'EOF'\n#!/bin/sh\n# Monad: the display takes the size the Mac gives it. When its window on the\n# Mac is resized, the kernel lists the new size first among the display's\n# modes; the window manager is told to use it, at the scale Monad left in\n# monad-display-scale (2 on a Retina screen). \"once\": now, and no more.\nr=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\nif [ -z \"$WAYLAND_DISPLAY\" ]; then\n    for s in \"$r\"/wayland-[0-9]*; do\n        case $s in *.lock) continue ;; esac\n        [ -S \"$s\" ] && WAYLAND_DISPLAY=${s##*/} && break\n    done\nfi\nexport XDG_RUNTIME_DIR=\"$r\" WAYLAND_DISPLAY\napply() {\n    for c in /sys/class/drm/card*-*; do\n        [ \"$(cat \"$c/status\" 2>/dev/null)\" = connected ] || continue\n        mode=$(head -n 1 \"$c/modes\" 2>/dev/null)\n        [ -n \"$mode\" ] || continue\n        out=${c##*/}\n        out=${out#card*-}\n        scale=$(cat \"$r/monad-display-scale\" 2>/dev/null)\n        case $scale in 1|2|3) ;; *) scale=1 ;; esac\n        # A custom mode: the window manager does not read the new size into its own list.\n        wlr-randr --output \"$out\" --custom-mode \"$mode\" --scale \"$scale\" >/dev/null 2>&1\n    done\n}\napply\n[ \"$1\" = once ] && exit 0\n# Ends with the window manager that started it (LABWC_PID), at the next change.\nudevadm monitor --kernel --subsystem-match=drm 2>/dev/null | while read -r line; do\n    if [ -n \"$LABWC_PID\" ] && ! kill -0 \"$LABWC_PID\" 2>/dev/null; then exit 0; fi\n    case $line in *change*) sleep 0.2; apply ;; esac\ndone\nEOF\nchmod 755 \"$lib/display-follow\"\ncat > \"$MONAD_ROOT/usr/local/bin/gui\" <<'EOF'\n#!/bin/sh\n# Monad: gui program [arguments] starts a program with windows on the VM's\n# display, from a tab. The VM's Open Desktop (in Monad) shows the display.\nif [ $# -eq 0 ]; then\n    echo \"usage: gui program [arguments]\" >&2\n    exit 64\nfi\nr=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\nWAYLAND_DISPLAY=\nfor s in \"$r\"/wayland-[0-9]*; do\n    case $s in *.lock) continue ;; esac\n    [ -S \"$s\" ] && WAYLAND_DISPLAY=${s##*/} && break\ndone\nif [ -z \"$WAYLAND_DISPLAY\" ]; then\n    echo \"gui: there is no session on this VM's display. Turn on Display in the VM's settings in Monad and restart it.\" >&2\n    exit 69\nfi\n# Programs that only know X11 reach the session through its Xwayland.\nfor x in /tmp/.X11-unix/X[0-9]*; do\n    [ -S \"$x\" ] && DISPLAY=:${x##*/X} && export DISPLAY && break\ndone\nexport XDG_RUNTIME_DIR=\"$r\" WAYLAND_DISPLAY XDG_SESSION_TYPE=wayland MOZ_ENABLE_WAYLAND=1\nif ! command -v \"$1\" >/dev/null 2>&1; then\n    echo \"gui: $1 is not a program in this VM.\" >&2\n    exit 127\nfi\nnohup \"$@\" >/dev/null 2>&1 &\nEOF\nchmod 755 \"$MONAD_ROOT/usr/local/bin/gui\"\ncat > \"$MONAD_ROOT/etc/systemd/system/monad-display.service\" <<EOF\n[Unit]\nDescription=Monad: the session on the VM's display\nAfter=systemd-user-sessions.service\nConflicts=getty@tty7.service\nConditionPathExists=/dev/dri/card0\n\n[Service]\nUser=$MONAD_USER\nPAMName=login\nTTYPath=/dev/tty7\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes\nStandardInput=tty-fail\nStandardOutput=journal\nStandardError=journal\nUtmpIdentifier=tty7\nUtmpMode=user\nEnvironment=XDG_SESSION_TYPE=wayland LIBSEAT_BACKEND=logind\nExecStartPre=+/usr/bin/chvt 7\nExecStart=/usr/bin/labwc -s /usr/local/lib/monad/display-follow\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\nEOF\nsystemctl daemon-reload\nsystemctl enable monad-display.service\n# A VM without a display (Display is off in its settings) keeps the session for when it has one.\nif [ -e \"$MONAD_ROOT/dev/dri/card0\" ]; then systemctl restart monad-display.service; fi\n",
+      "commands": [
+        "gui"
+      ]
+    }
+  ]
+}

@@ -790,16 +790,46 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     }
 
-    /// Opens the VM's desktop (a window on its display), also while it is
-    /// in recovery.
+    /// Opens the VM's desktop (a window on its display): a macOS VM's, also
+    /// while it is in recovery, or a Linux VM's whose Display is on.
     func openDesktop() throws {
-        guard config.guestOS == .macos else { throw MonadError("Only a macOS VM has a desktop to open.") }
+        guard config.guestOS == .macos else { return try openLinuxDesktop() }
         let typing = DesktopAction(title: "Type Password") { [weak self] in await self?.typePassword() }
         let paste: @MainActor (String) async -> Void = { [weak self] text in await self?.paste(text) }
         if let recovery = recoveryMachine { return try recovery.showDesktop(title: name, actions: [typing], paste: paste) }
         guard isRunning, let machine else { throw MonadError("\(name) is not running. Start it first.") }
         debug("desktop: opened")
         try machine.showDesktop(title: name, actions: [typing], paste: paste)
+    }
+
+    private func openLinuxDesktop() throws {
+        guard config.display else { throw MonadError("\(name) has no display. Turn on Display in its settings and restart it.") }
+        guard isRunning, let machine else { throw MonadError("\(name) is not running. Start it first.") }
+        // The setting came after the machine was built: the device is not there.
+        guard machineConfig?.display == true else {
+            throw MonadError("\(name) was started without its display. Restart it to open its desktop.")
+        }
+        debug("desktop: opened")
+        machine.onDesktopScale = { [weak self] scale in self?.desktopScale(scale) }
+        try machine.showDesktop(title: name, actions: []) { [weak self] text in await self?.pasteIntoLinuxDesktop(text) }
+    }
+
+    /// The desktop window is on a screen of this scale: the session on the
+    /// display is told, so what it draws is the size it would be on the Mac.
+    private func desktopScale(_ scale: Int) {
+        guard state == .ready else { return }
+        debug("desktop: its screen's scale is \(scale)")
+        Task { [weak self] in _ = try? await self?.ssh(LinuxDisplay.scaleCommand(scale), timeout: 15) }
+    }
+
+    /// ⌘V in a Linux VM's desktop window: the Mac's text becomes the
+    /// clipboard of the session on its display; pasting it there is the
+    /// user's (Ctrl-V in most programs).
+    private func pasteIntoLinuxDesktop(_ text: String) async {
+        guard state == .ready else { return }
+        let r = try? await ssh(LinuxDisplay.pasteCommand, stdin: Data(text.utf8), timeout: 15)
+        debug(r?.status == 0 ? "desktop: the Mac's text is on the VM's clipboard"
+              : "desktop: not pasted (no session with a clipboard on the display, or no wl-copy or xclip)")
     }
 
     /// Before typing on the desktop: the keys the Mac's keyboard holds let

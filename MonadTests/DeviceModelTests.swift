@@ -131,6 +131,34 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertTrue(vz.bootLoader is VZEFIBootLoader)
     }
 
+    /// A Linux VM whose Display is on, and only it, has what a desktop and
+    /// GUI apps need: a virtio-gpu framebuffer (one scanout), a keyboard and
+    /// a pointer. Nothing else comes with it: no audio, no clipboard port.
+    func testALinuxVMHasADisplayOnlyWhenAskedFor() throws {
+        XCTAssertFalse(defaults.display, "off unless asked")
+        var c = defaults
+        c.display = true
+        let m = VZMachine.vmConfig(for: c, paths: paths)
+        XCTAssertTrue(m.virtioDisplay)
+        XCTAssertEqual([m.displayWidth, m.displayHeight], [UInt(LinuxDisplay.width), UInt(LinuxDisplay.height)])
+        let vz = try MNDVirtualMachine.virtualMachineConfiguration(for: m)
+        XCTAssertNoThrow(try vz.validate())
+        XCTAssertEqual(vz.graphicsDevices.count, 1)
+        let gpu = try XCTUnwrap(vz.graphicsDevices.first as? VZVirtioGraphicsDeviceConfiguration)
+        XCTAssertEqual(gpu.scanouts.map(\.widthInPixels), [LinuxDisplay.width])
+        XCTAssertEqual(gpu.scanouts.map(\.heightInPixels), [LinuxDisplay.height])
+        XCTAssertEqual(vz.keyboards.count, 1)
+        XCTAssertTrue(vz.keyboards.first is VZUSBKeyboardConfiguration)
+        XCTAssertEqual(vz.pointingDevices.count, 1)
+        XCTAssertTrue(vz.pointingDevices.first is VZUSBScreenCoordinatePointingDeviceConfiguration)
+        XCTAssertTrue(vz.audioDevices.isEmpty)
+        XCTAssertEqual(vz.consoleDevices.count, 1, "the health port only: no clipboard channel")
+        // A macOS VM's display is its own kind, whatever the setting says.
+        var mac = defaults
+        mac.guestOS = .macos
+        XCTAssertFalse(VZMachine.vmConfig(for: mac, paths: paths).virtioDisplay)
+    }
+
     /// Repair Disk's temporary VM, and only it, has a USB controller: the
     /// disk being repaired is attached to it once it runs, never at boot.
     func testOnlyRepairDisksHelperHasAUSBController() throws {

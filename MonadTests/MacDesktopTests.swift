@@ -235,8 +235,8 @@ final class MacDesktopTests: XCTestCase {
         XCTAssertEqual(MacSetup.kcpassword(String(repeating: "a", count: 12)).count, 24, "a zero after it")
     }
 
-    /// Nothing to show for a stopped VM, or a Linux one.
-    func testADesktopNeedsARunningMacVM() async throws {
+    /// Nothing to show for a stopped VM, or a Linux one without a display.
+    func testADesktopNeedsARunningVMWithADisplay() async throws {
         let vm = try await macVM()
         XCTAssertThrowsError(try vm.openDesktop()) { error in
             XCTAssertTrue(error.localizedDescription.contains("Start it"), error.localizedDescription)
@@ -246,9 +246,48 @@ final class MacDesktopTests: XCTestCase {
         linux.start()
         await assertEventually("\(linux.state)") { linux.state == .ready }
         XCTAssertThrowsError(try linux.openDesktop()) { error in
-            XCTAssertTrue(error.localizedDescription.contains("macOS"), error.localizedDescription)
+            XCTAssertEqual(error.localizedDescription, "box has no display. Turn on Display in its settings and restart it.")
         }
         XCTAssertEqual(factory.machine.desktops, [])
+    }
+
+    /// A Linux VM with Display on: its desktop opens like a macOS VM's,
+    /// without what is macOS's own (typing the account's password). Turned
+    /// on while it runs, it is there after a restart.
+    func testALinuxVMWithADisplayOpensItsDesktop() async throws {
+        var c = InstanceConfig.defaults(name: "gui")
+        c.display = true
+        let linux = try manager.create(c)
+        await assertEventually("\(linux.state)") { linux.state == .stopped }
+        XCTAssertThrowsError(try linux.openDesktop()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Start it"), error.localizedDescription)
+        }
+        linux.start()
+        await assertEventually("\(linux.state)") { linux.state == .ready }
+        try linux.openDesktop()
+        XCTAssertEqual(factory.machine.desktops, ["gui"])
+        XCTAssertEqual(factory.machine.desktopActions.map(\.title), [], "no Type Password")
+        // ⌘V there: the Mac's text onto the session's clipboard, through ssh.
+        await factory.machine.desktopPaste?("echo héllo")
+        let copy = try XCTUnwrap(fixture.runner.calls.last { $0.arguments.last == LinuxDisplay.pasteCommand })
+        XCTAssertEqual(copy.stdin, Data("echo héllo".utf8))
+        // The window is on a Retina screen: the session is told, so it draws at that scale.
+        factory.machine.onDesktopScale?(2)
+        await assertEventually { self.fixture.runner.calls.contains { $0.arguments.last == LinuxDisplay.scaleCommand(2) } }
+        XCTAssertTrue(LinuxDisplay.scaleCommand(2).contains("echo 2 > "))
+        XCTAssertTrue(LinuxDisplay.scaleCommand(40).contains("echo 3 > "), "never a scale the session cannot use")
+
+        let plain = try manager.create(InstanceConfig.defaults(name: "plain"))
+        await assertEventually("\(plain.state)") { plain.state == .stopped }
+        plain.start()
+        await assertEventually("\(plain.state)") { plain.state == .ready }
+        var on = plain.config
+        on.display = true
+        try plain.update(on)
+        XCTAssertEqual(plain.pendingRestart, ["display"])
+        XCTAssertThrowsError(try plain.openDesktop()) { error in
+            XCTAssertEqual(error.localizedDescription, "plain was started without its display. Restart it to open its desktop.")
+        }
     }
 
     /// In recovery (SIP being changed) the desktop shows recovery.

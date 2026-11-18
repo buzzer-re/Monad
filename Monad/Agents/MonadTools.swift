@@ -164,6 +164,8 @@ final class MonadTools {
                         "disk_gib": Self.integer("Disk size in GiB."),
                         "network": Self.string("A network name from list_networks (default: default)."),
                         "profiles": Self.strings("Profiles to set up (agentic, server, …)."),
+                        "display": Self.boolean("Give a Linux VM a display, keyboard and pointer, for a desktop and GUI apps the "
+                                                + "user opens in a window (default false). Not for a VM another VM makes."),
                         "start": Self.boolean("Start it once made (default true)."),
                     ], required: ["name"]), risk: .normal) { [unowned self] call in
                 var c = InstanceConfig.defaults(name: try call.string("name"))
@@ -175,6 +177,7 @@ final class MonadTools {
                 if let n = try call.optionalString("network") { c.networks = [NetworkAttachment(network: n, macAddress: nil)] }
                 let profiles = try call.strings("profiles")
                 if !profiles.isEmpty { c.profiles = profiles }
+                if try call.optionalBool("display") == true { c.display = true }
                 if case .vm(let parent) = call.caller { try self.makeChild(&c, of: parent) }
                 let r = try await self.request(.create, config: c)
                 if try call.optionalBool("start") ?? true { _ = try await self.request(.start, name: c.name) }
@@ -1036,6 +1039,8 @@ final class MonadTools {
         c.forwards = []
         c.sshForwards = []
         c.startAtLaunch = false
+        // No more devices of the Mac's than a VM needs to run programs.
+        c.display = false
     }
 
     // MARK: Argument helpers

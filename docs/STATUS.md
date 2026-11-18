@@ -41,6 +41,15 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   which one systemctl call masking every unit could not mask, so sshd kept TCP 22); Ubuntu, Debian, Fedora, openSUSE, AlmaLinux and user-added distributions (signed images
   verified with pinned keys); macOS guests (install from Apple or an IPSW, no Setup Assistant, SIP
   switchable through recovery, copies); Lima VMs booted in place or copied in; ephemeral Linux VMs.
+- **A Linux VM's display** (off unless asked for, `docs/DISPLAY.md`): a virtio-gpu framebuffer, a
+  keyboard and a pointer; Open Desktop shows it in a window MonadHost opens, the size of the window,
+  at the screen's scale, ⌘V bringing the Mac's text in. The Desktop profile (apt; run on Ubuntu
+  26.04) puts labwc with Xwayland on it and `gui` to start programs there. Checked in a Debug VM:
+  the devices in the guest, the session at boot, a terminal and a file manager drawn on it, the
+  display following a window of 2400×1500 pixels at scale 2. Not seen: the window itself on the
+  Mac's screen (keys, clicks, scrolling in it). Not built: each Linux program as a Mac window of
+  its own, drawing by the Mac's GPU (Apple passes none to a Linux guest: measured), a desktop
+  with a panel (XFCE fails to start this way on Ubuntu 26.04), Debian's and Kali's cloud kernels.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),

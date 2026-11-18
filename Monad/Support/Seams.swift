@@ -166,6 +166,9 @@ protocol VirtualMachineControlling: AnyObject {
     /// buttons for what Monad can do there; ⌘V in it hands the Mac's text
     /// to `paste`.
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws
+    /// Told how many pixels a point has on the screen the desktop window
+    /// is on (2 on a Retina screen): when it opens, and when that changes.
+    var onDesktopScale: (@MainActor (Int) -> Void)? { get set }
 }
 
 extension VirtualMachineControlling {
@@ -175,6 +178,11 @@ extension VirtualMachineControlling {
     func restoreState(from file: URL) async throws { throw MonadError("This VM's memory cannot be restored.") }
 
     var onHealthOutput: ((Data) -> Void)? {
+        get { nil }
+        set {}
+    }
+
+    var onDesktopScale: (@MainActor (Int) -> Void)? {
         get { nil }
         set {}
     }

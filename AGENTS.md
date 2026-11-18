@@ -280,3 +280,4 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yml`:
 | [docs/GROUPS.md](docs/GROUPS.md) | Groups and firewall tags |
 | [docs/TABS.md](docs/TABS.md) | Tabs, tab groups and the session Monad opens again |
 | [docs/SSH.md](docs/SSH.md) | SSH hosts: tabs on servers, how ssh's questions are asked, ports between a server and a VM or this Mac, Monad's agent on a server |
+| [docs/DISPLAY.md](docs/DISPLAY.md) | A Linux VM's display: the setting, Open Desktop, the Desktop profile, what Apple's device can and cannot do (measured), what is not built yet |

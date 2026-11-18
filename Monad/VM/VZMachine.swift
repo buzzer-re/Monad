@@ -64,6 +64,11 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             c.displayWidth = UInt(MacRecovery.displayWidth)
             c.displayHeight = UInt(MacRecovery.displayHeight)
             c.displayPixelsPerInch = UInt(MacRecovery.displayPixelsPerInch)
+        } else if config.display {
+            // A Linux VM's display, when asked for (LinuxDisplay.swift).
+            c.virtioDisplay = true
+            c.displayWidth = UInt(LinuxDisplay.width)
+            c.displayHeight = UInt(LinuxDisplay.height)
         }
         c.diskPath = config.disk(in: paths).path
         c.extraDisks = config.disks.map { MNDExtraDisk(identifier: $0.name, path: paths.extraDisk($0.name).path) }
@@ -130,11 +135,15 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 
     // MARK: Desktop
 
+    var onDesktopScale: (@MainActor (Int) -> Void)?
+
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         guard vm.config.displayWidth > 0 else {
             throw MonadError("\(title) was started without a display. Restart it to open its desktop.")
         }
-        try MacDesktop.shared.show(vm.machine, title: title, owner: ObjectIdentifier(self), actions: actions, paste: paste)
+        try MacDesktop.shared.show(vm.machine, title: title, kind: vm.config.virtioDisplay ? LinuxDisplay.windowKind : "macOS Desktop",
+                                   owner: ObjectIdentifier(self), actions: actions, paste: paste,
+                                   scale: { [weak self] s in self?.onDesktopScale?(s) })
     }
 
     // MARK: Recovery input

@@ -316,6 +316,10 @@ struct InstanceConfig: Equatable {
     /// Programs in the VM may show images in its tabs (OSC 1337). Off: Monad
     /// never decodes image data the VM sends.
     var inlineImages = false
+    /// A Linux VM's display (LinuxDisplay.swift): a framebuffer, a keyboard
+    /// and a pointer, for its desktop and GUI apps. Off: the VM has none of
+    /// the three devices. A macOS VM always has its own.
+    var display = false
     /// The Lima VM whose disk this VM boots in place; nil for Monad's own disk.
     var attached: AttachedDisk? = nil
     /// The Lima VM whose disk this VM's own was copied from ("Copy to
@@ -509,7 +513,7 @@ extension InstanceConfig: Codable {
         case version, name, distro, release, image, user, cpus, memoryGiB, memoryTargetGiB, diskGiB, disks, networks, firewall
         case sharing
         case forwards, autoForward, profiles, theme, ephemeral, createdAt, startAtLaunch, attached
-        case copiedFrom, bridges, sshForwards, inlineImages, hostCommands, agents, parent, group, guestOS, restoreImage
+        case copiedFrom, bridges, sshForwards, inlineImages, display, hostCommands, agents, parent, group, guestOS, restoreImage
         case systemIntegrityProtection, fullDiskAccess, autoLogin, desktopAutofill, bootToRecovery
         // v1 only
         case network, macAddress, sharedDirectory, sharedReadOnly
@@ -537,6 +541,7 @@ extension InstanceConfig: Codable {
         firewall = try c.decodeIfPresent(VMFirewall.self, forKey: .firewall) ?? VMFirewall()
         startAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .startAtLaunch) ?? false
         inlineImages = try c.decodeIfPresent(Bool.self, forKey: .inlineImages) ?? false
+        display = try c.decodeIfPresent(Bool.self, forKey: .display) ?? false
         attached = try c.decodeIfPresent(AttachedDisk.self, forKey: .attached)
         copiedFrom = try c.decodeIfPresent(AttachedDisk.self, forKey: .copiedFrom)
         bridges = try c.decodeIfPresent([CommandBridge].self, forKey: .bridges) ?? []
@@ -627,6 +632,7 @@ extension InstanceConfig: Codable {
         // Only when on, so configs without them stay as they were.
         if startAtLaunch { try c.encode(startAtLaunch, forKey: .startAtLaunch) }
         if inlineImages { try c.encode(inlineImages, forKey: .inlineImages) }
+        if display { try c.encode(display, forKey: .display) }
     }
 }
 
@@ -704,6 +710,7 @@ extension InstanceConfig {
         case fullDiskAccess
         case macOSOnly(String)
         case linuxOnly(String)
+        case displayOnMac
         case extraDisk(String)
         case extraDiskSize(Int)
         case tooManyExtraDisks
@@ -752,6 +759,7 @@ extension InstanceConfig {
             case .fullDiskAccess: return "Full disk access is a macOS setting: only a macOS VM can turn it off."
             case .macOSOnly(let what): return "\(what) is a macOS setting."
             case .linuxOnly(let what): return "\(what) is for Linux VMs: in macOS, Disk Utility formats a new disk."
+            case .displayOnMac: return "A macOS VM always has its display: the Display setting is for Linux VMs."
             case .extraDisk(let n): return "“\(n)” cannot name a disk: use lowercase letters, digits and dashes (16 at most, starting with a letter), each name once."
             case .extraDiskSize(let s): return "A disk of \(s) GB cannot be made: from 1 GB to \(InstanceConfig.maxExtraDiskGiB) GB."
             case .tooManyExtraDisks: return "A VM has at most \(InstanceConfig.maxExtraDisks) extra disks."
@@ -916,6 +924,7 @@ extension InstanceConfig {
         if !autoLogin, guestOS != .macos { throw ValidationError.macOSOnly("Logging in automatically") }
         if bootToRecovery, guestOS != .macos { throw ValidationError.macOSOnly("Booting to recovery") }
         if desktopAutofill != nil, guestOS != .macos { throw ValidationError.macOSOnly("Auto-fill") }
+        if display, guestOS == .macos { throw ValidationError.displayOnMac }
         if guestOS == .macos {
             guard memoryGiB >= Self.macMinimumMemoryGiB else {
                 throw ValidationError.macResources("macOS needs at least \(Self.macMinimumMemoryGiB) GB of memory.")
@@ -990,6 +999,7 @@ enum ConfigChange {
             ("full disk access", { $0.fullDiskAccess == $1.fullDiskAccess }),
             ("automatic login", { $0.autoLogin == $1.autoLogin }),
             ("boot to recovery", { $0.bootToRecovery == $1.bootToRecovery }),
+            ("display", { $0.display == $1.display }),
         ])
     }
 
@@ -1040,6 +1050,7 @@ enum ConfigChange {
             ("theme", { $0.theme == $1.theme }),
             ("start at boot", { $0.startAtLaunch == $1.startAtLaunch }),
             ("inline images", { $0.inlineImages == $1.inlineImages }),
+            ("display", { $0.display == $1.display }),
             ("System Integrity Protection", { $0.systemIntegrityProtection == $1.systemIntegrityProtection }),
             ("full disk access", { $0.fullDiskAccess == $1.fullDiskAccess }),
             ("automatic login", { $0.autoLogin == $1.autoLogin }),

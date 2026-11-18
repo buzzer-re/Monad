@@ -38,6 +38,7 @@ share of a folder, a remote forward, "Reach this Mac and its local network").
 |---|---|---|
 | Only Monad's own processes drive MonadHost | XPC code requirement on each client (`HostXPCSecurity.clientRequirement`, read at each connection): the team and identifiers for team-signed builds; for ad hoc ones, each identifier with the code hash of the Monad.app installed beside MonadHost (or MonadHost itself, for `--mcp`). The app checks MonadHost by identifier only (see Same-user processes) | `XPCTransportTests` (`testAdHocClientsArePinnedToTheInstalledBinaries`: right identifier, other hash refused; foreign identifier and ad hoc peer against a team requirement refused) |
 | A guest's health port carries text one way, into a capped log | A Linux VM's one console device is a single port (`dev.monad.health`) the guest writes to and nothing reads back into; MonadHost appends what comes to `health.log` (2 MB, one rotated file, never through a link) and only reads it as bounded plain lines (300 bytes, controls dropped, an unfinished line over 4 KB dropped); what it tells the user from them names a program or function only in plain characters, cut to 32 | `DeviceModelTests`, `test_rotlog.c`, `GuestHealthTests`, `GuestReportTests` |
+| A Linux guest has no display, keyboard or pointer device unless the user turned Display on for that VM | `VZMachine.vmConfig` adds the virtio-gpu scanout and the two USB devices only for `display` (and for a macOS guest, which needs its own); nothing else comes with them (no audio, no clipboard port); an imported file's `display` is set apart with what reaches into the Mac, an edit that turns it on says so, an orchestrator's children never get one | `DeviceModelTests` (`testOnlyTheAllowedDevicesExist`, `testALinuxVMHasADisplayOnlyWhenAskedFor`), `VMConfigFileTests`, `MonadToolsTests` |
 | A guest cannot connect to the host over vsock | No `VZVirtioSocketListener` exists; the host dials ports 22 and 1024 | `InvariantTests.testTheHostNeverListensOnVsock` |
 | The guest's network sshd is off; ssh reaches the guest only over vsock | Cloud-init masks the distro's ssh units, the isolation check fails the boot closed if TCP 22 listens or the listening ports cannot be read (it needs no sudo). A Lima VM's masks hold for one boot (`--runtime`, set again at every Monad boot), so Lima keeps its sshd | `CloudInitTests`, `VMLifecycleTests` |
 | A compromised netd cannot touch files, start processes, listen, or use unix sockets | `sandbox_init` profile in `mnd_netd_main.c` | `NetdProcessTests` (`--netd-sandbox-check`, with a control for the unix socket) |
@@ -259,6 +260,14 @@ Not promised:
   macOS one a new machine identifier); its disks only, never the snapshot's memory. A chosen
   snapshot that cannot be copied fails the ephemeral VM with the reason, never another system in
   its place (`ProvisioningFlowTests`, `HostServiceTests`, `MonadToolsTests`).
+- **A Linux VM's display is the user's choice per VM** (2026-11-18): Display gives the guest three
+  more devices to talk to, handled in Apple's process for the VM (the virtio-gpu device's
+  commands, a USB keyboard and pointer). Off by default; `docs/DISPLAY.md`. MonadHost shows the
+  display in a window and reads nothing the guest draws. The Mac's clipboard goes in only as text
+  and only when the user presses ⌘V in that window (through ssh, onto the session's clipboard);
+  nothing of the guest's clipboard comes out. The window takes the Mac's keys while it is in
+  front, as a macOS VM's desktop does. An agent on the Mac may make a VM with a display
+  (`create_vm`); a VM with a role may not give one to its children.
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
   with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
   copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it

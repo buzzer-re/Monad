@@ -636,7 +636,7 @@ final class MonadToolsTests: XCTestCase {
         func create(_ name: String, cpus: Int = 1) async throws -> MCPResult {
             try await tool("create_vm").run(MCPCall(caller: .vm("boss"), arguments: [
                 "name": .string(name), "cpus": .number(Double(cpus)), "memory_gib": .number(2), "disk_gib": .number(10),
-                "start": .bool(false)]))
+                "display": .bool(true), "start": .bool(false)]))
         }
         _ = try await create("kid1", cpus: 2)
         let kid = try XCTUnwrap(fixture.manager.existing("kid1"))
@@ -644,6 +644,7 @@ final class MonadToolsTests: XCTestCase {
         XCTAssertEqual(kid.config.firewall, c.firewall, "no looser than its parent's")
         XCTAssertEqual(kid.config.networks.map(\.network), c.networks.map(\.network))
         XCTAssertNil(kid.config.agents)
+        XCTAssertFalse(kid.config.display, "no display, whatever it asks for")
         do {
             _ = try await create("kid2", cpus: 2)
             XCTFail("3 CPUs together")
@@ -660,6 +661,16 @@ final class MonadToolsTests: XCTestCase {
         let listed = try object(try await tool("list_vms").run(MCPCall(caller: .vm("boss"), arguments: [:])))
         XCTAssertEqual(Set((listed["vms"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []),
                        ["boss", "kid1", "kid2"], "not the other VMs")
+    }
+
+    /// An agent on the Mac makes a VM with a display when it asks for one;
+    /// without asking, none.
+    func testAVMIsMadeWithADisplayOnlyWhenAskedFor() async throws {
+        let plain = try await made("plain")
+        XCTAssertFalse(plain.config.display)
+        try await call("create_vm", ["name": .string("gui"), "cpus": .number(2), "memory_gib": .number(2),
+                                     "disk_gib": .number(10), "display": .bool(true), "start": .bool(false)])
+        XCTAssertEqual(fixture.manager.existing("gui")?.config.display, true)
     }
 
     /// A host-commands VM gets each of its host commands as a tool (the

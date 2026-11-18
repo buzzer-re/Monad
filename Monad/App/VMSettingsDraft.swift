@@ -208,6 +208,10 @@ struct VMSettingsDraft {
     /// VM's settings.
     static let inlineImagesDetail = "Programs in the VM can show pictures in its tabs, as img (in every VM), neofetch, fastfetch and imgcat do (iTerm2's inline images: PNG, JPEG or GIF). Off: Monad never decodes image data the VM sends."
 
+    /// A Linux VM's display (display), in the New VM sheet and the VM's
+    /// settings.
+    static let displayDetail = "A display, a keyboard and a pointer for the VM, for a desktop and programs with windows: its ⋯ menu's Open Desktop shows it in a window on this Mac. What is on it is drawn by the VM's CPUs (Apple passes no GPU to a Linux VM). Off: the VM has none of the three devices. Applies at the next start."
+
     // MARK: Forwards
 
     /// Whose a forward's far end is: a VM's, or an SSH host's own (the

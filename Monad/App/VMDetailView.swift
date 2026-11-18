@@ -403,6 +403,22 @@ struct VMDetailView: View {
                     }
                 }
             }
+            if vm.config.guestOS == .linux {
+                Section("Desktop") {
+                    SettingRow(symbol: "display", color: .blue, title: "Display",
+                               detail: VMSettingsDraft.displayDetail) {
+                        Toggle("", isOn: $draft.config.display).labelsHidden().toggleStyle(.switch)
+                    }
+                    if vm.config.display {
+                        SettingRow(symbol: "macwindow", color: .blue, title: "Desktop",
+                                   detail: "The VM's display in a window. ⌘V there puts this Mac's text on the VM's clipboard. "
+                                       + "Closing the window leaves the VM running.") {
+                            Button("Open") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
+                                .disabled(!vm.isRunning)
+                        }
+                    }
+                }
+            }
             Section("Appearance") {
                 SettingRow(symbol: "photo", color: .orange, title: "Images in the terminal",
                            detail: VMSettingsDraft.inlineImagesDetail) {

@@ -54,6 +54,14 @@ final class ConfigChangeTests: XCTestCase {
         XCTAssertEqual(ConfigChange.fixed(from: base, to: new), [])
     }
 
+    /// A display is a device: it comes and goes with a restart.
+    func testADisplayWaitsForTheNextBoot() {
+        let new = edited { $0.display = true }
+        XCTAssertEqual(ConfigChange.restartOnly(from: base, to: new), ["display"])
+        XCTAssertEqual(ConfigChange.all(from: base, to: new), ["display"])
+        XCTAssertEqual(ConfigChange.fixed(from: base, to: new), [])
+    }
+
     func testHardwareChangesWaitForTheNextBoot() {
         let new = edited {
             $0.cpus += 1

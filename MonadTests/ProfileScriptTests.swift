@@ -291,6 +291,42 @@ final class ProfileScriptTests: XCTestCase {
         XCTAssertTrue(offline.output.contains("herdr installer could not be downloaded"), offline.output)
     }
 
+    /// The Desktop profile's session step: the unit that runs the window
+    /// manager as the login user on the VM's display, the script that keeps
+    /// the display the size of its window on the Mac, and gui. In a VM
+    /// without a display nothing is started, only kept for when it has one.
+    func testTheDesktopSessionIsSetUpForTheLoginUser() throws {
+        try makeStubs()
+        let systemctl = bin.appendingPathComponent("systemctl")
+        try "#!/bin/sh\necho \"systemctl $*\" >> '\(log.path)'\n".write(to: systemctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: systemctl.path)
+        let step = try XCTUnwrap(try ProfileCatalog.bundled().profile("desktop")?.steps.first { $0.id == "session" })
+        let p = ProfileConfig(id: "mine", name: "Mine", summary: "", steps: [step])
+        let r = try runScript(try render(p))
+        XCTAssertEqual(r.status, 0, r.output)
+        let unit = try String(contentsOf: root.appendingPathComponent("etc/systemd/system/monad-display.service"), encoding: .utf8)
+        XCTAssertTrue(unit.contains("\nUser=dev\n"), unit)
+        XCTAssertTrue(unit.contains("ConditionPathExists=/dev/dri/card0"), "inert in a VM without a display")
+        XCTAssertTrue(unit.contains("ExecStart=/usr/bin/labwc -s /usr/local/lib/monad/display-follow"), unit)
+        let fm = FileManager.default
+        let gui = root.appendingPathComponent("usr/local/bin/gui").path
+        XCTAssertTrue(fm.isExecutableFile(atPath: gui))
+        XCTAssertTrue(fm.isExecutableFile(atPath: root.appendingPathComponent("usr/local/lib/monad/display-follow").path))
+        XCTAssertEqual(logLines().filter { $0.hasPrefix("systemctl") },
+                       ["systemctl daemon-reload", "systemctl enable monad-display.service"], "not started: this VM has no display")
+        // gui without a program, and without a session on the display.
+        let usage = try ProcessRunner.runSync("/bin/sh", [gui], timeout: 10)
+        XCTAssertEqual(usage.status, 64)
+        let none = try ProcessRunner.runSync("/usr/bin/env", ["XDG_RUNTIME_DIR=\(root.path)/none", "/bin/sh", gui, "true"], timeout: 10)
+        XCTAssertEqual(none.status, 69)
+        XCTAssertTrue(String(decoding: none.stderr, as: UTF8.self).contains("Turn on Display"), String(decoding: none.stderr, as: UTF8.self))
+        // With a display the session starts at once.
+        try fm.createDirectory(at: root.appendingPathComponent("dev/dri"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("dev/dri/card0"))
+        XCTAssertEqual(try runScript(try render(p)).status, 0)
+        XCTAssertEqual(logLines().last, "systemctl restart monad-display.service")
+    }
+
     private func serverStep(_ id: String) throws -> ProfileConfig {
         let step = try XCTUnwrap(try ProfileCatalog.bundled().profile("server")?.steps.first { $0.id == id })
         return ProfileConfig(id: "mine", name: "Mine", summary: "", steps: [step])

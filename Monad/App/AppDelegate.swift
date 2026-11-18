@@ -526,12 +526,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         add("New Host Shell (Unisolated)", #selector(newHostTab(_:)))
         menu.addItem(.separator())
         add("New VM…", #selector(showNewVM(_:)))
-        // The front tab's VM, when it is a Mac: its desktop.
+        // The front tab's VM, when it has a display: its desktop.
         if let name = (owner?.routingTab ?? focusedTab)?.vm,
-           let vm = HostAgent.client.instances.first(where: { $0.name == name }), vm.config.guestOS == .macos {
+           let vm = HostAgent.client.instances.first(where: { $0.name == name }),
+           vm.config.guestOS == .macos || vm.config.display {
             menu.addItem(.separator())
-            let item = menu.addItem(withTitle: "Open macOS Desktop", action: vm.isRunning ? #selector(openDesktop(_:)) : nil,
-                                    keyEquivalent: "")
+            let item = menu.addItem(withTitle: vm.config.guestOS == .macos ? "Open macOS Desktop" : "Open Desktop",
+                                    action: vm.isRunning ? #selector(openDesktop(_:)) : nil, keyEquivalent: "")
             item.target = self
             item.representedObject = name
             item.isEnabled = vm.isRunning
@@ -550,11 +551,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         }
     }
 
-    /// A macOS VM's desktop, in a window MonadHost shows. The first time,
-    /// where its password is, and whether Monad should fill it in.
+    /// A VM's desktop, in a window MonadHost shows. A macOS VM's the first
+    /// time: where its password is, and whether Monad should fill it in.
     func openDesktop(of name: String) async throws {
         let host = HostAgent.client
-        if let vm = host.instances.first(where: { $0.name == name }), vm.config.desktopAutofill == nil {
+        if let vm = host.instances.first(where: { $0.name == name }), vm.config.guestOS == .macos,
+           vm.config.desktopAutofill == nil {
             let alert = NSAlert()
             let words = VMSettingsDraft.autofillQuestion(vm: name, user: vm.config.user)
             alert.messageText = words.title

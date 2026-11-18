@@ -78,11 +78,14 @@ typedef NS_ENUM(NSInteger, MNDVirtualMachineState) {
 /// A macOS guest booted into its recoveryOS (System Integrity Protection),
 /// which Monad drives through its keyboard and pointer (-pressKeys:down:error:).
 @property (nonatomic) BOOL recovery;
-/// A macOS guest's display (its desktop, opened from Monad) with a USB
-/// keyboard and a pointer; 0 wide: none (a Linux guest).
+/// A display (the VM's desktop, opened from Monad) with a USB keyboard and
+/// a pointer; 0 wide: none. A macOS guest's own kind, unless
+/// `virtioDisplay`: a Linux guest's, a virtio-gpu framebuffer with one
+/// scanout (the only kind Apple gives a Linux guest; no 3D).
 @property (nonatomic) NSUInteger displayWidth;
 @property (nonatomic) NSUInteger displayHeight;
 @property (nonatomic) NSUInteger displayPixelsPerInch;
+@property (nonatomic) BOOL virtioDisplay;
 /// Repair Disk's temporary VM: a USB controller, to which another VM's disk
 /// is attached once this one runs (-attachDiskAtPath:completion:). macOS 15
 /// and later; ignored before.

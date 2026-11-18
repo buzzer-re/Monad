@@ -59,6 +59,19 @@ final class NewVMFormTests: XCTestCase {
         XCTAssertTrue(f.apply(to: InstanceConfig.defaults(name: "box")).inlineImages)
     }
 
+    /// A display is the user's choice for a Linux VM, off by default; a
+    /// macOS VM has its own whatever the switch was left at.
+    func testADisplayIsOffUnlessChosenAndNotForMacOS() throws {
+        var f = try form()
+        XCTAssertFalse(f.display)
+        XCTAssertFalse(f.apply(to: InstanceConfig.defaults(name: "box")).display)
+        f.display = true
+        XCTAssertTrue(f.apply(to: InstanceConfig.defaults(name: "box")).display)
+        f.distro = "macos"
+        XCTAssertTrue(f.isMac)
+        XCTAssertFalse(f.apply(to: InstanceConfig.defaults(name: "box")).display)
+    }
+
     func testANewVMJoinsTheDefaultNetworkBehindTheDefaultFirewall() throws {
         let f = try form()
         XCTAssertEqual(f.network, NetworkDefinition.defaultName)
@@ -103,7 +116,7 @@ final class NewVMFormTests: XCTestCase {
     func testProfilesAreChosenForTheDistro() throws {
         var f = try form()
         f.setProfiles(ProfileCatalog(builtIn: try ProfileCatalog.bundled().builtIn, custom: [aptOnly]))
-        XCTAssertEqual(f.profileChoices.map(\.id), ["agentic", "server", "apt-only"])
+        XCTAssertEqual(f.profileChoices.map(\.id), ["agentic", "desktop", "server", "apt-only"])
         XCTAssertTrue(f.profileChoices.allSatisfy(\.supported), "Ubuntu uses apt")
         f.toggleProfile("agentic")
         f.toggleProfile("apt-only")

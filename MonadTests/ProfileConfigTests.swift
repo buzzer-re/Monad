@@ -19,11 +19,18 @@ final class ProfileConfigTests: XCTestCase {
 
     func testTheBuiltInProfiles() throws {
         let catalog = try ProfileCatalog.bundled()
-        XCTAssertEqual(catalog.builtIn.map(\.id), ["agentic", "server"])
+        XCTAssertEqual(catalog.builtIn.map(\.id), ["agentic", "desktop", "server"])
         for p in catalog.builtIn {
             XCTAssertNoThrow(try p.validate(runtimes: ["nodejs"]), p.id)
-            for manager in ["apt", "dnf", "zypper"] { XCTAssertTrue(p.supports(packageManager: manager), "\(p.id) on \(manager)") }
+            // Desktop: where it was run (Ubuntu); the others' names are not known to be right yet.
+            for manager in p.id == "desktop" ? ["apt"] : ["apt", "dnf", "zypper"] {
+                XCTAssertTrue(p.supports(packageManager: manager), "\(p.id) on \(manager)")
+            }
         }
+        let desktop = try XCTUnwrap(catalog.profile("desktop"))
+        XCTAssertEqual(desktop.steps.map(\.kind), [.packages, .script])
+        XCTAssertEqual(desktop.steps[0].packages?["apt"]?.prefix(2), ["labwc", "xwayland"])
+        XCTAssertEqual(desktop.steps[1].commands, ["gui"])
         let agentic = try XCTUnwrap(catalog.profile("agentic"))
         XCTAssertEqual(agentic.steps.map(\.kind), [.packages, .runtime, .npm, .script])
         XCTAssertEqual(agentic.steps[1].runtime, "nodejs")
@@ -130,7 +137,7 @@ final class ProfileConfigTests: XCTestCase {
         try store.save(profile([tools], id: "agentic"))
         try store.save(profile([tools], id: "mine"))
         let catalog = try ProfileCatalog.bundled(custom: store)
-        XCTAssertEqual(catalog.all.map(\.id), ["agentic", "server", "mine"])
+        XCTAssertEqual(catalog.all.map(\.id), ["agentic", "desktop", "server", "mine"])
         XCTAssertEqual(catalog.profile("agentic")?.name, "Mine", "the user's version")
         XCTAssertEqual(catalog.shipped("agentic")?.name, "Agentic")
         XCTAssertTrue(catalog.isBuiltIn("agentic"))

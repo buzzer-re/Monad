@@ -64,6 +64,10 @@ To start each one from a system you set up, take a snapshot of a VM with "Use as
 
 Tick a profile in New VM and the VM is set up on its first boot. Agentic brings [Claude Code](https://claude.com/product/claude-code), [Codex](https://github.com/openai/codex), [pi](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) and [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent), with [herdr](https://herdr.dev) to keep them running, and Server brings container tooling. Profiles are files, so you can write your own.
 
+## Linux programs with windows
+
+Turn on Display for a Linux VM (New VM, or its settings) and tick the Desktop profile: the VM gets a display, and its ⋯ menu's Open Desktop shows it in a window on your Mac, the size of the window and sharp on a Retina screen. `gui firefox` in a tab starts a program there; ⌘V in the window brings your Mac's text to the VM's clipboard. The Linux programs are inside that one window for now, and what they draw is drawn by the VM's CPUs: Apple passes no GPU to a Linux VM ([docs/DISPLAY.md](docs/DISPLAY.md) says what was measured and what is planned).
+
 ## Splits and contexts
 
 ![A tab split in three: a Next.js server and git log on the VM web, and a pane whose menu is switching it to the VM db.](docs/images/splits.png)

@@ -755,6 +755,10 @@ private struct VMRow: View {
                         .disabled(vm.isRunning || vm.state.isPreparing)
                         .help(vm.isRunning ? "Stop it first: its disk is in use while it runs." : "")
                     Divider()
+                } else if vm.config.display {
+                    Button("Open Desktop") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
+                        .disabled(!vm.isRunning)
+                    Divider()
                 }
                 if vm.config.guestOS == .linux, vm.config.attached == nil, !vm.config.ephemeral {
                     Button("Repair Disk…") { onRepair() }
@@ -1456,6 +1460,13 @@ struct CreateVMSheet: View {
                            detail: VMSettingsDraft.inlineImagesDetail) {
                     Toggle("", isOn: Binding(get: { f.inlineImages }, set: { form?.inlineImages = $0 }))
                         .labelsHidden().toggleStyle(.switch)
+                }
+                if !f.isMac {
+                    SettingRow(symbol: "display", color: .blue, title: "Display",
+                               detail: VMSettingsDraft.displayDetail) {
+                        Toggle("", isOn: Binding(get: { f.display }, set: { form?.display = $0 }))
+                            .labelsHidden().toggleStyle(.switch)
+                    }
                 }
             }
         } header: {

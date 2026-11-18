@@ -143,7 +143,8 @@ Distributions with their size and Remove.
 
 ## The desktop
 
-Every macOS VM boots with a display, a keyboard and a pointer (a Linux VM has none). Open macOS
+Every macOS VM boots with a display, a keyboard and a pointer (a Linux VM only with its Display
+setting on, `docs/DISPLAY.md`). Open macOS
 Desktop (the VM's ⋯ menu, a terminal window's … menu when its tab is a Mac, or the VM's Overview)
 shows its screen in a window, for what needs a person: the developer tools' installer, a system
 prompt. MonadHost, which runs the VM, shows the window (Apple's `VZVirtualMachineView`, reaching the
