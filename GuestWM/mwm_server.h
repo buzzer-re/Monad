@@ -46,6 +46,11 @@ typedef struct {
      * left: all of it, unless the program draws a shadow around its window
      * and said where the window is inside. */
     int inner_x, inner_y, inner_width, inner_height;
+    /* A popup (a menu, a tooltip): the window it is on, and where its own
+     * inner part stands from that window's inner top left, in that
+     * window's pixels (it may reach outside it). 0 for a window of its own. */
+    uint32_t parent;
+    int offset_x, offset_y;
     /* Plain text of the program's choosing; never NULL. */
     const char *title;
     const char *app_id;
@@ -115,6 +120,10 @@ void mwm_server_resize(mwm_server *s, uint32_t window, int32_t width, int32_t he
 /* The Mac's window was asked to close: the program is asked to close it
  * (it may first ask whether to save). */
 void mwm_server_close(mwm_server *s, uint32_t window);
+/* The user clicked away from that window's popups (on another window, on
+ * another app): the program is told each is done with, the one on top
+ * first, and takes them down. */
+void mwm_server_dismiss(mwm_server *s, uint32_t window);
 
 /*
  * Input. The pointer and the keyboard are the Mac's: whoever shows the

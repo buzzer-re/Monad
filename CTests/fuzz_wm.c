@@ -151,7 +151,8 @@ static void words(program *p, uint32_t object, uint16_t opcode, int count, const
 }
 
 /* The exchange that opens a window, its sizes from the input, with a part
- * on it (a subsurface) somewhere, in some order, at some scale. */
+ * on it (a subsurface) somewhere, in some order, at some scale, and a
+ * menu (a popup, with one of its own) that may take the keyboard. */
 static void open_window(program *p, input *in) {
     uint32_t registry = p->next++, compositor = p->next++, shm = p->next++, wm = p->next++, surface = p->next++, xdg = p->next++,
              toplevel = p->next++, pool = p->next++, buffer = p->next++, seat = p->next++;
@@ -214,6 +215,24 @@ static void open_window(program *p, input *in) {
         words(p, part, 6, 0, NULL);
         words(p, surface, 2, 4, (uint32_t[]){number(in), number(in), number(in), number(in)}); /* damage */
         words(p, surface, 6, 0, NULL);
+    }
+    uint32_t parent = xdg;
+    for (int menus = byte(in) % 3; menus > 0; menus--) {
+        uint32_t place = p->next++, menu = p->next++, role = p->next++, popup = p->next++;
+        words(p, wm, 1, 1, &place);                                                           /* create_positioner */
+        words(p, place, 1, 2, (uint32_t[]){1 + number(in) % 300, 1 + number(in) % 150});      /* set_size */
+        words(p, place, 2, 4, (uint32_t[]){number(in) % 200, number(in) % 100, byte(in), byte(in)});
+        words(p, place, 3, 1, (uint32_t[]){byte(in) % 10});                                   /* set_anchor, 9 being none */
+        words(p, place, 4, 1, (uint32_t[]){byte(in) % 9});
+        words(p, place, 6, 2, (uint32_t[]){number(in), number(in)});                          /* set_offset, anywhere */
+        words(p, compositor, 0, 1, &menu);
+        words(p, wm, 2, 2, (uint32_t[]){role, menu});
+        words(p, role, 2, 3, (uint32_t[]){popup, parent, place});                             /* get_popup */
+        if (byte(in) % 2) words(p, popup, 1, 2, (uint32_t[]){seat, 1});                       /* grab */
+        words(p, menu, 6, 0, NULL);
+        words(p, menu, 1, 3, (uint32_t[]){buffer, 0, 0});
+        words(p, menu, 6, 0, NULL);
+        parent = role;
     }
 }
 
@@ -298,14 +317,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             break;
         }
         case 9: case 10: { /* what MonadHost says, well formed or not */
-            static const char *const names[] = {"pointer", "button", "scroll", "focus", "key", "mods", "keys", "k", "size", "close", "dance", ""};
+            static const char *const names[] = {"pointer", "button", "scroll", "focus", "key", "mods", "keys", "k", "size", "close", "dismiss", "scale", "dance", ""};
             char text[256];
             size_t n = 0;
             if (byte(&in) % 4 == 0) {
                 n = byte(&in) % 200;
                 for (size_t i = 0; i < n; i++) text[i] = (char)byte(&in);
             } else {
-                n = (size_t)snprintf(text, sizeof text, "%s", names[byte(&in) % 12]);
+                n = (size_t)snprintf(text, sizeof text, "%s", names[byte(&in) % 14]);
                 for (int args = byte(&in) % 8; args > 0; args--) {
                     long long v = byte(&in) % 2 ? (long long)(byte(&in) % 16) : (long long)(int32_t)number(&in) * (byte(&in) % 3);
                     n += (size_t)snprintf(text + n, sizeof text - n, " %lld", v);

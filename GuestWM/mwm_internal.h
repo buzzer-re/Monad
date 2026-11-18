@@ -44,6 +44,7 @@ typedef enum {
     T_DATA_DEVICE,
     T_DECORATION_MANAGER,
     T_DECORATION,
+    T_POPUP,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -97,6 +98,8 @@ typedef struct {
 /* A window's place on the display, in the display's pixels. */
 typedef struct {
     bool used;
+    /* It is being taken off the display: nothing is to come back to it. */
+    bool going;
     uint32_t id;
     int x, y, width, height;
     /* Pixels to one of the program's units: what its surface is drawn at. */
@@ -104,10 +107,22 @@ typedef struct {
     surface *surface;
 } window;
 
-/* A top-level window's role on a surface (xdg_surface and xdg_toplevel). */
+/* Where a popup is to stand on its parent (xdg_positioner), in the program's units. */
 typedef struct {
+    int32_t width, height;
+    /* The rectangle of the parent it hangs from, the point of it it hangs
+     * at, and the way it grows from there (xdg_positioner's anchor and gravity). */
+    int32_t ax, ay, aw, ah;
+    uint32_t anchor, gravity;
+    int32_t ox, oy;
+} positioner;
+
+/* A window's role on a surface (xdg_surface): a top-level window
+ * (xdg_toplevel), or a popup on another (xdg_popup). */
+typedef struct xdg xdg;
+struct xdg {
     surface *surface;
-    uint32_t id, toplevel;
+    uint32_t id, toplevel, popup;
     bool configured;
     /* It has been told it is the window in front. */
     bool active;
@@ -119,8 +134,14 @@ typedef struct {
     /* What it will be at the surface's next commit. */
     box next_geometry;
     bool geometry_waits;
+    /* A popup: the window it is on (NULL once that went), where it stands
+     * from that window's top left, whether it takes the keyboard while it is
+     * up, and whether it was told it is done with. */
+    xdg *parent;
+    int32_t px, py;
+    bool grab, dismissed;
     char title[TEXT], app_id[TEXT];
-} xdg;
+};
 
 /* What a commit makes take effect. */
 typedef struct {
@@ -190,7 +211,9 @@ struct mwm_server {
         /* The window the pointer is over, and where in it. */
         window *pointer;
         int32_t x, y;
-        /* The window in front, which gets the keys. */
+        /* The window in front as the Mac said it (0: none), and the window
+         * that gets the keys: that one, or a menu of its that took them. */
+        uint32_t wanted;
         window *keyboard;
         /* The keys that are down, in the order they went down. */
         uint32_t held[MAX_HELD];
@@ -243,6 +266,16 @@ void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 void mwm_shell_commit(mwm_server *s, client *c, surface *f);
 /* The window is told it is the one in front, or that it no longer is. */
 void mwm_shell_activate(mwm_server *s, window *w, bool active);
+/* A window came on the display: a menu that asked for the keyboard takes it. */
+void mwm_shell_window_new(mwm_server *s, window *w);
+/* A window is leaving the display: its popups go first. */
+void mwm_shell_window_going(mwm_server *s, window *w);
+/* The window a popup is on; NULL for a top-level window. */
+window *mwm_shell_parent(const window *w);
+/* The topmost menu on that window that took the keyboard; NULL when none is up. */
+window *mwm_shell_grabbing(mwm_server *s, window *top);
+/* A role is being freed: popups on it are on nothing from now on. */
+void mwm_shell_role_gone(client *c, xdg *x);
 
 /* The pointer and the keyboard (mwm_seat.c). */
 
@@ -256,6 +289,8 @@ void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 /* The window leaves the display: its program is told the pointer and the
  * keyboard left it, and neither is anybody's until the Mac says. */
 void mwm_seat_window_gone(mwm_server *s, window *w);
+/* The keys go to that window (a menu that took them, or what had them before it); NULL: to none. */
+void mwm_seat_keyboard(mwm_server *s, window *w);
 /* The surface is being destroyed: nothing more is said about it. */
 void mwm_seat_surface_gone(mwm_server *s, surface *f);
 

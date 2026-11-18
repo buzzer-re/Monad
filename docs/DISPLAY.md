@@ -76,14 +76,17 @@ its first boot began, and 11 seconds after a restart.
 
 **In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
 takes the display and speaks Wayland to programs with code of its own (the wire format,
-`wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows, `wl_seat`,
-xdg-decoration). Each window gets a place of its own on the display, in rows, a gap from the
-next; what the program drew is drawn there from its buffers, only where it says something
-changed, at the scale it drew at (programs are told the Mac screen's). Programs that ask are told
-the frame is not theirs to draw. The pointer and the keyboard are not read from the VM's devices:
-the window manager is told which window the pointer is over and which one is in front, and only
-the program owning that window hears of it. It is C, compiled in the guest by the distribution's
-`cc`: Xcode cannot build Linux programs, and Monad ships no binary it did not build.
+`wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows and popups,
+`wl_seat`, xdg-decoration). Each window gets a place of its own on the display, in rows, a gap
+from the next; what the program drew is drawn there from its buffers, only where it says
+something changed, at the scale it drew at (programs are told the Mac screen's). A menu, a
+tooltip or a list that drops down is a window too, told with the window it is on and where the
+program put it there; a menu that asked for the keyboard has it while it is up. Programs that
+ask are told the frame is not theirs to draw. The pointer and the keyboard are not read from the
+VM's devices: the window manager is told which window the pointer is over and which one is in
+front, and only the program owning that window hears of it. It is C, compiled in the guest by
+the distribution's `cc`: Xcode cannot build Linux programs, and Monad ships no binary it did not
+build.
 
 **Between the two**, one channel: lines of text on vsock port 1025, which MonadHost dials when
 the guest's installer says the window manager is set up, and which the window manager takes
@@ -93,30 +96,36 @@ guest's as hostile).
 **On the Mac** (`LinuxAppWindows.swift`, shown by MonadHost like the desktop): a window for each
 of the guest's, titled with the program's title and the VM's name, the size the program drew at
 in points. Dragging its edge asks the program to draw at the new size; its red button asks the
-program to close the window. The keys are the Mac's layout as it is: a table of what each key
-types (plain, with Shift, with Option) made with `UCKeyTranslate` and written out in the guest
-as the programs' keymap, dead keys included, sent again when the layout changes. Command is sent
-as Control (⌘C, ⌘V, ⌘S, ⌘Q, ⌘W do in a Linux program what they do on the Mac), the left Option
-as Alt, the right Option as the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the
-Mac's.
+program to close the window. A popup is a window with no frame on the window it belongs to,
+moving with it, shown only where it touches that window; turning to something else (the
+window's frame, another window, another app) tells the program its menus are done with. The
+keys are the Mac's layout as it is: a table of what each key types (plain, with Shift, with
+Option) made with `UCKeyTranslate` and written out in the guest as the programs' keymap, dead
+keys included, sent again when the layout changes. Command is sent as Control (⌘C, ⌘V, ⌘S, ⌘Q,
+⌘W do in a Linux program what they do on the Mac), the left Option as Alt, the right Option as
+the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the Mac's.
 
 Run in Debug VMs (first with the window manager installed by hand, then in a new VM made with
 Display and the profile): foot opened as a Mac window "foot — wm-try" at Retina scale; a command
 typed into it through this Mac's layout ran; a second foot opened as a second window; resizing
 the Mac's window resized the terminal (40 rows by 138 columns at 897×520 points); closing it
-ended foot. The typing, clicking, resizing and closing were done through the Debug tool
-`drive_window`, which calls what the window's own events call, and what a window shows was read
-from its view (`read_windows`): nobody has looked at these windows on the screen yet, or used
-them with a real pointer and keyboard.
+ended foot. GNOME's Calculator (GTK 4) opened as a window; clicks on its buttons gave 7+5=12;
+its mode menu opened as a popup under its button, and choosing Advanced there closed the menu
+and widened the window to the new layout. The typing, clicking, resizing and closing were done
+through the Debug tool `drive_window`, which calls what the window's own events call, and what
+a window shows was read from its view (`read_windows`): nobody has looked at these windows on
+the screen yet, or used them with a real pointer and keyboard.
 
-Not there yet: menus and other popups (a program that opens one is dropped, so GTK and Qt
-programs are not usable); the clipboard (programs may bind its interface, and nothing is
-carried, so even copy and paste inside foot does nothing); the pointer's shape (always the Mac's
-arrow); X11 programs through Xwayland; programs that draw their own title bar whatever they are
-told (GTK's) get the Mac's as well; a window with no room left on the display is not shown;
+Not there yet: the clipboard (programs may bind its interface, and nothing is carried, so even
+copy and paste inside foot does nothing); the pointer's shape (always the Mac's arrow); X11
+programs through Xwayland; programs that draw their own title bar whatever they are told
+(GTK's) get the Mac's above it; a popup that is not a rectangle (GTK 4's menus have round
+corners and a point) is black where it is cut out; a popup is where the program put it, with
+no regard for the Mac screen's edges; a window with no room left on the display is not shown;
 MonadHost has no Dock icon or menus, so these windows are not in ⌘Tab; the desktop and the
 windows cannot be had at once (each profile turns the other's service off; Open Desktop on a VM
-with App windows shows the display the windows are laid out on); distributions without apt.
+with App windows shows the display the windows are laid out on); distributions without apt; Qt
+programs were not tried.
 
 **Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
 Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls

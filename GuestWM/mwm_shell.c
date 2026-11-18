@@ -1,8 +1,15 @@
 /*
- * mwm_shell.c — windows as programs ask for them: xdg_wm_base, its
- * xdg_surface and xdg_toplevel. A surface given the role of a top-level
- * window is told its size at its first commit, and becomes a window on the
- * display once it has a buffer (mwm_server.c shows it).
+ * mwm_shell.c — windows as programs ask for them: xdg_wm_base and its
+ * xdg_surface, which is a top-level window (xdg_toplevel) or a popup on
+ * another window (xdg_popup: a menu, a tooltip, a list that drops down),
+ * and who draws a window's frame (xdg-decoration: the Mac).
+ *
+ * A surface with such a role is told its size at its first commit, and is
+ * a window on the display once it has a buffer (mwm_surface.c gives it a
+ * place and draws it). A popup has a place of its own like any window: it
+ * is told to the Mac with the window it is on and where it stands on it,
+ * and the Mac shows it there. Where it stands is the program's choice (its
+ * positioner); it is not moved to fit a screen, which only the Mac knows.
  */
 #include "mwm_internal.h"
 
@@ -10,27 +17,53 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { XDG_ROLE = 0, XDG_INVALID_SIZE = 5 };
+enum { WM_ROLE = 0, WM_INVALID_POPUP_PARENT = 3, WM_INVALID_POSITIONER = 5 };
+enum { XDG_INVALID_SIZE = 5 };
+enum { POSITIONER_INVALID_INPUT = 0 };
+enum { POPUP_CONFIGURE = 0, POPUP_DONE = 1 };
+/* Edges and corners, as anchors and gravities name them. */
+enum { NONE = 0, TOP, BOTTOM, LEFT, RIGHT, TOP_LEFT, BOTTOM_LEFT, TOP_RIGHT, BOTTOM_RIGHT };
+/* Menus of menus, as deep as any goes. */
+enum { MAX_POPUP_DEPTH = 8 };
 
 static void copy_text(char *dst, const char *src) {
     snprintf(dst, TEXT, "%s", src ? src : "");
 }
 
-/* Tells a top-level window its size and whether it is in front. */
+/* Within what a surface can be: sums of these stay far from overflowing. */
+static int32_t near(int64_t v) {
+    enum { FAR = 1 << 20 };
+    return v < -FAR ? -FAR : v > FAR ? FAR : (int32_t)v;
+}
+
+/* Tells a window its size: a top-level window also whether it is in
+ * front, a popup also where it stands on its parent. */
 static void configure(mwm_server *s, client *c, xdg *x) {
     static const uint32_t activated = 4;
-    mwm_put_begin(c->conn, x->toplevel, 0);
-    mwm_put_int(c->conn, x->width);
-    mwm_put_int(c->conn, x->height);
-    mwm_put_array(c->conn, &activated, x->active ? sizeof activated : 0);
-    mwm_put_end(c->conn);
+    if (x->toplevel) {
+        mwm_put_begin(c->conn, x->toplevel, 0);
+        mwm_put_int(c->conn, x->width);
+        mwm_put_int(c->conn, x->height);
+        mwm_put_array(c->conn, &activated, x->active ? sizeof activated : 0);
+        mwm_put_end(c->conn);
+    } else {
+        mwm_put_begin(c->conn, x->popup, POPUP_CONFIGURE);
+        mwm_put_int(c->conn, x->px);
+        mwm_put_int(c->conn, x->py);
+        mwm_put_int(c->conn, x->width);
+        mwm_put_int(c->conn, x->height);
+        mwm_put_end(c->conn);
+    }
     mwm_event_uint(c, x->id, 0, ++s->serial);
 }
 
-/* The window's role, when its program can still be told things. */
+/* The role of a window on the display; NULL when it has none left. */
+static xdg *role_of(const window *w) { return w && w->used && w->surface ? w->surface->xdg : NULL; }
+
+/* The window's role, when it is a top-level one whose program can still be told things. */
 static xdg *toplevel_of(mwm_server *s, uint32_t window_id) {
     window *w = mwm_window_by_id(s, window_id);
-    xdg *x = w && w->surface ? w->surface->xdg : NULL;
+    xdg *x = role_of(w);
     return x && x->toplevel && x->configured && !w->surface->owner->dead ? x : NULL;
 }
 
@@ -62,24 +95,260 @@ void mwm_shell_commit(mwm_server *s, client *c, surface *f) {
             if (f->window) s->generation++;
         }
     }
-    if (!x->toplevel || x->configured) return;
+    if ((!x->toplevel && !x->popup) || x->configured) return;
     configure(s, c, x); /* its first commit */
     x->configured = true;
 }
 
 void mwm_shell_activate(mwm_server *s, window *w, bool active) {
-    xdg *x = w->used && w->surface ? w->surface->xdg : NULL;
+    xdg *x = role_of(w);
     if (!x || !x->toplevel || !x->configured || x->active == active || w->surface->owner->dead) return;
     x->active = active;
     configure(s, w->surface->owner, x);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Popups                                                                    */
+
+window *mwm_shell_parent(const window *w) {
+    const xdg *x = role_of(w);
+    return x && x->popup && x->parent && x->parent->surface ? x->parent->surface->window : NULL;
+}
+
+/* How many windows down from `top` the window is (0: it is `top`); -1 when it is not on it at all. */
+static int depth_under(const window *w, const window *top) {
+    int depth = 0;
+    for (; w && depth <= MAX_POPUP_DEPTH; w = mwm_shell_parent(w), depth++)
+        if (w == top) return depth;
+    return -1;
+}
+
+window *mwm_shell_grabbing(mwm_server *s, window *top) {
+    window *deepest = NULL;
+    int most = 0;
+    for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
+        window *w = &s->windows[i];
+        const xdg *x = role_of(w);
+        int depth = x && x->popup && x->grab && !w->going ? depth_under(w, top) : -1;
+        if (depth > most) {
+            most = depth;
+            deepest = w;
+        }
+    }
+    return deepest;
+}
+
+void mwm_shell_window_new(mwm_server *s, window *w) {
+    const xdg *x = role_of(w);
+    if (!x || !x->popup || !x->grab) return;
+    /* A menu takes the keys from the window it came from, when that one had them. */
+    for (window *up = mwm_shell_parent(w); up; up = mwm_shell_parent(up)) {
+        if (up == s->seat.keyboard) {
+            mwm_seat_keyboard(s, w);
+            return;
+        }
+    }
+}
+
+static void popup_done(xdg *x) {
+    client *c = x->surface ? x->surface->owner : NULL;
+    if (x->dismissed || !x->popup) return;
+    x->dismissed = true;
+    if (!c || c->dead) return;
+    mwm_put_begin(c->conn, x->popup, POPUP_DONE);
+    mwm_put_end(c->conn);
+}
+
+void mwm_shell_window_going(mwm_server *s, window *w) {
+    w->going = true;
+    /* Its popups go first, each told it is done with: a popup shows on nothing. */
+    for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
+        window *child = &s->windows[i];
+        if (!child->used || child->going || mwm_shell_parent(child) != w) continue;
+        popup_done(role_of(child));
+        mwm_window_gone(s, child);
+        i = -1; /* the list changed under us: from the start */
+    }
+}
+
+void mwm_server_dismiss(mwm_server *s, uint32_t window_id) {
+    window *top = mwm_window_by_id(s, window_id);
+    if (!top) return;
+    for (;;) { /* the one on top first, as a program expects of its menus */
+        window *deepest = NULL;
+        int most = -1;
+        for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
+            window *w = &s->windows[i];
+            const xdg *x = role_of(w);
+            int depth = x && x->popup && !x->dismissed ? depth_under(w, top) : -1;
+            if (depth > most) {
+                most = depth;
+                deepest = w;
+            }
+        }
+        if (!deepest) break;
+        popup_done(role_of(deepest));
+    }
+    mwm_flush(s);
+}
+
+void mwm_shell_role_gone(client *c, xdg *x) {
+    for (uint32_t i = 0; i < c->object_cap; i++) {
+        if (c->objects[i].type != T_XDG_SURFACE) continue;
+        xdg *other = c->objects[i].data;
+        if (other->parent == x) other->parent = NULL;
+    }
+}
+
+/* Where the popup stands on its parent: the point of the anchor rectangle
+ * it hangs at, the way it grows from there, and its offset. */
+static void stand(xdg *x, const positioner *p) {
+    bool left = p->anchor == LEFT || p->anchor == TOP_LEFT || p->anchor == BOTTOM_LEFT;
+    bool right = p->anchor == RIGHT || p->anchor == TOP_RIGHT || p->anchor == BOTTOM_RIGHT;
+    bool top = p->anchor == TOP || p->anchor == TOP_LEFT || p->anchor == TOP_RIGHT;
+    bool bottom = p->anchor == BOTTOM || p->anchor == BOTTOM_LEFT || p->anchor == BOTTOM_RIGHT;
+    int64_t at_x = (int64_t)p->ax + (left ? 0 : right ? p->aw : p->aw / 2);
+    int64_t at_y = (int64_t)p->ay + (top ? 0 : bottom ? p->ah : p->ah / 2);
+    left = p->gravity == LEFT || p->gravity == TOP_LEFT || p->gravity == BOTTOM_LEFT;
+    right = p->gravity == RIGHT || p->gravity == TOP_RIGHT || p->gravity == BOTTOM_RIGHT;
+    top = p->gravity == TOP || p->gravity == TOP_LEFT || p->gravity == TOP_RIGHT;
+    bottom = p->gravity == BOTTOM || p->gravity == BOTTOM_LEFT || p->gravity == BOTTOM_RIGHT;
+    x->px = near(at_x - (left ? p->width : right ? 0 : p->width / 2) + p->ox);
+    x->py = near(at_y - (top ? p->height : bottom ? 0 : p->height / 2) + p->oy);
+    x->width = p->width;
+    x->height = p->height;
+}
+
+static void positioner_request(client *c, positioner *p, mwm_msg *m) {
+    switch (m->opcode) {
+    case 0: /* destroy */
+        mwm_del(c, m->object);
+        free(p);
+        break;
+    case 1: { /* set_size */
+        int32_t width = mwm_get_int(m), height = mwm_get_int(m);
+        if (m->bad) return;
+        if (width < 1 || height < 1) {
+            mwm_fail(c, m->object, POSITIONER_INVALID_INPUT, "a popup has a width and a height");
+            return;
+        }
+        p->width = width < MWM_MAX_SIDE ? width : MWM_MAX_SIDE;
+        p->height = height < MWM_MAX_SIDE ? height : MWM_MAX_SIDE;
+        break;
+    }
+    case 2: { /* set_anchor_rect */
+        int32_t x = mwm_get_int(m), y = mwm_get_int(m), width = mwm_get_int(m), height = mwm_get_int(m);
+        if (m->bad) return;
+        if (width < 0 || height < 0) {
+            mwm_fail(c, m->object, POSITIONER_INVALID_INPUT, "a rectangle has no negative size");
+            return;
+        }
+        p->ax = near(x);
+        p->ay = near(y);
+        p->aw = near(width);
+        p->ah = near(height);
+        break;
+    }
+    case 3: case 4: { /* set_anchor, set_gravity */
+        uint32_t edge = mwm_get_uint(m);
+        if (m->bad) return;
+        if (edge > BOTTOM_RIGHT) {
+            mwm_fail(c, m->object, POSITIONER_INVALID_INPUT, "no such edge or corner");
+            return;
+        }
+        if (m->opcode == 3) p->anchor = edge;
+        else p->gravity = edge;
+        break;
+    }
+    case 6: { /* set_offset */
+        int32_t x = mwm_get_int(m), y = mwm_get_int(m);
+        if (m->bad) return;
+        p->ox = near(x);
+        p->oy = near(y);
+        break;
+    }
+    case 5: case 7: case 8: case 9: /* how to fit a screen, which only the Mac knows; and what a newer xdg_wm_base adds */
+        mwm_skip_arguments(m);
+        break;
+    default:
+        mwm_fail(c, m->object, E_INVALID_METHOD, "xdg_positioner has no such request");
+    }
+}
+
+static void get_popup(client *c, xdg *x, mwm_msg *m) {
+    uint32_t id = mwm_get_uint(m), parent_id = mwm_get_uint(m), positioner_id = mwm_get_uint(m);
+    if (m->bad) return;
+    if (x->toplevel || x->popup) {
+        mwm_fail(c, m->object, WM_ROLE, "it is a window of another kind already");
+        return;
+    }
+    xdg *parent = mwm_find_as(c, parent_id, T_XDG_SURFACE);
+    if (!parent || parent == x) {
+        mwm_fail(c, m->object, WM_INVALID_POPUP_PARENT, "a popup is on another window");
+        return;
+    }
+    const positioner *p = mwm_find_as(c, positioner_id, T_POSITIONER);
+    if (!p) {
+        mwm_fail(c, m->object, E_INVALID_OBJECT, "not a positioner");
+        return;
+    }
+    if (p->width < 1 || p->height < 1) {
+        mwm_fail(c, m->object, WM_INVALID_POSITIONER, "the positioner says no size");
+        return;
+    }
+    int depth = 1;
+    for (const xdg *up = parent; up; up = up->parent) {
+        if (up == x || ++depth > MAX_POPUP_DEPTH) {
+            mwm_fail(c, m->object, E_NO_MEMORY, "popups too deep in popups");
+            return;
+        }
+    }
+    if (!mwm_add(c, id, T_POPUP, x)) return;
+    x->popup = id;
+    x->parent = parent;
+    x->grab = x->dismissed = false;
+    stand(x, p);
+}
+
+static void popup_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
+    if (m->opcode == 0) { /* destroy: no longer a window */
+        if (x->surface) mwm_window_gone(s, x->surface->window);
+        x->popup = 0;
+        x->parent = NULL;
+        x->configured = x->grab = x->dismissed = false;
+        x->width = x->height = 0;
+        mwm_del(c, m->object);
+    } else if (m->opcode == 1) { /* grab: it takes the keys while it is up (a menu) */
+        uint32_t seat = mwm_get_uint(m);
+        (void)mwm_get_uint(m);
+        if (m->bad) return;
+        if (!mwm_is(c, seat, T_SEAT)) {
+            mwm_fail(c, m->object, E_INVALID_OBJECT, "not a seat");
+            return;
+        }
+        x->grab = true;
+    } else if (m->opcode == 2) { /* reposition, of a newer xdg_wm_base than is offered */
+        mwm_skip_arguments(m);
+    } else {
+        mwm_fail(c, m->object, E_INVALID_METHOD, "xdg_popup has no such request");
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Requests                                                                  */
+
 static void wm_base_request(client *c, mwm_msg *m) {
     if (m->opcode == 0) { /* destroy */
         mwm_del(c, m->object);
-    } else if (m->opcode == 1) { /* create_positioner: kept, unused until there are popups */
+    } else if (m->opcode == 1) { /* create_positioner */
         uint32_t id = mwm_get_uint(m);
-        if (!m->bad) (void)mwm_add(c, id, T_POSITIONER, NULL);
+        if (m->bad) return;
+        positioner *p = calloc(1, sizeof *p);
+        if (!p) {
+            mwm_fail(c, m->object, E_NO_MEMORY, "out of memory");
+            return;
+        }
+        if (!mwm_add(c, id, T_POSITIONER, p)) free(p);
     } else if (m->opcode == 2) { /* get_xdg_surface */
         uint32_t id = mwm_get_uint(m), surface_id = mwm_get_uint(m);
         if (m->bad) return;
@@ -89,7 +358,7 @@ static void wm_base_request(client *c, mwm_msg *m) {
             return;
         }
         if (f->xdg || f->sub || f->current) {
-            mwm_fail(c, m->object, XDG_ROLE, "the surface has a role or a buffer already");
+            mwm_fail(c, m->object, WM_ROLE, "the surface has a role or a buffer already");
             return;
         }
         xdg *x = calloc(1, sizeof *x);
@@ -117,19 +386,21 @@ static void xdg_surface_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
             mwm_window_gone(s, x->surface->window);
             x->surface->xdg = NULL;
         }
+        mwm_shell_role_gone(c, x);
         if (x->toplevel) mwm_del(c, x->toplevel);
+        if (x->popup) mwm_del(c, x->popup);
         mwm_del(c, m->object);
         free(x);
     } else if (m->opcode == 1) { /* get_toplevel */
         uint32_t id = mwm_get_uint(m);
         if (m->bad) return;
-        if (x->toplevel) {
-            mwm_fail(c, m->object, XDG_ROLE, "it is a top-level window already");
+        if (x->toplevel || x->popup) {
+            mwm_fail(c, m->object, WM_ROLE, "it is a window of another kind already");
             return;
         }
         if (mwm_add(c, id, T_TOPLEVEL, x)) x->toplevel = id;
-    } else if (m->opcode == 2) { /* get_popup */
-        mwm_fail(c, m->object, E_IMPLEMENTATION, "Monad's window manager has no popups yet");
+    } else if (m->opcode == 2) {
+        get_popup(c, x, m);
     } else if (m->opcode == 3) { /* set_window_geometry: at the surface's next commit */
         int32_t gx = mwm_get_int(m), gy = mwm_get_int(m), width = mwm_get_int(m), height = mwm_get_int(m);
         if (m->bad) return;
@@ -222,14 +493,16 @@ void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
         wm_base_request(c, m);
         break;
     case T_POSITIONER:
-        if (m->opcode == 0) mwm_del(c, m->object);
-        else mwm_skip_arguments(m);
+        positioner_request(c, o->data, m);
         break;
     case T_XDG_SURFACE:
         xdg_surface_request(s, c, o->data, m);
         break;
     case T_TOPLEVEL:
         toplevel_request(s, c, o->data, m);
+        break;
+    case T_POPUP:
+        popup_request(s, c, o->data, m);
         break;
     default:
         break;

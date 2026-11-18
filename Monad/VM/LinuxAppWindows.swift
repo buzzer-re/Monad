@@ -63,8 +63,16 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         let window: NSWindow
         let content: Content
         let display: NSView
+        /// A menu or another popup: a window of no frame, on the window it belongs to.
+        var isPopup = false
         /// The size it is being given here, not by the user: not to be said back.
         var applying = false
+    }
+
+    /// A popup's window: it never takes the keys from the window it is on.
+    private final class PopupWindow: NSWindow {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
     }
 
     init(machine: VZVirtualMachine, vmName: String) {
@@ -128,6 +136,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
 
     private func open(_ guest: GuestWindow) {
         guard #available(macOS 27, *), shown[guest.id] == nil else { return }
+        if guest.isPopup { return openPopup(guest) }
         NSApplication.shared.setActivationPolicy(.accessory)
         let view = VZVirtualMachineView()
         view.adaptor = VZVirtualMachineViewAdaptor(virtualMachine: machine)
@@ -160,13 +169,64 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         sayScale()
     }
 
+    /// A menu, a tooltip, a list that drops down: a window with no frame,
+    /// where the program put it on the window it belongs to, moving with it.
+    private func openPopup(_ guest: GuestWindow) {
+        guard #available(macOS 27, *), shown[guest.parent] != nil else { return }
+        let view = VZVirtualMachineView()
+        view.adaptor = VZVirtualMachineViewAdaptor(virtualMachine: machine)
+        view.automaticallyReconfiguresDisplay = false
+        view.capturesSystemKeys = false
+        let content = Content(id: guest.id, owner: self, popup: true)
+        content.addSubview(view)
+        let window = PopupWindow(contentRect: NSRect(origin: .zero, size: GuestWindowLayout.contentSize(guest)),
+                                 styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = content
+        window.acceptsMouseMovedEvents = true
+        window.hasShadow = true
+        shown[guest.id] = Shown(window: window, content: content, display: view, isPopup: true)
+        view.frame = GuestWindowLayout.displayFrame(guest, display: display)
+        placePopup(guest)
+    }
+
+    /// Puts a popup where the program said, from the top left of the window
+    /// it is on; one that would not touch that window is not shown (it has
+    /// no title to say whose it is).
+    private func placePopup(_ guest: GuestWindow) {
+        guard let entry = shown[guest.id], entry.isPopup, let parent = shown[guest.parent], let on = self.guest(guest.parent) else { return }
+        let offset = GuestWindowLayout.popupOffset(guest, on: on), size = GuestWindowLayout.contentSize(guest)
+        guard GuestWindowLayout.popupTouches(offset: offset, size: size, window: parent.content.bounds.size) else {
+            entry.window.parent?.removeChildWindow(entry.window)
+            entry.window.orderOut(nil)
+            return
+        }
+        // The content is counted from its top left; the screen from its bottom left.
+        let corner = parent.window.convertPoint(toScreen: parent.content.convert(NSPoint(x: offset.x, y: offset.y), to: nil))
+        entry.window.setFrame(NSRect(x: corner.x, y: corner.y - size.height, width: size.width, height: size.height), display: true)
+        if entry.window.parent == nil { parent.window.addChildWindow(entry.window, ordered: .above) }
+    }
+
+    /// The popups on a window (and theirs) go where it now is.
+    private func placePopups(on id: UInt32) {
+        for guest in windows where guest.parent == id {
+            placePopup(guest)
+            placePopups(on: guest.id)
+        }
+    }
+
     private func update(_ guest: GuestWindow) {
         guard var entry = shown[guest.id] else { return }
-        entry.window.title = GuestWindowLayout.title(guest, vm: vmName)
         entry.display.frame = GuestWindowLayout.displayFrame(guest, display: display)
-        // While the user drags its edge the Mac's window is the user's; it takes the program's size when they let go.
-        if !entry.window.inLiveResize { fit(&entry, to: guest) }
-        shown[guest.id] = entry
+        if entry.isPopup {
+            placePopup(guest)
+        } else {
+            entry.window.title = GuestWindowLayout.title(guest, vm: vmName)
+            // While the user drags its edge the Mac's window is the user's; it takes the program's size when they let go.
+            if !entry.window.inLiveResize { fit(&entry, to: guest) }
+            shown[guest.id] = entry
+        }
+        placePopups(on: guest.id)
     }
 
     /// Gives the Mac's window the program's size, its top left staying where it is.
@@ -186,6 +246,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private func close(_ id: UInt32) {
         guard let entry = shown.removeValue(forKey: id) else { return }
         entry.window.delegate = nil
+        entry.window.parent?.removeChildWindow(entry.window)
         entry.window.close()
         if saidFocus == id { saidFocus = 0 }
         if saidPointer == id { saidPointer = 0 }
@@ -206,9 +267,20 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         return false
     }
 
+    /// The user turned to something else (the window's frame, another
+    /// window, another app): a menu left up is done with, as on the Mac.
+    private func dismissPopups(of window: NSWindow?) {
+        guard let id = id(of: window), windows.contains(where: { $0.parent == id }) else { return }
+        onCommand?(.dismiss(window: id))
+    }
+
+    func windowWillMove(_ notification: Notification) { dismissPopups(of: notification.object as? NSWindow) }
+    func windowWillStartLiveResize(_ notification: Notification) { dismissPopups(of: notification.object as? NSWindow) }
+
     func windowDidResize(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, let id = id(of: window), let entry = shown[id], !entry.applying,
-              let size = window.contentView?.frame.size else { return }
+        guard let window = notification.object as? NSWindow, let id = id(of: window), let entry = shown[id], !entry.isPopup else { return }
+        placePopups(on: id)
+        guard !entry.applying, let size = window.contentView?.frame.size else { return }
         onCommand?(.size(window: id, width: max(1, Int(size.width.rounded())), height: max(1, Int(size.height.rounded()))))
     }
 
@@ -231,6 +303,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        dismissPopups(of: notification.object as? NSWindow)
         // What is held stays with the window that had it: for the VM, every key comes up.
         releaseKeys()
         DispatchQueue.main.async { [weak self] in
@@ -358,11 +431,13 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     /// Counted from its top left, as the display is.
     private final class Content: NSView {
         private let id: UInt32
+        private let popup: Bool
         private weak var owner: LinuxAppWindows?
         private var tracking: NSTrackingArea?
 
-        init(id: UInt32, owner: LinuxAppWindows) {
+        init(id: UInt32, owner: LinuxAppWindows, popup: Bool = false) {
             self.id = id
+            self.popup = popup
             self.owner = owner
             super.init(frame: .zero)
             wantsLayer = true
@@ -375,13 +450,16 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
 
         override var isFlipped: Bool { true }
         override var acceptsFirstResponder: Bool { true }
+        /// A menu's first click is a choice, not a way to bring its window forward.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { popup }
         /// The display's view is to look at: the pointer is this view's.
         override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             if let tracking { removeTrackingArea(tracking) }
-            let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            // A popup's window is never the key window: the pointer over it counts all the same.
+            let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, popup ? .activeAlways : .activeInKeyWindow, .inVisibleRect],
                                       owner: self, userInfo: nil)
             addTrackingArea(area)
             tracking = area

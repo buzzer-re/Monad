@@ -110,13 +110,16 @@ final class ParserFuzzTests: XCTestCase {
 
     /// Whatever a VM's window manager sends, a window MonadHost is told
     /// lies on the display it was said to have, there are no more than
-    /// there may be, and its texts are fit to show.
+    /// there may be, its texts are fit to show, and a popup is on another
+    /// window of the same list.
     func testAGuestsWindowsLieOnItsDisplayAndAreFitToShow() {
         var r = FuzzRandom(seed: 8)
-        let seeds = ["monad-wm 1 1920 1200\nwindows 3 2\nwindow 1 0 0 696 468 1 0 0 696 468 foot foot\n" +
-                     "window 2 712 0 800 600 2 26 23 748 554 org.gnome.Calculator 50%25%20of%20caf%C3%A9%E2%80%AE\nend\n",
-                     "monad-wm 1 8192 8192\nwindows 1 1\nwindow 4294967295 8000 8000 192 192 4 0 0 192 192 - -\nend\n",
-                     "monad-wm 1 64 64\nwindows 9 0\nend\ncursor text\nwindows 10 1\nwindow 7 0 0 64 64 1 1 1 1 1 %00%0A%1B %FF\nend\n"]
+        let seeds = ["monad-wm 1 1920 1200\nwindows 3 2\nwindow 1 0 0 696 468 1 0 0 696 468 0 0 0 foot foot\n" +
+                     "window 2 712 0 800 600 2 26 23 748 554 0 0 0 org.gnome.Calculator 50%25%20of%20caf%C3%A9%E2%80%AE\nend\n",
+                     "monad-wm 1 8192 8192\nwindows 1 1\nwindow 4294967295 8000 8000 192 192 4 0 0 192 192 0 0 0 - -\nend\n",
+                     "monad-wm 1 64 64\nwindows 9 0\nend\ncursor text\nwindows 10 1\nwindow 7 0 0 64 64 1 1 1 1 1 0 0 0 %00%0A%1B %FF\nend\n",
+                     "monad-wm 1 1920 1200\nwindows 4 3\nwindow 1 0 0 400 300 2 0 0 400 300 0 0 0 app W\n" +
+                     "window 2 416 0 120 80 2 4 4 112 72 1 20 88 - -\nwindow 3 552 0 60 40 2 0 0 60 40 2 -30 -500 - -\nend\n"]
         var lists = 0
         for _ in 0..<rounds {
             var reader = GuestWindowReader()
@@ -127,6 +130,10 @@ final class ParserFuzzTests: XCTestCase {
                 lists += 1
                 XCTAssertLessThanOrEqual(windows.count, GuestWindowReader.maxWindows)
                 XCTAssertEqual(Set(windows.map(\.id)).count, windows.count)
+                for w in windows where w.parent != 0 {
+                    XCTAssertTrue(w.parent != w.id && windows.contains { $0.id == w.parent })
+                    XCTAssertTrue(abs(w.offsetX) <= GuestWindowReader.maxOffset && abs(w.offsetY) <= GuestWindowReader.maxOffset)
+                }
                 for w in windows {
                     XCTAssertTrue(w.id != 0 && w.width > 0 && w.height > 0 && w.x >= 0 && w.y >= 0)
                     XCTAssertTrue(w.x + w.width <= display.width && w.y + w.height <= display.height)

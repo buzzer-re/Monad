@@ -357,6 +357,7 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_POSITIONER:
     case T_XDG_SURFACE:
     case T_TOPLEVEL:
+    case T_POPUP:
     case T_DECORATION_MANAGER:
     case T_DECORATION:
         mwm_shell_request(s, c, o, m);
@@ -389,7 +390,7 @@ static void client_free(mwm_server *s, client *c) {
         object *o = &c->objects[i];
         switch ((obj_type)o->type) {
         case T_BUFFER: buffer_destroy(c, o->data, false); break;
-        case T_XDG_SURFACE: case T_SUBSURFACE: free(o->data); break;
+        case T_XDG_SURFACE: case T_SUBSURFACE: case T_POSITIONER: free(o->data); break;
         default: continue;
         }
         o->type = T_NONE;
@@ -530,9 +531,13 @@ int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
                 if (g.y2 > w->height) g.y2 = w->height;
                 if (g.x2 > g.x1 && g.y2 > g.y1) inner = g;
             }
+            /* A popup: the window it is on, and where it stands from that window's own top left, in that window's pixels. */
+            const window *on = mwm_shell_parent(w);
             out[n] = (mwm_window){.id = w->id, .x = w->x, .y = w->y, .width = w->width, .height = w->height, .scale = w->scale,
                                   .inner_x = inner.x1, .inner_y = inner.y1, .inner_width = inner.x2 - inner.x1,
-                                  .inner_height = inner.y2 - inner.y1, .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
+                                  .inner_height = inner.y2 - inner.y1, .parent = on ? on->id : 0,
+                                  .offset_x = on ? x->px * on->scale : 0, .offset_y = on ? x->py * on->scale : 0,
+                                  .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
         }
         n++;
     }

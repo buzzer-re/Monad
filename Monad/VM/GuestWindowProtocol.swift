@@ -32,6 +32,13 @@ struct GuestWindow: Equatable, Sendable, Identifiable {
     let innerX: Int, innerY: Int, innerWidth: Int, innerHeight: Int
     let appID: String
     let title: String
+    /// A popup (a menu, a tooltip): the window it is on, and where its
+    /// inner part stands from that window's inner top left, in that
+    /// window's pixels (it may reach outside it). 0 for a window of its own.
+    var parent: UInt32 = 0
+    var offsetX = 0, offsetY = 0
+
+    var isPopup: Bool { parent != 0 }
 }
 
 enum GuestWindowEvent: Equatable, Sendable {
@@ -63,6 +70,8 @@ enum GuestWindowCommand: Equatable, Sendable {
     case keys([GuestKey])
     case size(window: UInt32, width: Int, height: Int)
     case close(window: UInt32)
+    /// The user clicked away from that window's popups.
+    case dismiss(window: UInt32)
 
     /// The lines, as mwm_ctl.c reads them.
     var text: String {
@@ -82,6 +91,7 @@ enum GuestWindowCommand: Equatable, Sendable {
             }.joined()
         case .size(let window, let width, let height): return "size \(window) \(width) \(height)\n"
         case .close(let window): return "close \(window)\n"
+        case .dismiss(let window): return "dismiss \(window)\n"
         }
     }
 }
@@ -99,6 +109,11 @@ struct GuestWindowReader {
     static let maxScale = 4
     /// A title's bytes at most (the window manager cuts at 127).
     static let maxTextBytes = 128
+    /// Menus of menus, as deep as any goes (the window manager allows no more).
+    static let maxPopupDepth = 8
+    /// How far from its window a popup may say it stands, in pixels: more
+    /// than the window manager lets a program ask.
+    static let maxOffset = 1 << 23
 
     private(set) var isBroken = false
     private(set) var display: GuestDisplaySize?
@@ -153,7 +168,7 @@ struct GuestWindowReader {
             list.append(window)
             return nil
         case "end":
-            guard let count = expected, list.count == count, words.count == 1 else { return broken() }
+            guard let count = expected, list.count == count, words.count == 1, Self.popupsHold(list) else { return broken() }
             let whole = list
             expected = nil
             list = []
@@ -168,17 +183,41 @@ struct GuestWindowReader {
         return nil
     }
 
+    /// Every popup is on a window of the list, by way of no more popups than may be, and never of itself.
+    private static func popupsHold(_ list: [GuestWindow]) -> Bool {
+        let parents = Dictionary(list.map { ($0.id, $0.parent) }, uniquingKeysWith: { first, _ in first })
+        return list.allSatisfy { window in
+            var up = window.parent, depth = 0
+            while up != 0 {
+                depth += 1
+                guard depth <= maxPopupDepth, let next = parents[up] else { return false }
+                up = next
+            }
+            return true
+        }
+    }
+
     private func window(_ words: [Substring]) -> GuestWindow? {
-        guard let display, words.count == 13,
+        guard let display, words.count == 16,
               let id = Self.number(words[1], 1...Int(UInt32.max)),
               let width = Self.number(words[4], 1...display.width), let height = Self.number(words[5], 1...display.height),
               let x = Self.number(words[2], 0...(display.width - width)), let y = Self.number(words[3], 0...(display.height - height)),
               let scale = Self.number(words[6], 1...Self.maxScale),
               let innerWidth = Self.number(words[9], 1...width), let innerHeight = Self.number(words[10], 1...height),
               let innerX = Self.number(words[7], 0...(width - innerWidth)), let innerY = Self.number(words[8], 0...(height - innerHeight)),
-              let appID = Self.text(words[11]), let title = Self.text(words[12]) else { return nil }
+              let parent = Self.number(words[11], 0...Int(UInt32.max)), parent != id,
+              let offsetX = Self.signed(words[12], Self.maxOffset), let offsetY = Self.signed(words[13], Self.maxOffset),
+              parent != 0 || (offsetX == 0 && offsetY == 0),
+              let appID = Self.text(words[14]), let title = Self.text(words[15]) else { return nil }
         return GuestWindow(id: UInt32(id), x: x, y: y, width: width, height: height, scale: scale,
-                           innerX: innerX, innerY: innerY, innerWidth: innerWidth, innerHeight: innerHeight, appID: appID, title: title)
+                           innerX: innerX, innerY: innerY, innerWidth: innerWidth, innerHeight: innerHeight, appID: appID, title: title,
+                           parent: UInt32(parent), offsetX: offsetX, offsetY: offsetY)
+    }
+
+    /// A strict decimal that may be negative ("-5"; never "-0" or "+5"), within ±`bound`.
+    private static func signed(_ word: Substring, _ bound: Int) -> Int? {
+        guard word.first == "-" else { return number(word, 0...bound) }
+        return number(word.dropFirst(), 1...bound).map { -$0 }
     }
 
     /// Strict decimal within `range`: digits only, no sign, no leading zero.

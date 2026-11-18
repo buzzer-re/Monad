@@ -79,6 +79,42 @@ final class GuestWindowLayoutTests: XCTestCase {
         XCTAssertTrue(GuestWindowLayout.scroll(deltaX: .infinity, deltaY: .nan, precise: true) == (Int32.min, 0))
     }
 
+    /// A popup stands on its window where the program put it, in points
+    /// from the window's own top left, down and right.
+    func testAPopupStandsOnItsWindow() {
+        var menu = window(x: 900, width: 120, height: 80, scale: 2)
+        menu.parent = 7
+        menu.offsetX = 20
+        menu.offsetY = 88
+        XCTAssertEqual(GuestWindowLayout.popupOffset(menu, on: window(width: 1600, height: 1200, scale: 2)), CGPoint(x: 10, y: 44))
+        XCTAssertEqual(GuestWindowLayout.popupOffset(menu, on: window()), CGPoint(x: 20, y: 88), "its window's pixels, not its own")
+        menu.offsetX = -31
+        menu.offsetY = -500
+        XCTAssertEqual(GuestWindowLayout.popupOffset(menu, on: window(scale: 2)), CGPoint(x: -15.5, y: -250), "it may reach outside its window")
+    }
+
+    /// A popup is shown only where it touches the window it is on: one
+    /// put elsewhere on the screen would be a window with no title to say
+    /// whose it is.
+    func testAPopupAwayFromItsWindowIsNotShown() {
+        let window = CGSize(width: 400, height: 300)
+        func touches(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat = 100, _ h: CGFloat = 60) -> Bool {
+            GuestWindowLayout.popupTouches(offset: CGPoint(x: x, y: y), size: CGSize(width: w, height: h), window: window)
+        }
+        XCTAssertTrue(touches(10, 44), "a menu under a button")
+        XCTAssertTrue(touches(350, 280), "reaching out past the corner")
+        XCTAssertTrue(touches(400, 100), "a submenu beside the window's edge")
+        XCTAssertTrue(touches(100, 300), "a list that drops below the window")
+        XCTAssertTrue(touches(-100, 50), "to its left")
+        XCTAssertTrue(touches(100, -60), "above it")
+        XCTAssertFalse(touches(420, 100), "away to the right")
+        XCTAssertFalse(touches(100, 330), "away below")
+        XCTAssertFalse(touches(-2000, -2000))
+        XCTAssertFalse(touches(.nan, 0))
+        XCTAssertFalse(touches(0, 0, 0, 10), "no size")
+        XCTAssertFalse(touches(0, 0, 20000, 20000), "larger than any screen")
+    }
+
     /// What the Mac's title bar says: the program's title, and always whose window it is.
     func testATitleSaysWhoseWindowItIs() {
         XCTAssertEqual(GuestWindowLayout.title(window(title: "notes.txt"), vm: "dev"), "notes.txt — dev")

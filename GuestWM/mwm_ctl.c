@@ -130,8 +130,9 @@ static void tell_windows(mwm_ctl *c) {
         if (strlen(list[i].app_id) > 127 || strlen(list[i].title) > 127) continue; /* never: the server cuts them */
         word(app, list[i].app_id);
         word(title, list[i].title);
-        say(c, "window %u %d %d %d %d %d %d %d %d %d %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width, list[i].height,
-            list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height, app, title);
+        say(c, "window %u %d %d %d %d %d %d %d %d %d %u %d %d %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width, list[i].height,
+            list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height, list[i].parent,
+            list[i].offset_x, list[i].offset_y, app, title);
     }
     say(c, "end\n");
     c->told = generation;
@@ -234,6 +235,8 @@ static void command(mwm_ctl *c, char *text, uint32_t time_ms) {
         }
     } else if (IS("close")) {
         if (numbers(rest, 1, n) && is_uint(n[0])) mwm_server_close(s, (uint32_t)n[0]);
+    } else if (IS("dismiss")) {
+        if (numbers(rest, 1, n) && is_uint(n[0])) mwm_server_dismiss(s, (uint32_t)n[0]);
     }
 #undef IS
 }

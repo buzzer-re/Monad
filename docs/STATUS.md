@@ -50,25 +50,27 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   Mac's screen (keys, clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
   none to a Linux guest: measured), a desktop with a panel (XFCE fails to start this way on Ubuntu
   26.04), Debian's and Kali's cloud kernels.
-- **Linux programs as Mac windows: works for a terminal, not for programs with menus yet**
+- **Linux programs as Mac windows: works for a terminal and a GTK program, driven by tools so far**
   (`docs/DISPLAY.md`). A VM with Display on and the App windows profile: the VM builds Monad's own
   window manager (`GuestWM/`, C, with the VM's compiler) from sources Monad's installer puts
   there at each boot, and a program started from a tab opens as a window on the Mac. In the
-  guest: the Wayland wire format; top-level windows and their subsurfaces, drawn from shared
-  memory where the program says something changed, each at a place of its own on the display; a
-  pointer and a keyboard told from outside; a channel to MonadHost on a vsock port only the Mac
-  can dial. On the Mac, MonadHost dials it when the guest says it is there, reads its windows as
-  hostile text, and shows each as a Mac window (`LinuxAppWindows.swift`) with the Mac's pointer,
-  the Mac's keyboard layout as it is, resize and close. Checked in Debug VMs, the last one made
-  new with Display and the profile: foot as a Mac window at Retina scale, typed into, resized, a
-  second one, closed, back after a restart; all of it through the Debug tools `drive_window` and
-  `read_windows`, which call what the windows' own events call and read what their views hold.
-  Nobody has looked at these windows on the screen or used them with a real pointer and keyboard
-  yet. Next: popups (GTK and Qt programs are dropped when they open a menu), the clipboard, the
-  pointer's shape, Xwayland, a Dock icon and menus for MonadHost, the desktop and the windows at
-  once. Not tried: a program that shrinks its shared memory under the window manager (the guard
-  is written, not run), more windows than fit on the display, two screens of different scales, a
-  Monad update that changes the sources (the rebuild at boot is tested with stand-ins only).
+  guest: the Wayland wire format; top-level windows, their subsurfaces and their popups (menus),
+  drawn from shared memory where the program says something changed, each at a place of its own
+  on the display; a pointer and a keyboard told from outside; a channel to MonadHost on a vsock
+  port only the Mac can dial. On the Mac, MonadHost dials it when the guest says it is there,
+  reads its windows as hostile text, and shows each as a Mac window (`LinuxAppWindows.swift`)
+  with the Mac's pointer, the Mac's keyboard layout as it is, resize and close; a popup as a
+  frameless window on its window. Checked in Debug VMs, the last one made new with Display and
+  the profile: foot at Retina scale, typed into, resized, a second one, closed, back after a
+  restart, rebuilt at boot when Monad's sources changed; GNOME's Calculator clicked through a
+  sum and its mode menu. All of it through the Debug tools `drive_window` and `read_windows`,
+  which call what the windows' own events call and read what their views hold. Nobody has
+  looked at these windows on the screen or used them with a real pointer and keyboard yet.
+  Next: the clipboard, the pointer's shape, Xwayland, a Dock icon and menus for MonadHost, the
+  desktop and the windows at once, GTK's own title bar under the Mac's, popups with round
+  corners (black where cut out). Not tried: Qt programs, a program that shrinks its shared
+  memory under the window manager (the guard is written, not run), more windows than fit on
+  the display, two screens of different scales.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, Desktop, App windows, custom),

@@ -187,19 +187,31 @@ static void keyboard_leave(mwm_server *s, bool tell) {
     s->seat.keyboard = NULL;
 }
 
-void mwm_server_focus(mwm_server *s, uint32_t window_id) {
-    window *w = mwm_window_by_id(s, window_id), *old = s->seat.keyboard;
-    if (w == old) return;
-    if (old) {
-        keyboard_leave(s, true);
-        mwm_shell_activate(s, old, false);
-    }
+void mwm_seat_keyboard(mwm_server *s, window *w) {
+    if (w == s->seat.keyboard) return;
+    keyboard_leave(s, true);
     s->seat.keyboard = w;
     client *c = owner(w);
-    if (c) {
+    if (!c) return;
+    uint32_t serial = ++s->serial;
+    for (uint32_t id = 0; (id = next_of(c, T_KEYBOARD, id)) != 0;) keyboard_enter(s, c, id, serial);
+}
+
+void mwm_server_focus(mwm_server *s, uint32_t window_id) {
+    window *w = mwm_window_by_id(s, window_id);
+    /* A popup is no window to be in front: the window it is on is. */
+    for (window *up; w && (up = mwm_shell_parent(w)) != NULL;) w = up;
+    uint32_t id = w ? w->id : 0;
+    if (id == s->seat.wanted) return;
+    window *old = mwm_window_by_id(s, s->seat.wanted);
+    keyboard_leave(s, true);
+    if (old) mwm_shell_activate(s, old, false);
+    s->seat.wanted = id;
+    if (w) {
         mwm_shell_activate(s, w, true);
-        uint32_t serial = ++s->serial;
-        for (uint32_t id = 0; (id = next_of(c, T_KEYBOARD, id)) != 0;) keyboard_enter(s, c, id, serial);
+        /* A menu of its that took the keys still has them. */
+        window *menu = mwm_shell_grabbing(s, w);
+        mwm_seat_keyboard(s, menu ? menu : w);
     }
     mwm_flush(s);
 }
@@ -371,9 +383,19 @@ void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
 
 void mwm_seat_window_gone(mwm_server *s, window *w) {
     if (s->seat.pointer == w) pointer_leave(s, true);
-    if (s->seat.keyboard == w) {
-        keyboard_leave(s, true);
+    bool had = s->seat.keyboard == w;
+    if (had) keyboard_leave(s, true);
+    if (s->seat.wanted == w->id) { /* the window in front went: none is, until the Mac says */
+        s->seat.wanted = 0;
         if (w->surface && w->surface->xdg) w->surface->xdg->active = false;
+    } else if (had) {
+        /* A menu went: the keys go back to what had them before it, the menu under it or its window. */
+        for (window *up = mwm_shell_parent(w); up; up = mwm_shell_parent(up)) {
+            const xdg *x = up->surface ? up->surface->xdg : NULL;
+            if (up->going || !x || !(x->popup ? x->grab : up->id == s->seat.wanted)) continue;
+            mwm_seat_keyboard(s, up);
+            break;
+        }
     }
 }
 

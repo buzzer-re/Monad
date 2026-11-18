@@ -238,6 +238,7 @@ static bool place(const mwm_server *s, const window *self, int width, int height
 
 void mwm_window_gone(mwm_server *s, window *w) {
     if (!w || !w->used) return;
+    mwm_shell_window_going(s, w); /* its popups first */
     mwm_seat_window_gone(s, w);
     clear(s, w->x, w->y, w->width, w->height);
     int index = (int)(w - s->windows);
@@ -256,7 +257,11 @@ void mwm_window_gone(mwm_server *s, window *w) {
  * True when all of it is to be drawn again (it is new, moved or changed size). */
 static bool window_follows(mwm_server *s, surface *f) {
     buffer *b = f->current;
-    if (!b || !f->xdg || !f->xdg->toplevel || !f->xdg->configured) {
+    const xdg *role = f->xdg;
+    /* A window of a kind, told its size; a popup also on a window that is there. */
+    bool shows = b && role && role->configured
+                 && (role->toplevel || (role->popup && role->parent && role->parent->surface && role->parent->surface->window));
+    if (!shows) {
         mwm_window_gone(s, f->window);
         return false;
     }
@@ -271,6 +276,7 @@ static bool window_follows(mwm_server *s, surface *f) {
         *w = (window){.used = true, .id = ++s->next_window, .x = x, .y = y, .width = width, .height = height, .scale = f->scale, .surface = f};
         f->window = w;
         s->order[s->window_count++] = (int)(w - s->windows);
+        mwm_shell_window_new(s, w);
         s->generation++;
         return true;
     }

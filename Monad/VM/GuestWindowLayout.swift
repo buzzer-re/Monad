@@ -51,6 +51,24 @@ enum GuestWindowLayout {
         return (fixed(-deltaX * step), fixed(-deltaY * step))
     }
 
+    /// Where a popup's content begins on the window it is on: in points
+    /// from that window's content's top left, down and right. The window
+    /// manager says it in that window's pixels.
+    static func popupOffset(_ popup: GuestWindow, on parent: GuestWindow) -> CGPoint {
+        CGPoint(x: CGFloat(popup.offsetX) / CGFloat(parent.scale), y: CGFloat(popup.offsetY) / CGFloat(parent.scale))
+    }
+
+    /// Whether a popup at `offset` (from its window's content's top left)
+    /// touches that window: a menu hangs from its window and a tooltip
+    /// stands on it, a few points away at most. Nothing larger than a
+    /// screen is a popup.
+    static func popupTouches(offset: CGPoint, size: CGSize, window: CGSize) -> Bool {
+        let popup = CGRect(origin: offset, size: size)
+        guard popup.origin.x.isFinite, popup.origin.y.isFinite, size.width >= 1, size.height >= 1,
+              size.width <= 8192, size.height <= 8192 else { return false }
+        return popup.intersects(CGRect(origin: .zero, size: window).insetBy(dx: -8, dy: -8))
+    }
+
     /// What the Mac's title bar says: the program's title (its name when
     /// it has none), then the VM's name, always: a program in a VM cannot
     /// pass for a window of the Mac's.

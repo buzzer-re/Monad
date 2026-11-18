@@ -280,8 +280,13 @@ Not promised:
   as when they started the program from a tab). Keys go to the guest only while one of its windows
   is the key window, and every key comes up for the guest when it stops being so. Command is sent
   as Control, so the guest sees ⌘C and ⌘V as its own copy and paste; nothing is copied between the
-  Mac's clipboard and the guest's yet, either way. Not done yet, and a way a guest can annoy: it
-  can open up to 64 windows on the Mac, and they are not kept from covering the screen.
+  Mac's clipboard and the guest's yet, either way. A popup (a menu) has no title bar to say whose
+  it is, so it is shown only where it touches the window it is on (the guest says where it
+  stands; one put elsewhere on the screen is not shown), it never takes the keys, and a popup
+  must be on a window the guest told, by way of no more than eight popups
+  (`GuestWindowLayoutTests.testAPopupAwayFromItsWindowIsNotShown`, `GuestWindowProtocolTests`).
+  Not done yet, and a way a guest can annoy: it can open up to 64 windows on the Mac, and they
+  are not kept from covering the screen.
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
   with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
   copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it

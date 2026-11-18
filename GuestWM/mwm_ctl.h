@@ -8,16 +8,20 @@
  *   monad-wm 1 <display width> <display height>      once, first
  *   windows <generation> <count>
  *   window <id> <x> <y> <width> <height> <scale> <inner x> <inner y>
- *          <inner width> <inner height> <app id> <title>      count times
+ *          <inner width> <inner height> <parent> <offset x> <offset y>
+ *          <app id> <title>                                  count times
  *   end
  *
  * A window's place is in the display's pixels; `scale` is how many of them
  * the program draws to one of its units (the Mac's window is that many
  * times smaller in points); `inner` is the part that is the window proper,
- * when the program draws a shadow around it. Text is the program's: every
- * byte but plain printable ASCII is written %XX, and an empty text is "-",
- * so a line is always as many words as its kind has. MonadHost reads all
- * of it as hostile.
+ * when the program draws a shadow around it. A popup (a menu, a tooltip)
+ * names the window it is on as `parent`, and where its inner part stands
+ * from that window's inner top left, in that window's pixels; a window of
+ * its own says 0 0 0. Text is the program's: every byte but plain
+ * printable ASCII is written %XX, and an empty text is "-", so a line is
+ * always as many words as its kind has. MonadHost reads all of it as
+ * hostile.
  *
  * From MonadHost, what the Mac's pointer and keyboard do and what happens
  * to the Mac's windows (windows are named by id; 0 is no window):
@@ -33,6 +37,7 @@
  *   k <code> <caps 0|1> <plain> <shift> <third> <shift third>
  *   size <window> <width> <height>    in units
  *   close <window>
+ *   dismiss <window>                  the user clicked away from its popups
  *
  * A line it does not know is skipped (a newer Monad may say more); one
  * longer than MWM_CTL_LINE ends the connection.
