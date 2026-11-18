@@ -32,6 +32,7 @@ static const struct {
     {"wl_shm", 1, T_SHM},
     {"xdg_wm_base", 2, T_WM_BASE},
     {"wl_output", 2, T_OUTPUT},
+    {"wl_seat", 5, T_SEAT},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -158,8 +159,15 @@ static int room_at(const mwm_server *s, const window *self, int x) {
     return room > 0 ? room : 0;
 }
 
+window *mwm_window_by_id(mwm_server *s, uint32_t id) {
+    for (int i = 0; id != 0 && i < MWM_MAX_WINDOWS; i++)
+        if (s->windows[i].used && s->windows[i].id == id) return &s->windows[i];
+    return NULL;
+}
+
 void mwm_window_gone(mwm_server *s, window *w) {
     if (!w || !w->used) return;
+    mwm_seat_window_gone(s, w);
     clear(s, w->x, w->y, w->width, w->height);
     int index = (int)(w - s->windows);
     for (int i = 0; i < s->window_count; i++) {
@@ -291,6 +299,7 @@ static bool map_pool(pool *p, int32_t size) {
 /* Surfaces                                                                  */
 
 static void surface_destroy(mwm_server *s, client *c, surface *f, bool tell) {
+    mwm_seat_surface_gone(s, f);
     mwm_window_gone(s, f->window);
     if (f->xdg) f->xdg->surface = NULL;
     buffer_unshown(f->current);
@@ -335,7 +344,10 @@ static void bind_global(client *c, mwm_msg *m) {
     }
     obj_type type = globals[name - 1].type;
     if (!mwm_add(c, id, type, NULL)) return;
-    if (type == T_SHM) {
+    c->objects[id].version = (uint8_t)version;
+    if (type == T_SEAT) {
+        mwm_seat_bound(c, id);
+    } else if (type == T_SHM) {
         mwm_event_uint(c, id, 0, FORMAT_ARGB8888);
         mwm_event_uint(c, id, 0, FORMAT_XRGB8888);
     } else if (type == T_OUTPUT) {
@@ -562,6 +574,11 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
         if (m->opcode == 0) mwm_del(c, m->object); /* release */
         else mwm_fail(c, m->object, E_INVALID_METHOD, "wl_output has no such request");
         break;
+    case T_SEAT:
+    case T_POINTER:
+    case T_KEYBOARD:
+        mwm_seat_request(s, c, o, m);
+        break;
     case T_WM_BASE:
     case T_POSITIONER:
     case T_XDG_SURFACE:
@@ -607,7 +624,12 @@ static void client_free(mwm_server *s, client *c) {
 mwm_server *mwm_server_new(const mwm_screen *screen) {
     if (!screen || !screen->pixels || screen->width <= 0 || screen->height <= 0 || screen->stride < screen->width) return NULL;
     mwm_server *s = calloc(1, sizeof *s);
-    if (s) s->screen = *screen;
+    if (!s) return NULL;
+    s->screen = *screen;
+    if (!mwm_seat_init(s)) {
+        free(s);
+        return NULL;
+    }
     return s;
 }
 
@@ -615,6 +637,7 @@ void mwm_server_free(mwm_server *s) {
     if (!s) return;
     for (int i = 0; i < MWM_MAX_CLIENTS; i++)
         if (s->clients[i]) client_free(s, s->clients[i]);
+    mwm_seat_free(s);
     free(s);
 }
 
@@ -648,7 +671,7 @@ int mwm_server_sockets(const mwm_server *s, int *fds, bool *wants_write, int max
     return n;
 }
 
-static void flush_all(mwm_server *s) {
+void mwm_flush(mwm_server *s) {
     for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
         client *c = s->clients[i];
         if (!c) continue;
@@ -679,7 +702,7 @@ void mwm_server_service(mwm_server *s, int fd, bool readable, bool writable) {
         }
         break;
     }
-    flush_all(s);
+    mwm_flush(s);
 }
 
 void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
@@ -696,7 +719,7 @@ void mwm_server_frame(mwm_server *s, uint32_t time_ms) {
             f->waiting_count = 0;
         }
     }
-    flush_all(s);
+    mwm_flush(s);
 }
 
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {

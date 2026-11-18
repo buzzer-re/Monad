@@ -5,7 +5,9 @@
  * with a small display: raw bytes on a socket, requests built from the
  * input (any object, any opcode, numbers small, large and negative,
  * strings, descriptors of a file that may be shorter than said), the whole
- * exchange that opens a window with sizes from the input, frames, and
+ * exchange that opens a window with sizes from the input and takes the
+ * pointer and the keyboard, frames, what the Mac says of the pointer and
+ * the keys (any window, any position, any key, any table of keys), and
  * programs leaving. After every step: every window is inside the display
  * and has a size, no two windows share a pixel, there are no more windows
  * or programs than there may be, and a pixel outside every window is
@@ -93,7 +95,10 @@ static void drain(program *p) {
     if (!p->conn) return;
     mwm_msg m;
     while (mwm_conn_read(p->conn) > 0)
-        while (mwm_conn_next(p->conn, &m)) {}
+        while (mwm_conn_next(p->conn, &m)) {
+            int fd = mwm_get_fd(&m); /* the keymap's file, when it is one */
+            if (fd >= 0) close(fd);
+        }
 }
 
 static void request(program *p, input *in, uint32_t object, uint16_t opcode) {
@@ -126,8 +131,16 @@ static void words(program *p, uint32_t object, uint16_t opcode, int count, const
 /* The exchange that opens a window, its sizes from the input. */
 static void open_window(program *p, input *in) {
     uint32_t registry = p->next++, compositor = p->next++, shm = p->next++, wm = p->next++, surface = p->next++, xdg = p->next++,
-             toplevel = p->next++, pool = p->next++, buffer = p->next++;
+             toplevel = p->next++, pool = p->next++, buffer = p->next++, seat = p->next++;
     words(p, 1, 1, 1, &registry);
+    mwm_put_begin(p->conn, registry, 0);
+    mwm_put_uint(p->conn, 5);
+    mwm_put_string(p->conn, "wl_seat");
+    mwm_put_uint(p->conn, 1 + byte(in) % 5);
+    mwm_put_uint(p->conn, seat);
+    mwm_put_end(p->conn);
+    words(p, seat, 0, 1, (uint32_t[]){p->next++}); /* get_pointer */
+    words(p, seat, 1, 1, (uint32_t[]){p->next++}); /* get_keyboard */
     static const char *names[] = {"wl_compositor", "wl_shm", "xdg_wm_base"};
     uint32_t ids[] = {compositor, shm, wm};
     for (uint32_t i = 0; i < 3; i++) {
@@ -186,7 +199,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             p->next = 2;
             if (!p->conn || !mwm_server_add_client(s, sv[1])) fail("a program could not connect");
         }
-        switch (byte(&in) % 8) {
+        switch (byte(&in) % 10) {
         case 0: { /* bytes as they are */
             uint8_t raw[64];
             size_t n = byte(&in) % sizeof raw;
@@ -204,6 +217,27 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 6:
             mwm_server_frame(s, time += 16);
             break;
+        case 7: case 8: { /* what the Mac says of the pointer and the keys */
+            uint32_t window = byte(&in) % 12;
+            switch (byte(&in) % 7) {
+            case 0: mwm_server_pointer(s, window, (int32_t)number(&in), (int32_t)number(&in), time); break;
+            case 1: mwm_server_button(s, 0x110 + byte(&in) % 3, byte(&in) % 2, time); break;
+            case 2: mwm_server_scroll(s, (int32_t)number(&in), (int32_t)number(&in), time); break;
+            case 3: mwm_server_focus(s, window); break;
+            case 4: mwm_server_key(s, number(&in) % 300, byte(&in) % 2, time); break;
+            case 5: mwm_server_modifiers(s, number(&in), number(&in)); break;
+            default: {
+                mwm_key keys[4];
+                int count = byte(&in) % 5;
+                for (int i = 0; i < count; i++) {
+                    keys[i] = (mwm_key){.code = number(&in) % 300, .caps = byte(&in) % 2};
+                    for (int level = 0; level < 4; level++) keys[i].symbols[level] = byte(&in) % 3 ? number(&in) : 0;
+                }
+                (void)mwm_server_keymap(s, keys, count);
+            }
+            }
+            break;
+        }
         default: /* the program leaves */
             mwm_conn_free(p->conn);
             p->conn = NULL;

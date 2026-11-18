@@ -50,14 +50,17 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   Mac's screen (keys, clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
   none to a Linux guest: measured), a desktop with a panel (XFCE fails to start this way on Ubuntu
   26.04), Debian's and Kali's cloud kernels.
-- **Linux programs as Mac windows: begun, not usable yet.** `GuestWM/` is the first part of
+- **Linux programs as Mac windows: begun, not usable yet.** `GuestWM/` holds the first parts of
   Monad's own window manager for the guest (`monad-wm`): the Wayland wire format and a server with
   top-level windows drawn through shared memory, each at a place of its own on the display, on
-  kernel mode setting asked directly. Compiled in a Debug VM with its `cc` and run by hand: two
-  `weston-simple-shm` side by side, moving, read back on the Mac (the Debug tool `read_display`).
-  Next: keyboard and pointer, popups, the clipboard, Xwayland, the channel to MonadHost, the Mac's
-  windows, installing it with the Desktop profile (`docs/DISPLAY.md`). Not tried: a program that
-  shrinks its shared memory under the window manager (the guard is written, not run).
+  kernel mode setting asked directly; a pointer and a keyboard that are told from outside (the
+  Mac's, not the VM's devices), with the keys written as an XKB keymap from a table. Compiled in a
+  Debug VM with its `cc` and run by hand: two `weston-simple-shm` side by side, moving, read back
+  on the Mac (the Debug tool `read_display`). Next: the channel to MonadHost, the Mac's windows,
+  popups, the clipboard, Xwayland, installing it with the Desktop profile (`docs/DISPLAY.md`). Not
+  tried: the pointer and keyboard with a real program (only the tests' client so far), a keymap
+  read by libxkbcommon, a program that shrinks its shared memory under the window manager (the
+  guard is written, not run).
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),
@@ -156,7 +159,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server, pointer and keyboard), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
 | `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,300 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |

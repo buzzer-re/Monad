@@ -62,16 +62,20 @@ on the Mac each becomes a window showing its part of the same surface, so the pi
 the VM to the screen without a copy; keys, clicks and scrolling go back to the guest over Monad's
 own channel.
 
-Its first part is written (`GuestWM/`, tested in `CTests/test_wm_wire.c` and `test_wm_server.c`):
-`monad-wm` takes the display, speaks Wayland to programs with code of its own (the wire format,
-`wl_compositor`, `wl_shm`, `xdg_wm_base` top-level windows), gives each window a place of its own
-and copies what the program drew there, and prints where each window is. Run by hand in a Debug
-VM, two `weston-simple-shm` stood side by side and moved, read back on the Mac. Not there yet:
-keyboard and pointer, menus and other popups, the clipboard, X11 programs through Xwayland (most
-real programs need at least the first two: foot, GTK and Qt do not start on it yet), the channel
-to MonadHost, the Mac's windows, and installing it (the Desktop profile still sets up labwc). It
-is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux programs, and
-Monad ships no binary it did not build.
+Its first parts are written (`GuestWM/`, tested in `CTests/test_wm_wire.c`, `test_wm_server.c` and
+`test_wm_seat.c`): `monad-wm` takes the display, speaks Wayland to programs with code of its own
+(the wire format, `wl_compositor`, `wl_shm`, `xdg_wm_base` top-level windows, `wl_seat`), gives each
+window a place of its own and copies what the program drew there, and prints where each window is.
+The pointer and the keyboard are not read from the VM's devices: the Mac has them, so the window
+manager is told which window the pointer is over and which one is in front, and only the program
+owning that window hears of it. The keys are a table (what each types plain, with Shift, with the
+third-level key, with both) written out as an XKB keymap, so the Mac's own layout can be handed
+over as it is; a US keyboard until then. Run by hand in a Debug VM, two `weston-simple-shm` stood
+side by side and moved, read back on the Mac. Not there yet: anything on the Mac that says where
+the pointer is (the channel to MonadHost, the Mac's windows), menus and other popups, the
+clipboard, X11 programs through Xwayland, and installing it (the Desktop profile still sets up
+labwc). It is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux
+programs, and Monad ships no binary it did not build.
 
 **Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
 Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls

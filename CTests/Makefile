@@ -12,7 +12,7 @@ BUILD ?= build
 
 VT_SRC := $(wildcard $(SRC)/vt/*.c)
 
-TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server fuzz_wm
+TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server test_wm_seat fuzz_wm
 
 all: run
 
@@ -82,7 +82,7 @@ $(BUILD)/fuzz_vt: fuzz_vt.c $(VT_SRC) $(wildcard $(SRC)/vt/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 # The window manager's server, as the tests and its fuzzer build it.
-WM_SERVER := $(WM)/mwm_server.c $(WM)/mwm_shell.c $(WM)/mwm_wire.c $(wildcard $(WM)/*.h) wm_test_client.h
+WM_SERVER := $(WM)/mwm_server.c $(WM)/mwm_shell.c $(WM)/mwm_seat.c $(WM)/mwm_keymap.c $(WM)/mwm_wire.c $(wildcard $(WM)/*.h) wm_test_client.h
 
 $(BUILD)/fuzz_wm: fuzz_wm.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
@@ -143,6 +143,9 @@ $(BUILD)/test_wm_wire: test_wm_wire.c $(WM)/mwm_wire.c $(WM)/mwm_wire.h | $(BUIL
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/test_wm_server: test_wm_server.c $(WM_SERVER) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+$(BUILD)/test_wm_seat: test_wm_seat.c $(WM_SERVER) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/disk_cloud.regions: gen_disk_fixtures.py | $(BUILD)

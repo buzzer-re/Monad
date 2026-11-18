@@ -16,18 +16,29 @@ static void copy_text(char *dst, const char *src) {
     snprintf(dst, TEXT, "%s", src ? src : "");
 }
 
-void mwm_shell_commit(mwm_server *s, client *c, surface *f) {
-    xdg *x = f->xdg;
-    if (!x || !x->toplevel || x->configured) return;
-    /* Its first commit: any size it likes, and it is the one in front. */
+/* Tells a top-level window its size (any it likes) and whether it is in front. */
+static void configure(mwm_server *s, client *c, xdg *x) {
     static const uint32_t activated = 4;
     mwm_put_begin(c->conn, x->toplevel, 0);
     mwm_put_int(c->conn, 0);
     mwm_put_int(c->conn, 0);
-    mwm_put_array(c->conn, &activated, sizeof activated);
+    mwm_put_array(c->conn, &activated, x->active ? sizeof activated : 0);
     mwm_put_end(c->conn);
     mwm_event_uint(c, x->id, 0, ++s->serial);
+}
+
+void mwm_shell_commit(mwm_server *s, client *c, surface *f) {
+    xdg *x = f->xdg;
+    if (!x || !x->toplevel || x->configured) return;
+    configure(s, c, x); /* its first commit */
     x->configured = true;
+}
+
+void mwm_shell_activate(mwm_server *s, window *w, bool active) {
+    xdg *x = w->used && w->surface ? w->surface->xdg : NULL;
+    if (!x || !x->toplevel || !x->configured || x->active == active || w->surface->owner->dead) return;
+    x->active = active;
+    configure(s, w->surface->owner, x);
 }
 
 static void wm_base_request(client *c, mwm_msg *m) {
