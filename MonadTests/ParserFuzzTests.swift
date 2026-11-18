@@ -108,6 +108,42 @@ final class ParserFuzzTests: XCTestCase {
         }
     }
 
+    /// Whatever a VM's window manager sends, a window MonadHost is told
+    /// lies on the display it was said to have, there are no more than
+    /// there may be, and its texts are fit to show.
+    func testAGuestsWindowsLieOnItsDisplayAndAreFitToShow() {
+        var r = FuzzRandom(seed: 8)
+        let seeds = ["monad-wm 1 1920 1200\nwindows 3 2\nwindow 1 0 0 696 468 1 0 0 696 468 foot foot\n" +
+                     "window 2 712 0 800 600 2 26 23 748 554 org.gnome.Calculator 50%25%20of%20caf%C3%A9%E2%80%AE\nend\n",
+                     "monad-wm 1 8192 8192\nwindows 1 1\nwindow 4294967295 8000 8000 192 192 4 0 0 192 192 - -\nend\n",
+                     "monad-wm 1 64 64\nwindows 9 0\nend\ncursor text\nwindows 10 1\nwindow 7 0 0 64 64 1 1 1 1 1 %00%0A%1B %FF\nend\n"]
+        var lists = 0
+        for _ in 0..<rounds {
+            var reader = GuestWindowReader()
+            let bytes = r.mutate(seeds.map { Array($0.utf8) })
+            for event in reader.feed(Data(bytes)) {
+                guard case .windows(let windows) = event else { continue }
+                guard let display = reader.display else { return XCTFail("windows of no display") }
+                lists += 1
+                XCTAssertLessThanOrEqual(windows.count, GuestWindowReader.maxWindows)
+                XCTAssertEqual(Set(windows.map(\.id)).count, windows.count)
+                for w in windows {
+                    XCTAssertTrue(w.id != 0 && w.width > 0 && w.height > 0 && w.x >= 0 && w.y >= 0)
+                    XCTAssertTrue(w.x + w.width <= display.width && w.y + w.height <= display.height)
+                    XCTAssertTrue((1...GuestWindowReader.maxScale).contains(w.scale))
+                    XCTAssertTrue(w.innerX >= 0 && w.innerY >= 0 && w.innerWidth > 0 && w.innerHeight > 0)
+                    XCTAssertTrue(w.innerX + w.innerWidth <= w.width && w.innerY + w.innerHeight <= w.height)
+                    for text in [w.title, w.appID] {
+                        XCTAssertLessThanOrEqual(text.unicodeScalars.count, GuestWindowReader.maxTextBytes)
+                        XCTAssertFalse(text.unicodeScalars.contains { $0.value < 0x20 || (0x7F..<0xA0).contains($0.value) || $0.value == 0x202E })
+                    }
+                }
+            }
+            if reader.isBroken { XCTAssertEqual(reader.feed(Data(seeds[0].utf8)), [], "broken, it reads nothing more") }
+        }
+        XCTAssertGreaterThan(lists, rounds / 20, "some input still read as windows")
+    }
+
     func testProfileProgressOnlyNamesRealProfiles() {
         var r = FuzzRandom(seed: 4)
         let seeds = ["@@monad step node start", "@@monad step docker failed exit 3", "@@monad pid 4242",
