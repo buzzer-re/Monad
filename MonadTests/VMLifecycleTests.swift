@@ -465,6 +465,32 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertNil(vm.currentSnapshot)
     }
 
+    /// Use as temporary VM: one of a VM's snapshots can be the one ephemeral
+    /// VMs are copies of. It is said in its snapshot.json, so it is still so
+    /// after MonadHost starts again, and it goes with the snapshot.
+    func testOneSnapshotIsChosenForTemporaryVMs() async throws {
+        let vm = try makeInstance()
+        try Data("system".utf8).write(to: vm.paths.disk)
+        let a = try await vm.takeSnapshot(name: "a")
+        let b = try await vm.takeSnapshot(name: "b")
+        XCTAssertNil(vm.temporarySnapshot)
+        try vm.setTemporarySnapshot(a.id)
+        XCTAssertEqual(vm.temporarySnapshot?.id, a.id)
+        XCTAssertEqual(SnapshotStore(paths: vm.paths).list().filter { $0.temporary == true }.map(\.id), [a.id], "kept on disk")
+        try vm.setTemporarySnapshot(b.id)
+        XCTAssertEqual(vm.snapshots.filter { $0.temporary == true }.map(\.id), [b.id], "one at most")
+        XCTAssertThrowsError(try vm.setTemporarySnapshot("00000000"))
+        XCTAssertEqual(vm.temporarySnapshot?.id, b.id, "a snapshot it does not have changes nothing")
+        // Deleting the one before it writes it again (its parent changes): still chosen.
+        try vm.deleteSnapshot(a.id)
+        XCTAssertEqual(vm.temporarySnapshot?.id, b.id)
+        try vm.setTemporarySnapshot(nil)
+        XCTAssertTrue(SnapshotStore(paths: vm.paths).list().allSatisfy { $0.temporary == nil }, "absent when it is not")
+        try vm.setTemporarySnapshot(b.id)
+        try vm.deleteSnapshot(b.id)
+        XCTAssertNil(vm.temporarySnapshot)
+    }
+
     /// Snapshots taken in one second (their times keep whole seconds) still
     /// list in the order taken: one comes after the one it was taken after.
     func testSnapshotsOfOneSecondListInTheOrderTaken() async throws {

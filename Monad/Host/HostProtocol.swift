@@ -66,8 +66,9 @@ struct HostRequest: Codable, Equatable, Sendable {
         case start, stop, delete // name (stop: force)
         case restart         // name: clean shutdown, then start (applies saved settings)
         case pause, resume   // name: the guest's CPUs stop where they are, and go on
-        case takeSnapshot    // name, snapshot (its name): → instance
+        case takeSnapshot    // name, snapshot (its name), temporary?: → instance
         case restoreSnapshot, deleteSnapshot // name, snapshot (its id) → instance
+        case temporarySnapshot // name, snapshot (its id), temporary: Use as temporary VM, on or off → instance
         case attach, detach  // name: a tab starts/stops using the VM
         case stopAll
         case shutdown        // exit so launchd can start a newer host; refused while VMs run
@@ -122,8 +123,11 @@ struct HostRequest: Codable, Equatable, Sendable {
     /// answerMacSetup: the root step's work folder, or why it did not run.
     var macSetupWork: String?
     var macSetupError: String?
-    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot, clone: its id.
+    /// takeSnapshot: its name; restoreSnapshot, deleteSnapshot, temporarySnapshot, clone: its id.
     var snapshot: String?
+    /// takeSnapshot, temporarySnapshot: ephemeral VMs are copies of that
+    /// snapshot from now on (Use as temporary VM), or, false, no longer.
+    var temporary: Bool?
     /// setSSHHost: the host.
     var sshHost: SSHHost?
     /// setSSHHost: a typed password; answerSSHPrompt: the answer. Never logged.
@@ -163,15 +167,19 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot:
+             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot, .temporarySnapshot:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
             }
             if op == .takeSnapshot, !(snapshot.map(Snapshot.isValidName) ?? false) {
                 throw HostProtocolError.invalid("takeSnapshot needs a name of at most \(Snapshot.maxNameLength) characters.")
             }
-            if op == .restoreSnapshot || op == .deleteSnapshot, !(snapshot.map(Snapshot.isValidID) ?? false) {
+            if op == .restoreSnapshot || op == .deleteSnapshot || op == .temporarySnapshot,
+               !(snapshot.map(Snapshot.isValidID) ?? false) {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a snapshot's id.")
+            }
+            if op == .temporarySnapshot, temporary == nil {
+                throw HostProtocolError.invalid("temporarySnapshot needs to be on or off.")
             }
         case .create, .update:
             guard let config, InstanceConfig.isValidName(config.name) else {
@@ -345,16 +353,22 @@ struct SnapshotSummary: Codable, Equatable, Identifiable, Sendable {
     var createdAt: Date
     var parent: String?
     var memory: Bool
+    /// Ephemeral VMs are copies of it (Use as temporary VM); absent when not.
+    var temporary: Bool?
 
-    init(id: String, name: String, createdAt: Date, parent: String?, memory: Bool) {
+    init(id: String, name: String, createdAt: Date, parent: String?, memory: Bool, temporary: Bool? = nil) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
         self.parent = parent
         self.memory = memory
+        self.temporary = temporary
     }
 
-    init(_ s: Snapshot) { self.init(id: s.id, name: s.name, createdAt: s.createdAt, parent: s.parent, memory: s.memory) }
+    init(_ s: Snapshot) {
+        self.init(id: s.id, name: s.name, createdAt: s.createdAt, parent: s.parent, memory: s.memory,
+                  temporary: s.temporary == true ? true : nil)
+    }
 
     /// Each snapshot under its parent, in the order taken.
     static func tree(_ all: [SnapshotSummary]) -> [(snapshot: SnapshotSummary, depth: Int)] {

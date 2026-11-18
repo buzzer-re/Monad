@@ -84,7 +84,7 @@ final class MonadTools {
         let warnings: [String]?
         /// Disks added to it ("data: 50 GB at /mnt/data").
         let disks: [String]?
-        /// Its snapshots, oldest first ("0a1b2c3d: clean, running, current").
+        /// Its snapshots, oldest first ("0a1b2c3d: clean, running, current, for temporary VMs").
         let snapshots: [String]?
     }
 
@@ -104,6 +104,7 @@ final class MonadTools {
                   snapshots: s.snapshots.map { $0.map { snap in
                       "\(snap.id): \(snap.name.plain(limit: 64)), " + (snap.memory ? "running" : "shut down")
                           + (snap.id == s.currentSnapshot ? ", current" : "")
+                          + (snap.temporary == true ? ", for temporary VMs" : "")
                   } })
     }
 

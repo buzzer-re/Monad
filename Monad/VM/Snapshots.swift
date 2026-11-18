@@ -21,6 +21,10 @@ struct Snapshot: Codable, Equatable, Identifiable, Sendable {
     var memory: Bool
     /// The VM's settings when it was taken.
     var config: InstanceConfig
+    /// Use as temporary VM: ephemeral VMs (⇧⌘T) are copies of this one
+    /// instead of new VMs from the default image. One snapshot among all the
+    /// VMs' at most (VMManager sees to it); absent when it is not.
+    var temporary: Bool? = nil
 
     static let maxNameLength = 64
     /// Snapshots a VM may keep.

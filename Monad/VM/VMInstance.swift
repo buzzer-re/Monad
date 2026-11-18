@@ -1775,6 +1775,24 @@ final class VMInstance: ObservableObject, Identifiable {
         debug("snapshot: deleted \(id) “\(snap.name)”")
     }
 
+    /// The snapshot ephemeral VMs are copies of, when it is one of this VM's.
+    var temporarySnapshot: Snapshot? { snapshots.first { $0.temporary == true } }
+
+    /// Use as temporary VM: snapshot `id` is the one ephemeral VMs are
+    /// copies of, and no other of this VM's (nil: none of them).
+    func setTemporarySnapshot(_ id: String?) throws {
+        if let id, !snapshots.contains(where: { $0.id == id }) { throw MonadError("\(name) has no snapshot \(id).") }
+        let store = SnapshotStore(paths: paths)
+        var changed = false
+        for var snap in snapshots where (snap.temporary == true) != (snap.id == id) {
+            snap.temporary = snap.id == id ? true : nil
+            try store.save(snap)
+            changed = true
+            debug("snapshot: \(snap.id) “\(snap.name)” is " + (snap.temporary == true ? "now" : "no longer") + " the one temporary VMs are copies of")
+        }
+        if changed { snapshots = store.list() }
+    }
+
     /// The disk, added disks, firmware store and auxiliary storage as APFS
     /// clones (instant; no room until they differ), from one folder to another.
     private static func cloneFiles(from: InstancePaths, to dir: URL, config: InstanceConfig) async throws {

@@ -269,6 +269,33 @@ final class HostClientTests: XCTestCase {
         XCTAssertEqual(c.sshHosts, [])
     }
 
+    /// A host from an older Monad (kept while its VMs run) would take the
+    /// snapshot and leave out what it does not know. Use as temporary VM
+    /// says so instead, and takes none.
+    func testAnOlderHostCannotUseASnapshotForTemporaryVMsAndSaysSo() async throws {
+        host = try FakeHost(build: "old")
+        host.nextBuild = "new"
+        let other = host.service.connect { _ in }
+        _ = await other.handle(HostRequest(id: 1, op: .hello, version: HostProtocol.version))
+        _ = await other.handle(HostRequest(id: 2, op: .ensureDefault))
+        await assertEventually { self.host.manager.existing("default")?.state == .stopped }
+        _ = await other.handle(HostRequest(id: 3, op: .start, name: "default"))
+        await assertEventually { self.host.manager.existing("default")?.state == .ready }
+        other.close()
+        let c = makeClient(expectedBuild: "new")
+        await assertEventually { c.status == .connected && c.hostIsOutdated }
+        do {
+            try await c.takeSnapshot("default", named: "tools", temporary: true)
+            XCTFail("an older host does not know temporary VMs from a snapshot")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "The VM service is from an older Monad and cannot make temporary VMs "
+                           + "from a snapshot yet. It is updated once no VM is running.")
+        }
+        XCTAssertEqual(host.manager.existing("default")?.snapshots.count, 0, "none was taken")
+        try await c.takeSnapshot("default", named: "plain")
+        XCTAssertEqual(host.manager.existing("default")?.snapshots.map(\.name), ["plain"], "a snapshot alone it can take")
+    }
+
     /// "Start VM at boot": when Monad opens it starts the VMs marked for it
     /// that are not running; others are left alone.
     func testVMsMarkedToStartAtBootStartWhenMonadOpens() async throws {

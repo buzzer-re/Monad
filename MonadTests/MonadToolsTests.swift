@@ -102,6 +102,20 @@ final class MonadToolsTests: XCTestCase {
         XCTAssertEqual(try tool("delete_snapshot").risk, .risky)
     }
 
+    /// Which snapshot ephemeral VMs are copies of is the user's to say (Use
+    /// as temporary VM), since it decides what their next ⇧⌘T runs: agents
+    /// see which one it is, and no tool chooses it.
+    func testAgentsSeeTheSnapshotForTemporaryVMsAndCannotChooseIt() async throws {
+        let vm = try await made("web")
+        try Data("system".utf8).write(to: vm.paths.disk)
+        _ = try? await call("take_snapshot", ["name": .string("web"), "snapshot": .string("clean"), "temporary": .bool(true)])
+        XCTAssertNil(fixture.manager.temporarySource, "not by asking for it")
+        XCTAssertNil(tools.all().first { $0.name.contains("temporary") })
+        var snap = VMSnapshot(name: "web", config: vm.config, state: .stopped, agent: false, ports: [], sessions: 0)
+        snap.snapshots = [SnapshotSummary(id: "0a1b2c3d", name: "clean", createdAt: Date(), parent: nil, memory: false, temporary: true)]
+        XCTAssertEqual(tools.summary(snap).snapshots, ["0a1b2c3d: clean, shut down, for temporary VMs"])
+    }
+
     /// Agents see what a VM is low on, in words.
     func testAVMsWarningsAreInItsSummary() {
         let config = InstanceConfig(

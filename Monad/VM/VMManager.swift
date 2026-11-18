@@ -195,8 +195,10 @@ final class VMManager: ObservableObject {
     }
 
     /// Return the instance, creating it in the background when missing. The
-    /// returned object reports progress through its `state`.
-    func instance(named name: String, config: InstanceConfig? = nil) -> VMInstance {
+    /// returned object reports progress through its `state`. `copying`: it
+    /// is made from that snapshot's disks, not from an image.
+    func instance(named name: String, config: InstanceConfig? = nil,
+                  copying: (source: VMInstance, snapshot: Snapshot)? = nil) -> VMInstance {
         if let vm = existing(name) {
             guard vm.creationFailed else { return vm }
             // Made again by its name: tried afresh.
@@ -212,7 +214,7 @@ final class VMManager: ObservableObject {
         creating[name] = Task { @MainActor in
             defer { self.creating[name] = nil }
             do {
-                try await self.provision(vm, config: cfg)
+                try await self.provision(vm, config: cfg, copying: copying)
                 vm.setStopped()
                 let asked = self.startWhenMade.remove(name) != nil
                 if asked || self.sessionCounts[name, default: 0] > 0 { vm.start() }
@@ -327,10 +329,19 @@ final class VMManager: ObservableObject {
         cfg.startAtLaunch = false
         for i in cfg.networks.indices { cfg.networks[i].macAddress = nil }
 
-        let to = paths(for: name)
+        try await copyFiles(of: source, from: from, to: paths(for: name), config: cfg)
+        return finishCopy(cfg, of: source, snapshot: snapshot)
+    }
+
+    /// A copy's files, for the settings `cfg`: clones of the disks in `from`
+    /// (`source`'s folder, or one of its snapshots'), and what gives it an
+    /// identity of its own. Nothing of it is left when that fails.
+    private func copyFiles(of source: VMInstance, from: InstancePaths, to: InstancePaths,
+                           config cfg: InstanceConfig) async throws {
         try Paths.ensurePrivateDirectory(to.dir)
-        if cfg.guestOS != .macos {
-            do {
+        do {
+            let fm = FileManager.default
+            if cfg.guestOS != .macos {
                 guard let guest = guest(for: cfg) else { throw MonadError("This Monad does not know the distribution \(cfg.distro).") }
                 var clones = [(from.disk, to.disk), (from.efiVars, to.efiVars)]
                 if !cfg.disks.isEmpty { try Paths.ensurePrivateDirectory(to.extraDisks) }
@@ -338,31 +349,23 @@ final class VMManager: ObservableObject {
                 try await Self.cloneFiles(clones)
                 try await CloudInit.provision(config: cfg, guest: guest, paths: to, runner: env.runner,
                                               bootMessages: env.bootMessages(), newIdentity: true)
-                try cfg.save(to: to.config)
-            } catch {
-                try? FileManager.default.removeItem(at: to.dir)
-                throw error
+            } else {
+                let clones = Self.clonedFiles.map { (from[keyPath: $0], to[keyPath: $0]) }
+                try await Self.cloneFiles(clones)
+                // What is not in a snapshot (keys, the hardware model) is the VM's.
+                for file in Self.copiedFiles where fm.fileExists(atPath: source.paths[keyPath: file].path) {
+                    try fm.copyItem(at: source.paths[keyPath: file], to: to[keyPath: file])
+                }
+                for secret in [to.privateKey, to.macPassword] where fm.fileExists(atPath: secret.path) {
+                    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
+                }
+                try VZMacInstaller.newMachineIdentifier().write(to: to.macMachineID, options: .atomic)
             }
-            return finishCopy(cfg, of: source, snapshot: snapshot)
-        }
-        do {
-            let clones = Self.clonedFiles.map { (from[keyPath: $0], to[keyPath: $0]) }
-            try await Self.cloneFiles(clones)
-            let fm = FileManager.default
-            // What is not in a snapshot (keys, the hardware model) is the VM's.
-            for file in Self.copiedFiles where fm.fileExists(atPath: source.paths[keyPath: file].path) {
-                try fm.copyItem(at: source.paths[keyPath: file], to: to[keyPath: file])
-            }
-            for secret in [to.privateKey, to.macPassword] where fm.fileExists(atPath: secret.path) {
-                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
-            }
-            try VZMacInstaller.newMachineIdentifier().write(to: to.macMachineID, options: .atomic)
             try cfg.save(to: to.config)
         } catch {
             try? FileManager.default.removeItem(at: to.dir)
             throw error
         }
-        return finishCopy(cfg, of: source, snapshot: snapshot)
     }
 
     private func finishCopy(_ cfg: InstanceConfig, of source: VMInstance, snapshot: String?) -> VMInstance {
@@ -401,15 +404,49 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// A VM thrown away when its last tab closes: a new one from the default
+    /// image, or, with a snapshot chosen for them (Use as temporary VM), a
+    /// copy of it with its settings, less what reaches into the Mac.
     func createEphemeral() -> VMInstance {
         var name: String
         repeat {
             name = "tmp-" + String(UUID().uuidString.prefix(6)).lowercased()
         } while isNameTaken(name)
-        return instance(named: name, config: InstanceConfig.defaults(name: name, ephemeral: true))
+        guard let chosen = temporarySource else {
+            return instance(named: name, config: InstanceConfig.defaults(name: name, ephemeral: true))
+        }
+        var cfg = chosen.snapshot.config.copy(named: name).config
+        cfg.ephemeral = true
+        cfg.createdAt = InstanceConfig.now()
+        return instance(named: name, config: cfg, copying: chosen)
     }
 
-    private func provision(_ vm: VMInstance, config: InstanceConfig) async throws {
+    // MARK: The snapshot temporary VMs are copies of
+
+    /// The snapshot chosen with Use as temporary VM, and its VM. It is said
+    /// in the snapshot's own file, so it goes with the snapshot and its VM.
+    var temporarySource: (source: VMInstance, snapshot: Snapshot)? {
+        for vm in instances {
+            if let snap = vm.temporarySnapshot { return (vm, snap) }
+        }
+        return nil
+    }
+
+    /// Use as temporary VM: `vm`'s snapshot `snapshot` is the one ephemeral
+    /// VMs are copies of from now on, and no other VM's (nil: none is, and
+    /// they come from the default image again).
+    func useForTemporaryVMs(_ snapshot: String?, of vm: VMInstance) throws {
+        if let snapshot, !vm.snapshots.contains(where: { $0.id == snapshot }) {
+            throw MonadError("\(vm.name) has no snapshot \(snapshot).")
+        }
+        if snapshot != nil {
+            for other in instances where other !== vm { try other.setTemporarySnapshot(nil) }
+        }
+        try vm.setTemporarySnapshot(snapshot)
+    }
+
+    private func provision(_ vm: VMInstance, config: InstanceConfig,
+                           copying: (source: VMInstance, snapshot: Snapshot)? = nil) async throws {
         let paths = vm.paths
         try Paths.ensurePrivateDirectory(root)
         // A directory without instance.json is a leftover from an interrupted
@@ -418,6 +455,27 @@ final class VMManager: ObservableObject {
             try? FileManager.default.removeItem(at: paths.dir)
         }
         try Paths.ensurePrivateDirectory(paths.dir)
+
+        if let (source, snap) = copying {
+            vm.setPreparing("Copying “\(snap.name)” of \(source.name)…")
+            let from = InstancePaths(snapshotDir: source.paths.snapshot(snap.id))
+            // Never some other system than the one chosen: it fails, with why.
+            guard source.snapshots.contains(where: { $0.id == snap.id }), FileManager.default.fileExists(atPath: from.disk.path) else {
+                throw MonadError("The snapshot “\(snap.name)” of \(source.name) is used for temporary VMs, but its disk is gone. "
+                                 + "Choose another one in a VM's Snapshots.")
+            }
+            // Its settings come from a file: checked as a VM's are when loaded.
+            try config.validate(maxCPUs: .max, maxMemoryGiB: .max)
+            try await copyFiles(of: source, from: from, to: paths, config: config)
+            // The profiles in its settings are on its disks already: not set up again in every copy.
+            let fm = FileManager.default
+            if fm.fileExists(atPath: source.paths.appliedProfiles.path), !fm.fileExists(atPath: paths.appliedProfiles.path) {
+                try? fm.copyItem(at: source.paths.appliedProfiles, to: paths.appliedProfiles)
+            }
+            vm.note("a copy of \(source.name)'s snapshot \(snap.id) “\(snap.name)”")
+            vm.setProvisionedConfig(config)
+            return
+        }
 
         let name = config.name
         var config = config

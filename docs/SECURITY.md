@@ -248,6 +248,17 @@ Not promised:
   deleted with the snapshot. Snapshot ids are 8 hex digits made by Monad, never the user's text;
   names are plain text, 64 characters at most (`Snapshot.isValidName`, `HostProtocolTests`).
   Restoring or deleting one over MCP is a risky tool.
+- **An ephemeral VM can be a copy of a snapshot the user chose** (2026-11-18): Use as temporary VM
+  marks one snapshot among all the VMs' (`temporary` in its `snapshot.json`, in the VM's private
+  folder), and ⇧⌘T then copies it instead of the default image. What the user's next ephemeral VM
+  runs is the user's to say: the app sets it, and no MCP tool does (agents see which one it is in
+  `get_vm`; deleting it over MCP is a risky tool, and ephemeral VMs then come from the default
+  image again). The copy is made as any copy of a snapshot: its settings less shared folders,
+  bridges, host commands, forwards into the Mac or open to other computers, forwards through SSH
+  hosts and an agent role, checked as a VM's are when loaded; a new key, seed and machine-id (a
+  macOS one a new machine identifier); its disks only, never the snapshot's memory. A chosen
+  snapshot that cannot be copied fails the ephemeral VM with the reason, never another system in
+  its place (`ProvisioningFlowTests`, `HostServiceTests`, `MonadToolsTests`).
 - **Asking the user opens this Monad, not another copy** (2026-11-02): MonadHost opened the app
   with `open -b <bundle id>`, which may pick another copy (an older Debug build elsewhere); that
   copy replaced MonadHost and shut its VMs down on every MCP approval. It now opens the app it

@@ -1582,12 +1582,11 @@ struct ForwardEditor: View {
 /// asked before it is added.
 /// A VM's snapshots, like VMware's Snapshot Manager: the tree (each under
 /// the one it was taken after), where the VM is, and Take, Restore, Delete.
-private struct SnapshotsPage: View {
+struct SnapshotsPage: View {
     @ObservedObject var vm: RemoteVM
     let host: HostClient
 
     @State private var naming = false
-    @State private var newName = ""
     @State private var restoring: SnapshotSummary?
     @State private var deleting: SnapshotSummary?
     @State private var copying: SnapshotSummary?
@@ -1612,37 +1611,20 @@ private struct SnapshotsPage: View {
                         ProgressView().controlSize(.small)
                         Text(busy).font(Design.caption).foregroundStyle(.secondary)
                     }
-                    Button("Take Snapshot…") {
-                        newName = Self.defaultName()
-                        naming = true
-                    }
-                    .disabled(busy != nil || !(vm.state == .ready || vm.state == .stopped))
+                    Button("Take Snapshot…") { naming = true }
+                        .disabled(busy != nil || !(vm.state == .ready || vm.state == .stopped))
                 }
             } footer: {
-                Text("A snapshot keeps the VM's disks and settings as they are, and its memory when it is running: restoring it brings the VM back running, where it was. Disks are copied as APFS clones, which take room only as they differ; saved memory takes as much room as the VM's memory.")
+                Text("A snapshot keeps the VM's disks and settings as they are, and its memory when it is running: restoring it brings the VM back running, where it was. Disks are copied as APFS clones, which take room only as they differ; saved memory takes as much room as the VM's memory. One snapshot can be used as the temporary VM: New Ephemeral VM (⇧⌘T) then opens a copy of it.")
                     .font(Design.caption).foregroundStyle(.secondary)
             }
         }
         .sheet(isPresented: $naming) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Take a Snapshot of “\(vm.name)”").font(.headline)
-                TextField("Name", text: $newName)
-                Text(vm.state == .ready ? "It pauses for a moment while its memory is saved." : "It is shut down: its disks and settings are kept.")
-                    .font(Design.caption).foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel", role: .cancel) { naming = false }.keyboardShortcut(.cancelAction)
-                    Button("Take Snapshot") {
-                        naming = false
-                        take(newName)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!Snapshot.isValidName(newName))
-                }
-            }
-            .padding(20)
-            .frame(width: 420)
+            TakeSnapshotSheet(vmName: vm.name, running: vm.state == .ready, replacing: chosenElsewhere,
+                              name: Self.defaultName()) { name, temporary in
+                naming = false
+                take(name, temporary: temporary)
+            } onCancel: { naming = false }
         }
         .confirmationDialog("Restore “\(restoring?.name ?? "")”?",
                             isPresented: Binding(get: { restoring != nil }, set: { if !$0 { restoring = nil } })) {
@@ -1713,10 +1695,22 @@ private struct SnapshotsPage: View {
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Capsule().fill(Color.accentColor.opacity(0.18)))
                     }
+                    if s.temporary == true {
+                        Text("Temporary VM").font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange.opacity(0.2)))
+                            .help("New Ephemeral VM (⇧⌘T) opens a copy of this snapshot")
+                    }
                 }
                 Text(s.createdAt.formatted(date: .abbreviated, time: .shortened)).font(Design.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            Button { useAsTemporary(s, s.temporary != true) } label: {
+                Image(systemName: s.temporary == true ? "hourglass.circle.fill" : "hourglass")
+            }
+            .help(s.temporary == true ? "Stop using it as the temporary VM: New Ephemeral VM opens a new VM again"
+                  : "Use as temporary VM: New Ephemeral VM (⇧⌘T) opens a copy of this snapshot")
+            .disabled(busy != nil)
             Button("New VM…") {
                 copyName = vm.name + "-copy"
                 copying = s
@@ -1731,8 +1725,21 @@ private struct SnapshotsPage: View {
         .padding(.leading, CGFloat(min(depth, 8)) * 18)
     }
 
-    private func take(_ name: String) {
-        run("Taking a snapshot…") { try await host.takeSnapshot(vm.name, named: name) }
+    private func take(_ name: String, temporary: Bool) {
+        run("Taking a snapshot…") { try await host.takeSnapshot(vm.name, named: name, temporary: temporary) }
+    }
+
+    private func useAsTemporary(_ snap: SnapshotSummary, _ on: Bool) {
+        let name = vm.name, id = snap.id
+        run(on ? "Choosing it for temporary VMs…" : "Updating…") { try await host.useForTemporaryVMs(name, id: id, on) }
+    }
+
+    /// The snapshot used as the temporary VM now, among all the VMs' ("tools" of web).
+    private var chosenElsewhere: String? {
+        for other in host.instances {
+            if let s = other.snapshots.first(where: { $0.temporary == true }) { return "“\(s.name)” of \(other.name)" }
+        }
+        return nil
     }
 
     private func restore(_ snap: SnapshotSummary, savingFirst: Bool) {
@@ -1756,6 +1763,53 @@ private struct SnapshotsPage: View {
         let when = Date().formatted(date: .abbreviated, time: .shortened)
         guard let restoring else { return "Snapshot \(when)" }
         return String("Before restoring \(restoring) (\(when))".prefix(Snapshot.maxNameLength))
+    }
+}
+
+/// Take Snapshot: its name, and whether ephemeral VMs are copies of it from
+/// now on (Use as temporary VM).
+struct TakeSnapshotSheet: View {
+    let vmName: String
+    /// The VM runs: its memory is saved too.
+    let running: Bool
+    /// The snapshot used as the temporary VM now (“tools” of web), which
+    /// this one would take the place of.
+    let replacing: String?
+    @State var name: String
+    @State var temporary = false
+    var onTake: (String, Bool) -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Take a Snapshot of “\(vmName)”").font(.headline)
+            TextField("Name", text: $name)
+            Text(running ? "It pauses for a moment while its memory is saved." : "It is shut down: its disks and settings are kept.")
+                .font(Design.caption).foregroundStyle(.secondary)
+            Toggle("Use as temporary VM", isOn: $temporary)
+            Text(Self.temporaryCaption(replacing: temporary ? replacing : nil))
+                .font(Design.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }.keyboardShortcut(.cancelAction)
+                Button("Take Snapshot") { onTake(name, temporary) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!Snapshot.isValidName(name))
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    /// What Use as temporary VM does, under its switch; `replacing`: the
+    /// snapshot it takes the place of.
+    static func temporaryCaption(replacing: String?) -> String {
+        "New Ephemeral VM (⇧⌘T) then opens a copy of this snapshot, thrown away when its last tab closes, instead of a new VM "
+            + "from the default distribution. The copy has this VM's settings without its shared folders, bridges, host "
+            + "commands, forwards into the Mac and agent role, and starts from its disks, not its memory."
+            + (replacing.map { " It takes the place of \($0)." } ?? "")
     }
 }
 

@@ -174,6 +174,31 @@ final class HostProtocolTests: XCTestCase {
         try assertGolden(snap, #"{"agent":false,"config":\#(configJSON),"currentSnapshot":"0a1b2c3d","name":"dev","ports":[],"sessions":0,"snapshots":[{"createdAt":"2026-09-21T14:13:20Z","id":"0a1b2c3d","memory":true,"name":"v1"}],"state":{"phase":"stopped"}}"#)
     }
 
+    /// Use as temporary VM: asked when a snapshot is taken, or of one there
+    /// is by its id (on or off); the list says which one it is. Requests
+    /// and lists without it read as before.
+    func testTheSnapshotForTemporaryVMsInRequestsAndTheList() throws {
+        var take = HostRequest(id: 7, op: .takeSnapshot, name: "dev")
+        take.snapshot = "Tools"
+        take.temporary = true
+        try assertGolden(take, #"{"id":7,"name":"dev","op":"takeSnapshot","snapshot":"Tools","temporary":true}"#)
+        XCTAssertNoThrow(try take.validate())
+        var use = HostRequest(id: 8, op: .temporarySnapshot, name: "dev")
+        XCTAssertThrowsError(try use.validate(), "which snapshot")
+        use.snapshot = "0a1b2c3d"
+        XCTAssertThrowsError(try use.validate(), "on or off")
+        use.temporary = false
+        try assertGolden(use, #"{"id":8,"name":"dev","op":"temporarySnapshot","snapshot":"0a1b2c3d","temporary":false}"#)
+        XCTAssertNoThrow(try use.validate())
+        use.snapshot = "../../etc"
+        XCTAssertThrowsError(try use.validate(), "an id, not a path")
+        let chosen = SnapshotSummary(id: "0a1b2c3d", name: "v1", createdAt: Date(timeIntervalSince1970: 1_790_000_000),
+                                     parent: nil, memory: false, temporary: true)
+        try assertGolden(chosen, #"{"createdAt":"2026-09-21T14:13:20Z","id":"0a1b2c3d","memory":false,"name":"v1","temporary":true}"#)
+        let old = try HostProtocol.decode(SnapshotSummary.self, from: Data(#"{"createdAt":"2026-09-21T14:13:20Z","id":"0a1b2c3d","memory":false,"name":"v1"}"#.utf8))
+        XCTAssertNil(old.temporary)
+    }
+
     /// The Snapshots page's tree: each snapshot under the one it was taken
     /// after, in the order taken; one whose parent is gone is at the top,
     /// and a loop (a hand-edited file) shows each once.

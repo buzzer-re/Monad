@@ -56,6 +56,8 @@ The VMs run in MonadHost, a launchd agent, so they keep running when you quit th
 
 ⇧⌘T opens an ephemeral VM, for code that should run once and leave nothing behind, like an install script or a repository you just cloned. Close its last tab and Monad deletes the VM and its disk.
 
+To start each one from a system you set up, take a snapshot of a VM with "Use as temporary VM" on (its Snapshots page; a snapshot there is can be chosen with its hourglass button). ⇧⌘T then opens a copy of that snapshot, with its settings and an identity of its own, and still deletes it with its last tab. The copy leaves behind what let that VM reach into your Mac: shared folders, bridges, host commands, forwards into the Mac and an agent role.
+
 ## Profiles
 
 ![The New VM sheet with the Agentic profile ticked, and the new VM's tab saying Agentic set up.](docs/images/profiles.png)

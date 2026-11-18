@@ -735,6 +735,107 @@ final class ProvisioningFlowTests: XCTestCase {
         XCTAssertEqual(manager.instances.map(\.name).filter { $0 == "copy" }.count, 1)
     }
 
+    /// Use as temporary VM: with a snapshot chosen for them, an ephemeral VM
+    /// is a copy of it (its disks and settings, an identity of its own)
+    /// instead of a new VM from the default image, and is still thrown away
+    /// with its last tab. What let the snapshot's VM reach into the Mac
+    /// (a shared folder, a role) is left out: the copy runs whatever is tried in it.
+    func testAnEphemeralVMIsACopyOfTheSnapshotChosenForThem() async throws {
+        let source = try await createdVM("unit")
+        var settings = source.config
+        settings.cpus = 3
+        settings.sharing = SharingSettings(runtimeEnabled: true,
+                                           shares: [SharedFolder(hostPath: tmp.url.path, guestPath: "/mnt/src", readOnly: true)])
+        settings.agents = AgentAccess(role: .orchestrator)
+        try source.update(settings)
+        try Data("tools installed".utf8).write(to: source.paths.disk)
+        let snap = try await source.takeSnapshot(name: "tools")
+        try manager.useForTemporaryVMs(snap.id, of: source)
+        var applied = AppliedProfiles()
+        applied.applied["server"] = Date(timeIntervalSince1970: 1_790_000_000)
+        try applied.save(source.paths.appliedProfiles)
+        try Data("system later".utf8).write(to: source.paths.disk)
+        let fetched = images.requests
+
+        let vm = manager.createEphemeral()
+        await assertEventually("\(vm.state)") { vm.state == .stopped }
+        XCTAssertTrue(vm.name.hasPrefix("tmp-"), vm.name)
+        XCTAssertTrue(vm.config.ephemeral)
+        XCTAssertEqual(String(decoding: try Data(contentsOf: vm.paths.disk), as: UTF8.self), "tools installed")
+        XCTAssertEqual(vm.config.cpus, 3, "the snapshot's settings")
+        XCTAssertTrue(vm.config.sharing.shares.isEmpty, "no folder of the Mac")
+        XCTAssertNil(vm.config.agents, "no role")
+        XCTAssertNil(vm.config.networks.first?.macAddress, "a MAC of its own when it first starts")
+        XCTAssertEqual(images.requests, fetched, "no image is fetched")
+        let seed = String(decoding: try Data(contentsOf: vm.paths.seed), as: UTF8.self)
+        XCTAssertTrue(seed.contains("local-hostname: monad-\(vm.name)"), "its own host name")
+        XCTAssertTrue(seed.contains(CloudInit.newMachineIDCommand), "its own machine-id")
+        XCTAssertTrue(runner.calls.contains { $0.executable == "/usr/bin/ssh-keygen" && $0.arguments.contains(vm.paths.privateKey.path) },
+                      "a key of its own")
+        XCTAssertFalse(manager.order.contains(vm.name), "not one of the VMs kept")
+        XCTAssertTrue(try InstanceConfig.load(from: vm.paths.config).ephemeral, "a leftover is removed when MonadHost starts")
+        XCTAssertTrue(vm.snapshots.isEmpty)
+        XCTAssertEqual(AppliedProfiles.load(vm.paths.appliedProfiles), applied, "its profiles are on its disk: not set up again")
+
+        manager.retain(vm)
+        manager.release(vm)
+        await assertEventually { self.manager.existing(vm.name) == nil }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vm.paths.dir.path))
+        XCTAssertEqual(source.temporarySnapshot?.id, snap.id, "the snapshot stays, for the next one")
+        XCTAssertEqual(source.config.sharing.shares.count, 1, "the VM it was taken of is as it was")
+    }
+
+    /// One snapshot among all the VMs' is the one for temporary VMs:
+    /// choosing another takes its place, and it is still chosen after
+    /// MonadHost starts again. Once it is gone (deleted, or its VM is),
+    /// ephemeral VMs come from the default image again.
+    func testOneSnapshotAmongAllVMsIsForTemporaryVMs() async throws {
+        let a = try await createdVM("first"), b = try await createdVM("second")
+        let sa = try await a.takeSnapshot(name: "a"), sb = try await b.takeSnapshot(name: "b")
+        XCTAssertNil(manager.temporarySource)
+        try manager.useForTemporaryVMs(sa.id, of: a)
+        try manager.useForTemporaryVMs(sb.id, of: b)
+        XCTAssertNil(a.temporarySnapshot, "one at most")
+        XCTAssertEqual(manager.temporarySource?.snapshot.id, sb.id)
+        XCTAssertThrowsError(try manager.useForTemporaryVMs("00000000", of: a))
+        XCTAssertEqual(manager.temporarySource?.snapshot.id, sb.id, "kept when another cannot be chosen")
+
+        let env = VMEnvironment(runner: runner, machines: factory, clock: TestClock(), virtualizationSupported: true,
+                                networks: FakeNetworkAttacher())
+        let fresh = VMManager(root: root, environment: env, images: images, minimumFreeBytes: 0, macMinimumFreeBytes: 0)
+        fresh.load()
+        XCTAssertEqual(fresh.temporarySource?.source.name, "second")
+        XCTAssertEqual(fresh.temporarySource?.snapshot.id, sb.id)
+
+        try manager.useForTemporaryVMs(nil, of: b)
+        XCTAssertNil(manager.temporarySource)
+        try manager.useForTemporaryVMs(sb.id, of: b)
+        try await manager.delete(b)
+        XCTAssertNil(manager.temporarySource)
+        let fetched = images.requests
+        let vm = manager.createEphemeral()
+        await assertEventually("\(vm.state)") { vm.state == .stopped }
+        XCTAssertEqual(images.requests, fetched + 1, "from the default image again")
+    }
+
+    /// A snapshot chosen for temporary VMs that cannot be copied (its disk
+    /// is gone) fails the ephemeral VM with the reason: it is never some
+    /// other system than the one chosen.
+    func testAnEphemeralVMIsNeverAnotherSystemThanTheSnapshotChosen() async throws {
+        let source = try await createdVM("unit")
+        let snap = try await source.takeSnapshot(name: "tools")
+        try manager.useForTemporaryVMs(snap.id, of: source)
+        try FileManager.default.removeItem(at: InstancePaths(snapshotDir: source.paths.snapshot(snap.id)).disk)
+        let fetched = images.requests
+        let vm = manager.createEphemeral()
+        await assertEventually { vm.isFailed }
+        guard case .failed(let why) = vm.state else { return XCTFail("\(vm.state)") }
+        XCTAssertTrue(why.contains("tools"), why)
+        XCTAssertEqual(images.requests, fetched)
+        XCTAssertNil(manager.existing(vm.name))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vm.paths.dir.path))
+    }
+
     func testAFailedEphemeralVMLeavesNothing() async throws {
         images.error = TestError("offline")
         let vm = manager.createEphemeral()

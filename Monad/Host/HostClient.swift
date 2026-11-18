@@ -599,9 +599,32 @@ final class HostClient: ObservableObject {
     }
 
     /// Snapshots of VM `name` (Snapshots.swift): taken by name, restored
-    /// and deleted by id.
-    func takeSnapshot(_ name: String, named snapshot: String) async throws {
-        try await request(.takeSnapshot, name: name) { $0.snapshot = snapshot }
+    /// and deleted by id. `temporary`: ephemeral VMs are copies of the one
+    /// taken from now on (Use as temporary VM).
+    func takeSnapshot(_ name: String, named snapshot: String, temporary: Bool = false) async throws {
+        if temporary { try needsTemporarySnapshots() }
+        try await request(.takeSnapshot, name: name) {
+            $0.snapshot = snapshot
+            if temporary { $0.temporary = true }
+        }
+    }
+
+    /// Use as temporary VM, on or off, for a snapshot `name` has.
+    func useForTemporaryVMs(_ name: String, id: String, _ on: Bool) async throws {
+        try needsTemporarySnapshots()
+        try await request(.temporarySnapshot, name: name) {
+            $0.snapshot = id
+            $0.temporary = on
+        }
+    }
+
+    /// A host from an older Monad (kept while VMs run) would take the
+    /// snapshot and leave the rest out without a word.
+    private func needsTemporarySnapshots() throws {
+        guard !hostIsOutdated else {
+            throw MonadError("The VM service is from an older Monad and cannot make temporary VMs from a snapshot yet. "
+                + "It is updated once no VM is running.")
+        }
     }
 
     func restoreSnapshot(_ name: String, id: String) async throws {

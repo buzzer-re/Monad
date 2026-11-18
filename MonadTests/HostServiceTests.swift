@@ -576,6 +576,47 @@ final class HostServiceTests: XCTestCase {
         await assertEventually { log.latest("default")?.snapshots == nil }
     }
 
+    /// Use as temporary VM, as the Snapshots page asks: chosen when a
+    /// snapshot is taken or later by its id, said in the VM's snapshot, and
+    /// what an ephemeral VM is then a copy of.
+    func testASnapshotIsChosenForTemporaryVMs() async throws {
+        let (c, log) = await connect()
+        try await provisioned(c, log)
+        let fetched = fixture.images.requests
+        let r = await send(c, .takeSnapshot, name: "default") {
+            $0.snapshot = "tools"
+            $0.temporary = true
+        }
+        XCTAssertTrue(r.ok, r.error ?? "")
+        let id = try XCTUnwrap(r.instance?.snapshots?.first?.id)
+        XCTAssertEqual(r.instance?.snapshots?.first?.temporary, true)
+
+        let made = await send(c, .createEphemeral)
+        let name = try XCTUnwrap(made.instance?.name)
+        XCTAssertEqual(made.instance?.config.ephemeral, true)
+        await assertEventually { log.latest(name)?.state == .stopped }
+        XCTAssertEqual(fixture.images.requests, fetched, "a copy of the snapshot: no image is fetched")
+        XCTAssertEqual(fixture.manager.existing(name)?.config.image, fixture.manager.existing("default")?.config.image)
+
+        let off = await send(c, .temporarySnapshot, name: "default") {
+            $0.snapshot = id
+            $0.temporary = false
+        }
+        XCTAssertTrue(off.ok, off.error ?? "")
+        XCTAssertNil(off.instance?.snapshots?.first?.temporary, "absent when it is not")
+        let other = await send(c, .temporarySnapshot, name: "default") {
+            $0.snapshot = "00000000"
+            $0.temporary = true
+        }
+        XCTAssertFalse(other.ok, "a snapshot it does not have")
+        let on = await send(c, .temporarySnapshot, name: "default") {
+            $0.snapshot = id
+            $0.temporary = true
+        }
+        XCTAssertEqual(on.instance?.snapshots?.first?.temporary, true)
+        await assertEventually { log.latest("default")?.snapshots?.first?.temporary == true }
+    }
+
     /// To ask the user, MonadHost opens the app it lives in, by its path:
     /// "open -b" let Launch Services pick any copy with the bundle id (an
     /// older Debug build elsewhere), which replaced MonadHost and shut its

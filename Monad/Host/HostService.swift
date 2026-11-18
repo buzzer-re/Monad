@@ -569,7 +569,8 @@ final class HostConnection {
 
         case .takeSnapshot:
             let target = try vm(r.name)
-            _ = try await target.takeSnapshot(name: r.snapshot!)
+            let taken = try await target.takeSnapshot(name: r.snapshot!)
+            if r.temporary == true { try manager.useForTemporaryVMs(taken.id, of: target) }
             return answer(target)
 
         case .restoreSnapshot:
@@ -581,6 +582,15 @@ final class HostConnection {
         case .deleteSnapshot:
             let target = try vm(r.name)
             try target.deleteSnapshot(r.snapshot!)
+            return answer(target)
+
+        case .temporarySnapshot:
+            let target = try vm(r.name)
+            if r.temporary == true {
+                try manager.useForTemporaryVMs(r.snapshot!, of: target)
+            } else if target.temporarySnapshot?.id == r.snapshot {
+                try manager.useForTemporaryVMs(nil, of: target)
+            }
             return answer(target)
 
         case .restart:

@@ -1,6 +1,6 @@
 # Monad: where things stand
 
-Last updated: 2026-11-16. This is the state of the project, not its
+Last updated: 2026-11-18. This is the state of the project, not its
 history: what Monad does, how it is built, how it is tested, and what is open. Update it with every
 change that moves any of these.
 
@@ -67,6 +67,11 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   snapshot (its Snapshots page, the New VM sheet's "Start from: a snapshot", `clone_vm`), and a
   stopped Linux VM is copied too: its disks cloned, with a new seed (host name, host keys), key
   and machine-id. Checked on the Mac: the copy got its own host name, machine-id and address.
+  One snapshot among all the VMs' can be the temporary VM (Take Snapshot › Use as temporary VM, or
+  a snapshot's hourglass button): ⇧⌘T then opens a copy of it, made as any copy of a snapshot and
+  thrown away with its last tab, instead of a new VM from the default image. Agents see which one
+  it is and cannot choose it. Not checked by hand yet: ⇧⌘T on a real Linux and a real macOS
+  snapshot.
 - **Disks:** a VM takes up to 8 more disks (Resources › Disks, `add_disk`/`remove_disk`), sparse
   files in its folder attached by name at the next start; in a Linux VM Monad formats a blank one
   (ext4) and mounts it at `/mnt/<name>` (Guest/monad-disks.sh, never over a filesystem), and its
