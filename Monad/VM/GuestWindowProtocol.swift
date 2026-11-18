@@ -22,6 +22,12 @@ struct GuestDisplaySize: Equatable, Sendable {
     let height: Int
 }
 
+/// Some rows of a popup and the part of each that is there: `height`
+/// rows, `width` pixels from `x` of its inner part (none when 0).
+struct GuestWindowBand: Equatable, Sendable {
+    let height: Int, x: Int, width: Int
+}
+
 /// A program's window as it is on the VM's display.
 struct GuestWindow: Equatable, Sendable, Identifiable {
     let id: UInt32
@@ -39,8 +45,28 @@ struct GuestWindow: Equatable, Sendable, Identifiable {
     /// window's pixels (it may reach outside it). 0 for a window of its own.
     var parent: UInt32 = 0
     var offsetX = 0, offsetY = 0
+    /// The program draws the window's title bar itself (GTK's header
+    /// bars): the colour it has at its top (0xRRGGBB), which the Mac's
+    /// title bar takes so that the two read as one. nil: the frame is all
+    /// the Mac's.
+    var ownBar: UInt32?
+    /// A popup the program did not draw as a whole rectangle (round
+    /// corners, an arrow): its inner part from the top down, row by row.
+    /// The Mac's window is cut to it. Empty: all of it is there.
+    var shape: [GuestWindowBand] = []
 
     var isPopup: Bool { parent != 0 }
+}
+
+/// What a program asks of its own window. A wish: who shows the windows
+/// does it only when it is the user's doing.
+enum GuestWindowAsk: Equatable, Sendable {
+    /// To be moved: the user drags the title bar the program drew.
+    case move
+    /// To be as large as it gets, or back: a double click on that bar.
+    case zoom(Bool)
+    /// To be put away.
+    case minimize
 }
 
 enum GuestWindowEvent: Equatable, Sendable {
@@ -55,6 +81,8 @@ enum GuestWindowEvent: Equatable, Sendable {
     /// How the pointer is to look over the window it is in: a number of
     /// GuestCursor's (0: not at all), never a picture.
     case cursor(Int)
+    /// The program of that window asks something of it.
+    case asked(window: UInt32, GuestWindowAsk)
 }
 
 /// A key of the Mac's keyboard for the VM: the Linux kernel's code for it,
@@ -122,6 +150,8 @@ struct GuestWindowReader {
     /// mwm_ctl.h's MWM_CTL_LINE.
     static let maxLineLength = 1024
     static let maxWindows = 64
+    /// The rows of a popup's shape at most: mwm_server.h's MWM_MAX_BANDS.
+    static let maxBands = 128
     /// The largest display Virtualization gives, each way.
     static let maxSide = 8192
     static let maxScale = 4
@@ -193,12 +223,23 @@ struct GuestWindowReader {
             list = []
             return nil
         case "window":
-            guard let expected, list.count < expected, let window = window(words), !list.contains(where: { $0.id == window.id })
-            else { return broken() }
+            guard let expected, list.count < expected, Self.shapeHolds(list.last), let window = window(words),
+                  !list.contains(where: { $0.id == window.id }) else { return broken() }
             list.append(window)
             return nil
+        case "band":
+            // Rows of the popup just told, from where the rows before them ended.
+            guard expected != nil, words.count == 5, let last = list.last, last.isPopup, last.shape.count < Self.maxBands,
+                  Self.number(words[1], 1...Int(UInt32.max)) == Int(last.id),
+                  case let left = last.innerHeight - last.shape.reduce(0, { $0 + $1.height }), left >= 1,
+                  let height = Self.number(words[2], 1...left),
+                  let x = Self.number(words[3], 0...last.innerWidth), let width = Self.number(words[4], 0...(last.innerWidth - x))
+            else { return broken() }
+            list[list.count - 1].shape.append(GuestWindowBand(height: height, x: x, width: width))
+            return nil
         case "end":
-            guard let count = expected, list.count == count, words.count == 1, Self.popupsHold(list) else { return broken() }
+            guard let count = expected, list.count == count, words.count == 1, Self.shapeHolds(list.last), Self.popupsHold(list)
+            else { return broken() }
             let whole = list
             expected = nil
             list = []
@@ -215,6 +256,13 @@ struct GuestWindowReader {
             guard display != nil, expected == nil, words.count == 2, let shape = Self.number(words[1], 0...GuestCursor.lastShape)
             else { return broken() }
             return .cursor(shape)
+        case "move", "minimize":
+            guard display != nil, expected == nil, words.count == 2, let id = Self.number(words[1], 1...Int(UInt32.max)) else { return broken() }
+            return .asked(window: UInt32(id), first == "move" ? .move : .minimize)
+        case "zoom":
+            guard display != nil, expected == nil, words.count == 3, let id = Self.number(words[1], 1...Int(UInt32.max)),
+                  let on = Self.number(words[2], 0...1) else { return broken() }
+            return .asked(window: UInt32(id), .zoom(on == 1))
         default:
             return nil // a word a newer window manager may say
         }
@@ -256,8 +304,14 @@ struct GuestWindowReader {
         }
     }
 
+    /// A shape is all of its window's rows, or it is none.
+    private static func shapeHolds(_ window: GuestWindow?) -> Bool {
+        guard let window, !window.shape.isEmpty else { return true }
+        return window.shape.reduce(0) { $0 + $1.height } == window.innerHeight
+    }
+
     private func window(_ words: [Substring]) -> GuestWindow? {
-        guard let display, words.count == 16,
+        guard let display, words.count == 17,
               let id = Self.number(words[1], 1...Int(UInt32.max)),
               let width = Self.number(words[4], 1...display.width), let height = Self.number(words[5], 1...display.height),
               let x = Self.number(words[2], 0...(display.width - width)), let y = Self.number(words[3], 0...(display.height - height)),
@@ -267,10 +321,20 @@ struct GuestWindowReader {
               let parent = Self.number(words[11], 0...Int(UInt32.max)), parent != id,
               let offsetX = Self.signed(words[12], Self.maxOffset), let offsetY = Self.signed(words[13], Self.maxOffset),
               parent != 0 || (offsetX == 0 && offsetY == 0),
-              let appID = Self.text(words[14]), let title = Self.text(words[15]) else { return nil }
+              let bar = Self.bar(words[14]), parent == 0 || bar == nil,
+              let appID = Self.text(words[15]), let title = Self.text(words[16]) else { return nil }
         return GuestWindow(id: UInt32(id), x: x, y: y, width: width, height: height, scale: scale,
                            innerX: innerX, innerY: innerY, innerWidth: innerWidth, innerHeight: innerHeight, appID: appID, title: title,
-                           parent: UInt32(parent), offsetX: offsetX, offsetY: offsetY)
+                           parent: UInt32(parent), offsetX: offsetX, offsetY: offsetY, ownBar: bar)
+    }
+
+    /// "-": the frame is the Mac's (nil inside). Else the colour of the
+    /// program's own bar: six small hex digits. Anything else is no bar word (nil outside).
+    private static func bar(_ word: Substring) -> UInt32?? {
+        if word == "-" { return .some(nil) }
+        guard word.utf8.count == 6, word.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }),
+              let color = UInt32(word, radix: 16) else { return nil }
+        return .some(color)
     }
 
     /// A strict decimal that may be negative ("-5"; never "-0" or "+5"), within ±`bound`.
@@ -290,7 +354,8 @@ struct GuestWindowReader {
     /// byte but plain ASCII, "-" for none. Then made fit to show: bytes
     /// that are no text become U+FFFD, and control characters and the
     /// characters that turn the reading order around are taken out.
-    private static func text(_ word: Substring) -> String? {
+    /// (Also how the names of a VM's programs are read: GuestApps.swift.)
+    static func text(_ word: Substring) -> String? {
         if word == "-" { return "" }
         var bytes: [UInt8] = []
         var rest = word.utf8[...]

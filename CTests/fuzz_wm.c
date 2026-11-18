@@ -89,6 +89,14 @@ static void check(const mwm_server *s) {
         if (w->width <= 0 || w->height <= 0) fail("a window without a size");
         if (w->x < 0 || w->y < 0 || w->x + w->width > W || w->y + w->height > H) fail("a window outside the display");
         if (!w->title || !w->app_id || strlen(w->title) >= 128 || strlen(w->app_id) >= 128) fail("a title longer than it may be");
+        /* A shape is a popup's, and all of its inner part's rows, each inside it. */
+        if (w->band_count < 0 || w->band_count > MWM_MAX_BANDS || (w->band_count > 0 && w->parent == 0)) fail("a shape there may not be");
+        int rows = 0;
+        for (int k = 0; k < w->band_count; k++) {
+            if (w->bands[k].height == 0 || w->bands[k].x + w->bands[k].width > w->inner_width) fail("a row of a shape outside its window");
+            rows += w->bands[k].height;
+        }
+        if (w->band_count > 0 && rows != w->inner_height) fail("a shape that is not all of its window");
         for (int y = w->y; y < w->y + w->height; y++)
             for (int x = w->x; x < w->x + w->width; x++) {
                 if (covered[y * W + x]) fail("two windows on one pixel");
@@ -266,6 +274,19 @@ static void open_window(program *p, input *in) {
     words(p, compositor, 0, 1, &surface);
     words(p, wm, 2, 2, (uint32_t[]){xdg, surface});
     words(p, xdg, 1, 1, &toplevel);
+    if (byte(in) % 3 == 0) { /* its frame, as GTK says it: its own bar, the server's, or a mode there is none of */
+        uint32_t frames = p->next++, frame = p->next++;
+        mwm_put_begin(p->conn, registry, 0);
+        mwm_put_uint(p->conn, 10);
+        mwm_put_string(p->conn, "org_kde_kwin_server_decoration_manager");
+        mwm_put_uint(p->conn, 1);
+        mwm_put_uint(p->conn, frames);
+        mwm_put_end(p->conn);
+        words(p, frames, 0, 2, (uint32_t[]){frame, byte(in) % 4 ? surface : number(in)});
+        words(p, frame, 1, 1, (uint32_t[]){byte(in) % 4});
+        if (byte(in) % 4 == 0) words(p, frame, 0, 0, NULL);
+    }
+    if (byte(in) % 3 == 0) words(p, toplevel, (uint16_t)(4 + byte(in) % 10), 2, (uint32_t[]){seat, number(in)}); /* a wish, or what is none */
     char title[40];
     int length = byte(in) % (int)sizeof title;
     for (int i = 0; i < length; i++) title[i] = (char)(byte(in) | 1);

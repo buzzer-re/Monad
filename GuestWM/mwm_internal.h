@@ -48,6 +48,8 @@ typedef enum {
     T_DATA_OFFER,
     T_SHAPE_MANAGER,
     T_SHAPE_DEVICE,
+    T_KDE_DECORATION_MANAGER,
+    T_KDE_DECORATION,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -115,6 +117,11 @@ typedef struct {
     int x, y, width, height;
     /* Pixels to one of the program's units: what its surface is drawn at. */
     int scale;
+    /* The colour at the top of what the program drew (0x00RRGGBB), as it was last seen. */
+    uint32_t bar_color;
+    /* A popup's shape, when it is no whole rectangle (mwm_server.h). */
+    int band_count;
+    mwm_band bands[MWM_MAX_BANDS];
     surface *surface;
 } window;
 
@@ -135,6 +142,8 @@ struct xdg {
     surface *surface;
     uint32_t id, toplevel, popup;
     bool configured;
+    /* It asked who draws its frame (xdg-decoration), and was told the Mac does. */
+    bool decorated;
     /* It has been told it is the window in front. */
     bool active;
     /* The size it was last asked to be; 0: any it likes. */
@@ -189,6 +198,8 @@ struct surface {
     uint32_t frames_waiting[MAX_FRAMES];
     int waiting_count;
     xdg *xdg;
+    /* What it said of its frame through KDE's protocol, as GTK does: 0 nothing, 1 it draws it, 2 the server is to. */
+    uint8_t kde_mode;
     subsurface *sub;
     window *window;
     /* Itself and its subsurfaces, from the bottom up. */
@@ -272,6 +283,9 @@ struct mwm_server {
         void *copied_ctx;
         transfer transfers[MWM_MAX_TRANSFERS];
     } clipboard;
+    /* Who hears what a program asks of its own window (mwm_shell.c). */
+    mwm_asked asked;
+    void *asked_ctx;
 };
 
 /* Objects and errors (mwm_server.c). */
@@ -325,6 +339,14 @@ window *mwm_shell_parent(const window *w);
 window *mwm_shell_grabbing(mwm_server *s, window *top);
 /* A role is being freed: popups on it are on nothing from now on. */
 void mwm_shell_role_gone(client *c, xdg *x);
+/* Whether the program draws the window's title bar itself (GTK's header
+ * bars): it never asked who draws the frame, or said it does. */
+bool mwm_shell_own_bar(const window *w);
+/* The part of the window that is the window proper, in its pixels; all of it unless the program said less. */
+box mwm_shell_inner(const window *w);
+/* The window was drawn: the colour at the top of it is looked at again.
+ * True when it changed and is what the window's open parts show. */
+bool mwm_shell_painted(mwm_server *s, window *w);
 
 /* The pointer and the keyboard (mwm_seat.c). */
 

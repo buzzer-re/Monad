@@ -825,7 +825,7 @@ final class VMLifecycleTests: XCTestCase {
         await assertEventually { self.windowDials == 1 }
         let shown = factory.machine.guestWindows
         XCTAssertEqual(shown.titles, ["unit"])
-        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 app Title\nend\n")
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 - app Title\nend\n")
         await assertEventually { shown.windows.count == 1 }
         XCTAssertEqual(shown.display, GuestDisplaySize(width: 1920, height: 1200))
         XCTAssertEqual(shown.windows.first?.title, "Title")
@@ -844,6 +844,8 @@ final class VMLifecycleTests: XCTestCase {
         await assertEventually { shown.copies == ["hello"] }
         channel.agentSays("cursor 9\n")
         await assertEventually { shown.cursors == [9] }
+        channel.agentSays("zoom 1 1\n")
+        await assertEventually { shown.asks == [.zoom(true)] }
 
         channel.hangUp()
         await assertEventually { shown.disconnects == 1 }
@@ -885,7 +887,7 @@ final class VMLifecycleTests: XCTestCase {
         vm.start()
         await assertEventually { self.windowDials == 1 }
         let shown = factory.machine.guestWindows
-        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 4000 0 100 50 1 0 0 100 50 0 0 0 app off-the-display\nend\n")
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 4000 0 100 50 1 0 0 100 50 0 0 0 - app off-the-display\nend\n")
         await assertEventually { channel.closed }
         await assertEventually { shown.disconnects == 1 }
         XCTAssertTrue(shown.windows.isEmpty)

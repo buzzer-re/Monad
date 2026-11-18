@@ -14,6 +14,9 @@
 #include <drm/drm_mode.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +30,16 @@ struct mwm_kms {
     uint32_t *pixels;
     size_t bytes;
     int width, height, stride;
+    /* Telling the display takes until its next frame (11 ms as measured,
+     * however small the rectangle): a thread of its own does it, so that
+     * the window manager goes on hearing the pointer and the programs
+     * meanwhile. What changed while it was busy is told next, as one. */
+    pthread_t teller;
+    bool telling, closing;
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    /* What changed and is not told yet; none when x2 is 0. */
+    struct drm_clip_rect waiting;
 };
 
 static int xioctl(int fd, unsigned long request, void *arg) {
@@ -40,6 +53,24 @@ static int xioctl(int fd, unsigned long request, void *arg) {
 static mwm_kms *failed(mwm_kms *k, char *err, size_t errlen, const char *what) {
     snprintf(err, errlen, "%s: %s", what, strerror(errno));
     mwm_kms_close(k);
+    return NULL;
+}
+
+/* The thread: tells the display what changed, whenever something did. */
+static void *tell(void *ctx) {
+    mwm_kms *k = ctx;
+    pthread_mutex_lock(&k->lock);
+    for (;;) {
+        while (k->waiting.x2 == 0 && !k->closing) pthread_cond_wait(&k->changed, &k->lock);
+        if (k->closing) break;
+        struct drm_clip_rect clip = k->waiting;
+        k->waiting = (struct drm_clip_rect){0};
+        pthread_mutex_unlock(&k->lock);
+        struct drm_mode_fb_dirty_cmd dirty = {.fb_id = k->fb, .num_clips = 1, .clips_ptr = (uintptr_t)&clip};
+        (void)xioctl(k->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
+        pthread_mutex_lock(&k->lock);
+    }
+    pthread_mutex_unlock(&k->lock);
     return NULL;
 }
 
@@ -106,12 +137,34 @@ mwm_kms *mwm_kms_open(const char *card, int width, int height, char *err, size_t
     struct drm_mode_crtc crtc = {.crtc_id = crtcs[0], .fb_id = k->fb, .set_connectors_ptr = (uintptr_t)&connectors[0],
                                  .count_connectors = 1, .mode = mode, .mode_valid = 1};
     if (xioctl(k->fd, DRM_IOCTL_MODE_SETCRTC, &crtc) < 0) return failed(k, err, errlen, "setting the display's size");
+    /* The thread takes no signal: the one that ends the window manager is to wake its own wait. */
+    pthread_mutex_init(&k->lock, NULL);
+    pthread_cond_init(&k->changed, NULL);
+    sigset_t all, before;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &before);
+    int made = pthread_create(&k->teller, NULL, tell, k);
+    pthread_sigmask(SIG_SETMASK, &before, NULL);
+    if (made != 0) {
+        errno = made;
+        return failed(k, err, errlen, "starting the display's thread");
+    }
+    k->telling = true;
     mwm_kms_present(k, 0, 0, width, height);
     return k;
 }
 
 void mwm_kms_close(mwm_kms *k) {
     if (!k) return;
+    if (k->telling) {
+        pthread_mutex_lock(&k->lock);
+        k->closing = true;
+        pthread_cond_signal(&k->changed);
+        pthread_mutex_unlock(&k->lock);
+        pthread_join(k->teller, NULL);
+        pthread_cond_destroy(&k->changed);
+        pthread_mutex_destroy(&k->lock);
+    }
     if (k->pixels) munmap(k->pixels, k->bytes);
     if (k->fd >= 0) {
         if (k->fb) (void)xioctl(k->fd, DRM_IOCTL_MODE_RMFB, &k->fb);
@@ -128,9 +181,20 @@ uint32_t *mwm_kms_pixels(const mwm_kms *k) { return k->pixels; }
 int mwm_kms_stride(const mwm_kms *k) { return k->stride; }
 
 void mwm_kms_present(mwm_kms *k, int x, int y, int width, int height) {
-    if (width <= 0 || height <= 0) return;
+    if (width <= 0 || height <= 0 || x < 0 || y < 0 || x + width > k->width || y + height > k->height) return;
     struct drm_clip_rect clip = {.x1 = (unsigned short)x, .y1 = (unsigned short)y, .x2 = (unsigned short)(x + width),
                                  .y2 = (unsigned short)(y + height)};
-    struct drm_mode_fb_dirty_cmd dirty = {.fb_id = k->fb, .num_clips = 1, .clips_ptr = (uintptr_t)&clip};
-    (void)xioctl(k->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
+    pthread_mutex_lock(&k->lock);
+    /* With what waits already: the display takes one rectangle at a time (the kernel makes one of several). */
+    struct drm_clip_rect *w = &k->waiting;
+    if (w->x2 == 0) {
+        *w = clip;
+    } else {
+        if (clip.x1 < w->x1) w->x1 = clip.x1;
+        if (clip.y1 < w->y1) w->y1 = clip.y1;
+        if (clip.x2 > w->x2) w->x2 = clip.x2;
+        if (clip.y2 > w->y2) w->y2 = clip.y2;
+    }
+    pthread_cond_signal(&k->changed);
+    pthread_mutex_unlock(&k->lock);
 }

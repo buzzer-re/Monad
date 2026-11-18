@@ -58,6 +58,25 @@ enum GuestWindowLayout {
         CGPoint(x: CGFloat(popup.offsetX) / CGFloat(parent.scale), y: CGFloat(popup.offsetY) / CGFloat(parent.scale))
     }
 
+    /// The parts of a popup that are there, in points from its content's
+    /// top left, down: the Mac's window is cut to them, so a menu's round
+    /// corners and its arrow show what is behind the menu. nil when the
+    /// popup is all there.
+    static func shape(_ popup: GuestWindow) -> [CGRect]? {
+        guard !popup.shape.isEmpty else { return nil }
+        let scale = CGFloat(popup.scale)
+        var y = 0
+        var rects: [CGRect] = []
+        for band in popup.shape {
+            if band.width > 0 {
+                rects.append(CGRect(x: CGFloat(band.x) / scale, y: CGFloat(y) / scale,
+                                    width: CGFloat(band.width) / scale, height: CGFloat(band.height) / scale))
+            }
+            y += band.height
+        }
+        return rects
+    }
+
     /// Whether a popup at `offset` (from its window's content's top left)
     /// touches that window: a menu hangs from its window and a tooltip
     /// stands on it, a few points away at most. Nothing larger than a
@@ -75,6 +94,30 @@ enum GuestWindowLayout {
     static func title(_ window: GuestWindow, vm: String) -> String {
         let own = !window.title.isEmpty ? window.title : !window.appID.isEmpty ? window.appID : "Linux program"
         return "\(own.count > 80 ? own.prefix(80) + "…" : own) — \(vm)"
+    }
+
+    /// Whether a colour (0xRRGGBB) is dark to the eye. The Mac's title bar
+    /// takes the colour of the bar a program drew under it, and its text
+    /// and buttons are then drawn for a dark or a light bar.
+    static func isDark(_ color: UInt32) -> Bool {
+        let r = Double((color >> 16) & 0xff), g = Double((color >> 8) & 0xff), b = Double(color & 0xff)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128
+    }
+
+    /// Whether what a program asks of its window is the user's doing, and
+    /// so done. A move: the user holds the button down in that window (a
+    /// drag of the bar the program drew, begun a moment ago). A zoom or
+    /// putting it away: the user clicked or pressed a key in that window
+    /// just before. Asked at any other time, nothing happens: a program
+    /// in a VM does not move or resize the Mac's windows by itself.
+    static func wishIsTheUsers(_ ask: GuestWindowAsk, window: UInt32, lastInputWindow: UInt32, lastInputAt: Date?,
+                               leftButtonDown: Bool, now: Date) -> Bool {
+        guard let lastInputAt, lastInputWindow == window else { return false }
+        let since = now.timeIntervalSince(lastInputAt)
+        switch ask {
+        case .move: return leftButtonDown && since >= 0 && since <= 5
+        case .zoom, .minimize: return since >= 0 && since <= 1
+        }
     }
 
     /// From one list of windows to the next: the new ones, the ones that

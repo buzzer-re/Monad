@@ -50,10 +50,38 @@ enum CloudInit {
     /// Builds the window manager in the guest when its sources changed (Guest/monad-wm-build.sh).
     static func windowManagerBuildScript() throws -> String { try bundled("monad-wm-build", "sh") }
 
+    /// What the window manager needs of the user's session before it
+    /// starts, and takes back when it stops (Guest/monad-wm-session.sh).
+    static func windowManagerSessionScript() throws -> String { try bundled("monad-wm-session", "sh") }
+
+    /// What a program started from a tab needs to open as a window on the
+    /// Mac, while the VM's window manager is there (/etc/profile.d).
+    /// XDG_CURRENT_DESKTOP names the session, for the settings Monad gives
+    /// a default of its own there (monad-wm-session.sh).
+    static let windowsEnvironmentScript = """
+        # Monad: a program started from a tab opens as a window on the Mac, while
+        # the VM's window manager is there.
+        if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/wayland-0" ]; then
+            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+            WAYLAND_DISPLAY=wayland-0
+            XDG_SESSION_TYPE=wayland
+            XDG_CURRENT_DESKTOP=Monad
+            MOZ_ENABLE_WAYLAND=1
+            QT_QPA_PLATFORM="wayland;xcb"
+            export XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP MOZ_ENABLE_WAYLAND QT_QPA_PLATFORM
+        fi
+
+        """
+
     /// The window manager's service. It takes the display as root and goes
     /// on as the VM's user, whose programs connect to it; MonadHost reaches
     /// it on a vsock port. Not on while the Desktop profile's session has
     /// the display. Off until the Windows profile turns it on.
+    ///
+    /// Every window has a place of its own on the display, so the display
+    /// is as large as the VM's memory affords: at a Retina screen's scale
+    /// two ordinary windows fill 3840×2160, and one that finds no room is
+    /// not shown.
     static func windowManagerUnit(user: String) throws -> String {
         guard InstanceConfig.isValidUser(user) else {
             throw MonadError("“\(user)” is no user name to start the window manager as.")
@@ -66,9 +94,10 @@ enum CloudInit {
             After=systemd-user-sessions.service
 
             [Service]
+            ExecStartPre=/bin/sh \(windowManagerDirectory)/wm-session start \(user)
             # $$ is systemd's way to write a $ meant for the shell.
-            ExecStartPre=/bin/sh -c 'loginctl enable-linger \(user) && systemctl start "user@$$(id -u \(user)).service"'
-            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --owner "$$uid" --control vsock:\(windowsVsockPort)'
+            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --size "$$(/bin/sh \(windowManagerDirectory)/wm-session size)" --owner "$$uid" --control vsock:\(windowsVsockPort)'
+            ExecStopPost=-/bin/sh \(windowManagerDirectory)/wm-session stop \(user)
             Restart=on-failure
             RestartSec=2
 
@@ -300,14 +329,21 @@ enum CloudInit {
         if let windowsUser {
             let sources = try windowManagerSources()
             let lib = windowManagerDirectory
-            windowFiles = sources.map { "install_file \(lib)/wm/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
+            // What changes here (the sources apart, which wm-build tells of) is noted by itself: the service starts again for it.
+            windowFiles = "before_windows=$changed\nchanged=0\n"
+                + "install_file \(lib)/wm-session 0755 '\(b64(try windowManagerSessionScript()))'\n"
+                + "install_file /etc/profile.d/monad-windows.sh 0644 '\(b64(windowsEnvironmentScript))'\n"
+                + "install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(try windowManagerUnit(user: windowsUser)))'\n"
+                + "windows_changed=$changed\n[ \"$before_windows\" -eq 0 ] || changed=1\n"
+                + sources.map { "install_file \(lib)/wm/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
                 // A source this Monad no longer has would be built into the program.
                 + "for f in \(lib)/wm/*; do\n    case ${f##*/} in \(sources.map(\.name).joined(separator: "|"))) ;; *) rm -f \"$f\" ;; esac\ndone\n"
+                // Last: the App windows profile takes this file for the sign that the rest is here.
                 + "install_file \(lib)/wm-build 0755 '\(b64(try windowManagerBuildScript()))'\n"
-                + "install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(try windowManagerUnit(user: windowsUser)))'\n"
-            // Once the Windows profile turned the service on: the program is kept built from these sources.
+            // Once the Windows profile turned the service on: the program is kept built from these
+            // sources, and runs as this Monad's service says.
             windowsSaid = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then\n"
-                + "    if [ \"$(sh \(lib)/wm-build)\" = built ]; then systemctl restart monad-wm.service || true; fi\n"
+                + "    if [ \"$(sh \(lib)/wm-build)\" = built ] || [ \"$windows_changed\" -eq 1 ]; then systemctl restart monad-wm.service || true; fi\n"
                 + "    echo windows-ok\nfi\n"
         }
         let agent = try agentScript()

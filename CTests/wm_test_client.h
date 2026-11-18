@@ -191,6 +191,30 @@ static void make_buffer(client *k, uint32_t pool, uint32_t buffer, uint32_t colo
     request(k, pool, 0, 6, buffer, 0, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4, 1); /* create_buffer, XRGB8888 */
 }
 
+/* A buffer of the pixels given, each with its own share of what is under it (ARGB8888, premultiplied). */
+static void make_drawn(client *k, uint32_t pool, uint32_t buffer, const uint32_t *drawn, int w, int h) {
+    char path[] = "/tmp/monad-wm-test-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    unlink(path);
+    CHECK(write(fd, drawn, (size_t)w * (size_t)h * 4) == (ssize_t)((size_t)w * (size_t)h * 4));
+    mwm_put_begin(k->c, k->shm, 0); /* create_pool */
+    mwm_put_uint(k->c, pool);
+    mwm_put_fd(k->c, fd);
+    mwm_put_int(k->c, w * h * 4);
+    mwm_put_end(k->c);
+    close(fd);
+    request(k, pool, 0, 6, buffer, 0, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4, 0); /* create_buffer, ARGB8888 */
+}
+
+/* The surface shows that buffer from now on, all of it new. */
+static void show_buffer(mwm_server *s, client *k, uint32_t surface, uint32_t buffer, int w, int h) {
+    request(k, surface, 1, 3, buffer, 0, 0);                   /* attach */
+    request(k, surface, 2, 4, 0, 0, (uint32_t)w, (uint32_t)h); /* damage */
+    request(k, surface, 6, 0);                                 /* commit */
+    pump(s, k);
+}
+
 /* A top-level window of w × h pixels, mapped: the whole exchange. */
 static window open_window(mwm_server *s, client *k, const char *title, const char *app, uint32_t color, int w, int h) {
     window v = {.surface = k->next++, .xdg = k->next++, .toplevel = k->next++, .pool = k->next++, .buffer = k->next++};

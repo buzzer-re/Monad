@@ -88,7 +88,7 @@ check "no compiler: no program" "" "$(ls "$LIB" | grep -v '^wm$')"
 run
 check "first: status" 0 "$status"
 check "first: says it built" built "$(cat "$WORK/out")"
-check "first: the compiler's arguments" "-std=gnu11 -O2 -o $LIB/monad-wm.new $LIB/wm/mwm_main.c $LIB/wm/mwm_other.c" "$(cat "$WORK/cc.calls")"
+check "first: the compiler's arguments" "-std=gnu11 -O2 -pthread -o $LIB/monad-wm.new $LIB/wm/mwm_main.c $LIB/wm/mwm_other.c" "$(cat "$WORK/cc.calls")"
 check "first: the program" "build 1" "$(cat "$LIB/monad-wm")"
 check "first: it can be run" yes "$([ -x "$LIB/monad-wm" ] && echo yes)"
 check "first: nothing left over" "monad-wm monad-wm.built wm " "$(ls "$LIB" | tr '\n' ' ')"

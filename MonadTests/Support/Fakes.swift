@@ -251,6 +251,7 @@ final class FakeGuestWindows: GuestWindowPresenting {
     private(set) var disconnects = 0
     private(set) var copies: [String] = []
     private(set) var cursors: [Int] = []
+    private(set) var asks: [GuestWindowAsk] = []
 
     func connected(display: GuestDisplaySize) {
         self.display = display
@@ -262,6 +263,8 @@ final class FakeGuestWindows: GuestWindowPresenting {
     func copied(_ text: String) { copies.append(text) }
 
     func cursor(_ shape: Int) { cursors.append(shape) }
+
+    func asked(window: UInt32, _ ask: GuestWindowAsk) { asks.append(ask) }
 
     func disconnected() {
         windows = []

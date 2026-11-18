@@ -9,13 +9,23 @@
  *   windows <generation> <count>
  *   window <id> <x> <y> <width> <height> <scale> <inner x> <inner y>
  *          <inner width> <inner height> <parent> <offset x> <offset y>
- *          <app id> <title>                                  count times
+ *          <bar> <app id> <title>                            count times
  *   end
  *   cursor <shape>                    how the pointer is to look where it
  *                                     is, when that changes: 0 hidden, 1 the
  *                                     arrow (which goes without saying), or
  *                                     another of wp_cursor_shape_device_v1's
  *                                     shapes, up to MWM_CURSOR_LAST
+ *   move <window>                     the program asks for its window to be
+ *                                     moved: the user drags the bar it drew
+ *   zoom <window> <0|1>               ... to be as large as it gets, or back
+ *   minimize <window>                 ... to be put away
+ *
+ * `bar` is "-" when the window's frame is all the Mac's, and otherwise the
+ * colour (rrggbb) the program's own title bar has at its top, for the
+ * Mac's title bar to continue. The wishes (move, zoom, minimize) come only
+ * from the window the pointer is over or the one in front, the last one
+ * when MonadHost was slow to read; MonadHost does them or not.
  *
  * A window's place is in the display's pixels; `scale` is how many of them
  * the program draws to one of its units (the Mac's window is that many

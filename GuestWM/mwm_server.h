@@ -36,6 +36,12 @@ typedef struct {
     void *ctx;
 } mwm_screen;
 
+/* Some rows of a popup, and the part of each that is there: `height`
+ * rows, `width` pixels from `x` of the popup's inner part (none when 0). */
+typedef struct {
+    uint16_t height, x, width;
+} mwm_band;
+
 /* A window as it is on the display, in the display's pixels. */
 typedef struct {
     uint32_t id;
@@ -52,6 +58,17 @@ typedef struct {
      * window's pixels (it may reach outside it). 0 for a window of its own. */
     uint32_t parent;
     int offset_x, offset_y;
+    /* The program draws the window's title bar itself (a header bar), and
+     * the colour it has at its top (0x00RRGGBB): the Mac's title bar is
+     * made to continue it. False: the frame is all the Mac's. */
+    bool own_bar;
+    uint32_t bar_color;
+    /* A popup the program did not draw as a whole rectangle (round
+     * corners, an arrow): its inner part from the top down, row by row.
+     * None (0) when all of it is there, or its shape takes more rows
+     * than are told. The server's own, until it is next called. */
+    const mwm_band *bands;
+    int band_count;
     /* Plain text of the program's choosing; never NULL. */
     const char *title;
     const char *app_id;
@@ -64,6 +81,8 @@ enum {
     MWM_MAX_OBJECTS = 16384,
     /* Room left between two windows on the display. */
     MWM_GAP = 16,
+    /* The rows of a popup's shape that are told at most. */
+    MWM_MAX_BANDS = 128,
     /* A key's code is the Linux kernel's; X has no place for one beyond. */
     MWM_MAX_KEYCODE = 247,
     MWM_MAX_KEYS = MWM_MAX_KEYCODE,
@@ -122,7 +141,8 @@ void mwm_server_scale(mwm_server *s, int scale);
 
 /* The windows on the display, oldest first: how many were written. */
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max);
-/* Counts up whenever a window comes, goes, moves or is renamed. */
+/* Counts up whenever a window comes, goes, moves, is renamed, or changes
+ * who draws its title bar or what colour that has. */
 uint32_t mwm_server_generation(const mwm_server *s);
 
 /* The Mac's window was resized: the program is asked to draw at that size
@@ -136,6 +156,14 @@ void mwm_server_close(mwm_server *s, uint32_t window);
  * another app): the program is told each is done with, the one on top
  * first, and takes them down. */
 void mwm_server_dismiss(mwm_server *s, uint32_t window);
+
+/* What a program asks of its own window, which is the Mac's to do or not:
+ * to be moved (the user is dragging the bar the program drew), to be as
+ * large as it gets or back (a double click on that bar), to be put away.
+ * Heard only from the window the pointer is over or the one in front. */
+typedef enum { MWM_ASK_MOVE = 1, MWM_ASK_ZOOM, MWM_ASK_UNZOOM, MWM_ASK_MINIMIZE } mwm_ask;
+typedef void (*mwm_asked)(void *ctx, uint32_t window, mwm_ask what);
+void mwm_server_on_ask(mwm_server *s, mwm_asked asked, void *ctx);
 
 /*
  * The clipboard. Programs in the VM copy and paste among themselves. The

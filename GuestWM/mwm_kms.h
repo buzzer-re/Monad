@@ -20,7 +20,8 @@ void mwm_kms_close(mwm_kms *k);
 uint32_t *mwm_kms_pixels(const mwm_kms *k);
 int mwm_kms_stride(const mwm_kms *k);
 
-/* The rectangle changed: it goes to the display (and so to the Mac). */
+/* The rectangle changed: it goes to the display (and so to the Mac),
+ * soon and from a thread of the display's own; this returns at once. */
 void mwm_kms_present(mwm_kms *k, int x, int y, int width, int height);
 
 #endif

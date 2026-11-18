@@ -5,6 +5,7 @@
 //
 
 import AppKit
+import Virtualization
 import XCTest
 @testable import Monad
 
@@ -45,5 +46,24 @@ final class GuestCursorTests: XCTestCase {
         XCTAssertTrue(GuestCursor.arrow.mac === NSCursor.arrow)
         XCTAssertFalse(GuestCursor.hidden.mac === NSCursor.arrow)
         XCTAssertTrue(GuestCursor.hidden.mac === GuestCursor.hidden.mac, "one cursor, not a new one each time the pointer moves")
+    }
+
+    /// Apple's view of a VM's display hides the Mac's pointer while it is
+    /// over the view (it shows the guest's own in its place, and Monad's
+    /// window manager draws none): the pointer vanished over every Linux
+    /// program's window. Apple's view learns where the pointer is from an
+    /// area it asks to have watched; the view these windows use has none
+    /// watched, whoever asks.
+    @MainActor
+    func testTheDisplayInAProgramsWindowLeavesThePointerToTheMac() {
+        func watched(_ view: NSView) -> Int {
+            view.frame = NSRect(x: 0, y: 0, width: 200, height: 100)
+            view.addTrackingArea(NSTrackingArea(rect: view.bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                                owner: view, userInfo: nil))
+            return view.trackingAreas.count
+        }
+        XCTAssertEqual(watched(GuestDisplayView()), 0)
+        XCTAssertEqual(watched(VZVirtualMachineView()), 1, "Apple's own takes it")
+        XCTAssertFalse(GuestDisplayView().acceptsFirstResponder, "the keys are Monad's to pass on, as the window they are for")
     }
 }

@@ -18,8 +18,8 @@ final class GuestWindowProtocolTests: XCTestCase {
         var reader = GuestWindowReader()
         var events = read("monad-wm 1 3840 2160\nwindows 7 2\n", into: &reader)
         XCTAssertEqual(events, [.hello(display: GuestDisplaySize(width: 3840, height: 2160))])
-        events = read("window 1 0 0 696 468 1 0 0 696 468 0 0 0 foot foot\n" +
-                      "window 2 712 0 1600 1200 2 52 46 1496 1108 0 0 0 org.gnome.Calculator 50%25%20of%20caf%C3%A9\n", into: &reader)
+        events = read("window 1 0 0 696 468 1 0 0 696 468 0 0 0 - foot foot\n" +
+                      "window 2 712 0 1600 1200 2 52 46 1496 1108 0 0 0 - org.gnome.Calculator 50%25%20of%20caf%C3%A9\n", into: &reader)
         XCTAssertEqual(events, [], "a list is told once it is whole")
         events = read("end\n", into: &reader)
         let foot = GuestWindow(id: 1, x: 0, y: 0, width: 696, height: 468, scale: 1,
@@ -30,7 +30,7 @@ final class GuestWindowProtocolTests: XCTestCase {
         XCTAssertEqual(events, [.windows([foot, calculator])])
         XCTAssertFalse(reader.isBroken)
         XCTAssertEqual(read("windows 8 0\nend\n", into: &reader), [.windows([])])
-        XCTAssertEqual(read("windows 9 1\nwindow 3 0 0 10 10 1 0 0 10 10 0 0 0 - -\nend\n", into: &reader),
+        XCTAssertEqual(read("windows 9 1\nwindow 3 0 0 10 10 1 0 0 10 10 0 0 0 - - -\nend\n", into: &reader),
                        [.windows([GuestWindow(id: 3, x: 0, y: 0, width: 10, height: 10, scale: 1,
                                               innerX: 0, innerY: 0, innerWidth: 10, innerHeight: 10, appID: "", title: "")])])
     }
@@ -38,7 +38,7 @@ final class GuestWindowProtocolTests: XCTestCase {
     /// Bytes arrive as they like: a line cut anywhere is still one line.
     func testALineInPiecesIsOneLine() {
         var reader = GuestWindowReader()
-        let text = "monad-wm 1 1920 1200\nwindows 1 1\nwindow 5 16 32 100 50 1 0 0 100 50 0 0 0 app Title\nend\n"
+        let text = "monad-wm 1 1920 1200\nwindows 1 1\nwindow 5 16 32 100 50 1 0 0 100 50 0 0 0 - app Title\nend\n"
         var events: [GuestWindowEvent] = []
         for byte in text.utf8 { events += reader.feed(Data([byte])) }
         XCTAssertEqual(events.count, 2)
@@ -67,42 +67,47 @@ final class GuestWindowProtocolTests: XCTestCase {
             ("monad-wm 1 99999 1200\n", "a display wider than any"),
             (hello + "windows 1 65\n", "more windows than there may be"),
             (hello + "windows 1 1\nend\n", "fewer windows than said"),
-            (hello + "windows 1 0\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\nend\n", "more windows than said"),
-            (hello + "window 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\n", "a window outside a list"),
+            (hello + "windows 1 0\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "more windows than said"),
+            (hello + "window 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\n", "a window outside a list"),
             (hello + "end\n", "an end with no list"),
             (hello + "windows 1 1\nwindows 2 0\n", "a list inside a list"),
-            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\nwindow 1 20 0 10 10 1 0 0 10 10 0 0 0 a b\nend\n", "an id twice"),
-            (hello + "windows 1 1\nwindow 0 0 0 10 10 1 0 0 10 10 0 0 0 a b\nend\n", "the id that means no window"),
-            (hello + "windows 1 1\nwindow 1 0 0 0 10 1 0 0 10 10 0 0 0 a b\nend\n", "no width"),
-            (hello + "windows 1 1\nwindow 1 1900 0 100 10 1 0 0 100 10 0 0 0 a b\nend\n", "past the display's edge"),
-            (hello + "windows 1 1\nwindow 1 -5 0 10 10 1 0 0 10 10 0 0 0 a b\nend\n", "a negative place"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 0 0 0 10 10 0 0 0 a b\nend\n", "no scale"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 9 0 0 10 10 0 0 0 a b\nend\n", "a scale no screen has"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 5 5 10 10 0 0 0 a b\nend\n", "an inner part reaching outside"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 0 10 0 0 0 a b\nend\n", "an inner part with no width"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a\nend\n", "a word missing"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b c\nend\n", "a word too many"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a  b\nend\n", "an empty word"),
-            (hello + "windows 1 1\nwindow 1 0 0 0x10 10 1 0 0 10 10 0 0 0 a b\nend\n", "a number that is not decimal"),
-            (hello + "windows 1 1\nwindow 1 0 0 010 10 1 0 0 10 10 0 0 0 a b\nend\n", "a number with a leading zero"),
-            (hello + "windows 1 1\nwindow 99999999999 0 0 10 10 1 0 0 10 10 0 0 0 a b\nend\n", "a number too large"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a %ZZ\nend\n", "a %XX that is none"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a %4\nend\n", "a %XX cut short"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a caf\u{e9}\nend\n", "bytes that are not plain text"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\tc\nend\n", "a control character"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a " + String(repeating: "%41", count: 129) + "\nend\n",
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nwindow 1 20 0 10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "an id twice"),
+            (hello + "windows 1 1\nwindow 0 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "the id that means no window"),
+            (hello + "windows 1 1\nwindow 1 0 0 0 10 1 0 0 10 10 0 0 0 - a b\nend\n", "no width"),
+            (hello + "windows 1 1\nwindow 1 1900 0 100 10 1 0 0 100 10 0 0 0 - a b\nend\n", "past the display's edge"),
+            (hello + "windows 1 1\nwindow 1 -5 0 10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "a negative place"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 0 0 0 10 10 0 0 0 - a b\nend\n", "no scale"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 9 0 0 10 10 0 0 0 - a b\nend\n", "a scale no screen has"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 5 5 10 10 0 0 0 - a b\nend\n", "an inner part reaching outside"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 0 10 0 0 0 - a b\nend\n", "an inner part with no width"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a\nend\n", "a word missing"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b c\nend\n", "a word too many"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a  b\nend\n", "an empty word"),
+            (hello + "windows 1 1\nwindow 1 0 0 0x10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "a number that is not decimal"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 red a b\nend\n", "a bar's colour that is none"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 1100A0 a b\nend\n", "a colour written in capitals"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 1100a a b\nend\n", "a colour cut short"),
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 0 0 ffffff a b\nend\n",
+             "a popup with a title bar of its own"),
+            (hello + "windows 1 1\nwindow 1 0 0 010 10 1 0 0 10 10 0 0 0 - a b\nend\n", "a number with a leading zero"),
+            (hello + "windows 1 1\nwindow 99999999999 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nend\n", "a number too large"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a %ZZ\nend\n", "a %XX that is none"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a %4\nend\n", "a %XX cut short"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a caf\u{e9}\nend\n", "bytes that are not plain text"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\tc\nend\n", "a control character"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a " + String(repeating: "%41", count: 129) + "\nend\n",
              "a title longer than one may be"),
             (hello + String(repeating: "x", count: GuestWindowReader.maxLineLength + 1), "a line that never ends"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 1 0 0 a b\nend\n", "a popup on itself"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 7 0 0 a b\nend\n", "a popup on a window that is not told"),
-            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 2 0 0 a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 0 0 a b\nend\n",
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 1 0 0 - a b\nend\n", "a popup on itself"),
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 7 0 0 - a b\nend\n", "a popup on a window that is not told"),
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 2 0 0 - a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 0 0 - a b\nend\n",
              "two popups on each other"),
-            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 5 0 a b\nend\n", "a window of its own that says where it stands on another"),
-            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 99999999 0 a b\nend\n",
+            (hello + "windows 1 1\nwindow 1 0 0 10 10 1 0 0 10 10 0 5 0 - a b\nend\n", "a window of its own that says where it stands on another"),
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 99999999 0 - a b\nend\n",
              "a popup further from its window than any screen is wide"),
-            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 +5 0 a b\nend\n",
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 +5 0 - a b\nend\n",
              "a number with a plus"),
-            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 -0 0 a b\nend\n",
+            (hello + "windows 1 2\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\nwindow 2 20 0 10 10 1 0 0 10 10 1 -0 0 - a b\nend\n",
              "a minus nothing"),
         ]
         for (text, what) in broken {
@@ -120,9 +125,9 @@ final class GuestWindowProtocolTests: XCTestCase {
         var reader = GuestWindowReader()
         _ = read("monad-wm 1 1920 1200\n", into: &reader)
         let events = read("windows 4 3\n" +
-                          "window 1 0 0 400 300 2 0 0 400 300 0 0 0 app Window\n" +
-                          "window 2 416 0 120 80 2 4 4 112 72 1 20 88 - -\n" +
-                          "window 3 552 0 60 40 2 0 0 60 40 2 -30 -500 - -\n" +
+                          "window 1 0 0 400 300 2 0 0 400 300 0 0 0 - app Window\n" +
+                          "window 2 416 0 120 80 2 4 4 112 72 1 20 88 - - -\n" +
+                          "window 3 552 0 60 40 2 0 0 60 40 2 -30 -500 - - -\n" +
                           "end\n", into: &reader)
         guard case .windows(let windows)? = events.first, windows.count == 3 else { return XCTFail("no list: \(events), broken \(reader.isBroken)") }
         XCTAssertEqual(windows[0].parent, 0)
@@ -130,10 +135,82 @@ final class GuestWindowProtocolTests: XCTestCase {
         XCTAssertEqual(windows[2].parent, 2)
         XCTAssertEqual([windows[2].offsetX, windows[2].offsetY], [-30, -500])
         // Popups too deep in popups: no menu goes that far.
-        var deep = "windows 5 10\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 a b\n"
-        for id in 2...10 { deep += "window \(id) \(id * 20) 0 10 10 1 0 0 10 10 \(id - 1) 0 0 a b\n" }
+        var deep = "windows 5 10\nwindow 1 0 0 10 10 1 0 0 10 10 0 0 0 - a b\n"
+        for id in 2...10 { deep += "window \(id) \(id * 20) 0 10 10 1 0 0 10 10 \(id - 1) 0 0 - a b\n" }
         XCTAssertEqual(read(deep + "end\n", into: &reader), [])
         XCTAssertTrue(reader.isBroken)
+    }
+
+    /// A popup the program drew round, or with an arrow, is told with its
+    /// shape: after its line, the rows of its inner part from the top
+    /// down and the part of each that is there (GuestWM/mwm_ctl.h).
+    func testAPopupsShapeIsRead() {
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &reader)
+        let window = "window 1 0 0 400 300 2 0 0 400 300 0 0 0 - app Window\n"
+        let menu = "window 2 416 0 28 12 2 2 2 24 8 1 20 88 - - -\n"
+        let events = read("windows 4 3\n" + window + menu +
+                          "band 2 1 4 16\nband 2 6 0 24\nband 2 1 0 0\n" +
+                          "window 3 460 0 10 10 1 0 0 10 10 2 0 0 - - -\nend\n", into: &reader)
+        guard case .windows(let windows)? = events.first, windows.count == 3 else { return XCTFail("no list: \(events), broken \(reader.isBroken)") }
+        XCTAssertEqual(windows[1].shape, [GuestWindowBand(height: 1, x: 4, width: 16), GuestWindowBand(height: 6, x: 0, width: 24),
+                                          GuestWindowBand(height: 1, x: 0, width: 0)])
+        XCTAssertEqual(windows[0].shape, [])
+        XCTAssertEqual(windows[2].shape, [], "a popup told with no rows is all there")
+
+        let hostile: [(String, String)] = [
+            ("band 1 300 0 400\n", "a window with a frame has no shape"),
+            (menu + "band 1 300 0 400\n", "rows of another window than the one just told"),
+            (menu + "band 2 9 0 24\n", "more rows than it has"),
+            (menu + "band 2 4 0 24\n", "fewer rows than it has"),
+            (menu + "band 2 8 20 5\n", "a row past its right edge"),
+            (menu + "band 2 8 25 0\n", "a row that starts past its right edge"),
+            (menu + "band 2 0 0 24\nband 2 8 0 24\n", "no rows at all in a line"),
+            (menu + "band 2 8 0 24 1\n", "a word too many"),
+            (menu + "band 2 8 -1 24\n", "a number that is none"),
+            ("window 2 416 0 28 300 2 0 0 28 300 1 20 88 - - -\n" + (0..<129).map { "band 2 1 \($0 % 2) 20\n" }.joined() + "band 2 171 0 28\n",
+             "more rows than are ever told"),
+        ]
+        for (lines, what) in hostile {
+            var reader = GuestWindowReader()
+            _ = read("monad-wm 1 1920 1200\n", into: &reader)
+            let count = 1 + lines.components(separatedBy: "window ").count - 1
+            XCTAssertEqual(read("windows 4 \(count)\n" + window + lines + "end\n", into: &reader), [], what)
+            XCTAssertTrue(reader.isBroken, what)
+        }
+        var outside = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &outside)
+        XCTAssertEqual(read("band 2 8 0 24\n", into: &outside), [])
+        XCTAssertTrue(outside.isBroken, "rows with no list being told")
+    }
+
+    /// A program that draws its own title bar (GTK's header bars) is told
+    /// with the colour it has at its top; one whose frame is the Mac's with none.
+    func testAProgramsOwnTitleBarIsToldWithItsColour() {
+        var reader = GuestWindowReader()
+        let events = read("monad-wm 1 1920 1200\nwindows 1 2\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 - foot foot\n" +
+                          "window 2 116 0 100 50 1 0 0 100 50 0 0 0 fafafa org.gnome.Calculator Calculator\nend\n", into: &reader)
+        guard case .windows(let windows)? = events.last else { return XCTFail("no windows") }
+        XCTAssertNil(windows[0].ownBar)
+        XCTAssertEqual(windows[1].ownBar, 0xfafafa)
+    }
+
+    /// What a program asks of its own window: to be moved, zoomed or put
+    /// away. Wishes, read as strictly as the rest; who shows the windows
+    /// decides whether they are the user's doing.
+    func testAProgramsWishesForItsWindowAreRead() {
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &reader)
+        XCTAssertEqual(read("move 3\nzoom 3 1\nzoom 4294967295 0\nminimize 7\n", into: &reader),
+                       [.asked(window: 3, .move), .asked(window: 3, .zoom(true)), .asked(window: 4294967295, .zoom(false)),
+                        .asked(window: 7, .minimize)])
+        XCTAssertFalse(reader.isBroken)
+        for bad in ["move\n", "move 0\n", "move 1 2\n", "move -1\n", "zoom 3\n", "zoom 3 2\n", "zoom 3 yes\n", "minimize\n", "minimize 01\n",
+                    "windows 1 1\nmove 1\n"] {
+            var reader = GuestWindowReader()
+            XCTAssertEqual(read("monad-wm 1 1920 1200\n" + bad, into: &reader).count, 1, bad)
+            XCTAssertTrue(reader.isBroken, bad)
+        }
     }
 
     /// A title is the program's: what would mislead on the Mac's screen is
@@ -143,9 +220,9 @@ final class GuestWindowProtocolTests: XCTestCase {
         var reader = GuestWindowReader()
         _ = read("monad-wm 1 1920 1200\n", into: &reader)
         let events = read("windows 1 3\n" +
-                          "window 1 0 0 10 10 1 0 0 10 10 0 0 0 a one%0Atwo%09three%00%1B[31m\n" +
-                          "window 2 20 0 10 10 1 0 0 10 10 0 0 0 a%7F safe%E2%80%AEexe.txt\n" +
-                          "window 3 40 0 10 10 1 0 0 10 10 0 0 0 %2D %FF%FEtitle\n" +
+                          "window 1 0 0 10 10 1 0 0 10 10 0 0 0 - a one%0Atwo%09three%00%1B[31m\n" +
+                          "window 2 20 0 10 10 1 0 0 10 10 0 0 0 - a%7F safe%E2%80%AEexe.txt\n" +
+                          "window 3 40 0 10 10 1 0 0 10 10 0 0 0 - %2D %FF%FEtitle\n" +
                           "end\n", into: &reader)
         guard case .windows(let windows)? = events.first, windows.count == 3 else { return XCTFail("no list: \(events)") }
         XCTAssertEqual(windows[0].title, "onetwothree[31m")

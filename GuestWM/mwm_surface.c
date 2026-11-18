@@ -119,6 +119,18 @@ static uint32_t over(uint32_t src, uint32_t dst) {
     return 0xff000000u | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
 }
 
+/* What shows where the window's own surface is see-through. */
+typedef enum {
+    /* Black: the window is all there on the display. */
+    OPEN_BLACK,
+    /* The colour of the program's own bar, which the Mac's window has behind it. */
+    OPEN_BAR,
+    /* Nothing: a popup, which the Mac shows in its shape (shape()). Its
+     * edges, half there, are shown in their own colour: mixed with black
+     * they would be a dark line around it. */
+    OPEN_CUT,
+} opening;
+
 typedef struct {
     mwm_server *s;
     const window *w;
@@ -126,7 +138,20 @@ typedef struct {
     box area;
     /* The window's own surface is at the bottom: it can be copied as it is. */
     bool plain;
+    opening open;
+    /* What is under the window, for OPEN_BAR. */
+    uint32_t under;
 } painter;
+
+/* Half and more of a pixel is of a popup's shape. */
+enum { THERE = 128 };
+
+/* A color with its share taken (premultiplied), whole. */
+static uint32_t whole(uint32_t v) {
+    uint32_t a = v >> 24;
+    uint32_t r = (((v >> 16) & 0xff) * 255 + a / 2) / a, g = (((v >> 8) & 0xff) * 255 + a / 2) / a, b = ((v & 0xff) * 255 + a / 2) / a;
+    return 0xff000000u | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
+}
 
 /* One surface's buffer, its top left at (ox, oy) of the window. */
 static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom) {
@@ -138,6 +163,7 @@ static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom
     if (empty(r)) return;
     const uint8_t *pixels = b->pool->map + b->offset;
     bool mix = b->alpha && !bottom;
+    opening open = b->alpha ? p->open : OPEN_BLACK;
     for (int y = r.y1; y < r.y2; y++) {
         uint32_t *dst = p->s->screen.pixels + (size_t)(p->w->y + y) * (size_t)p->s->screen.stride + p->w->x + r.x1;
         int sy = (int)((int64_t)(y - oy) * f->scale / scale);
@@ -148,9 +174,16 @@ static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom
             if (sx >= b->width) sx = b->width - 1;
             uint32_t v;
             memcpy(&v, row + (size_t)sx * 4, 4);
-            if (!mix) *dst = v | 0xff000000u; /* a window is all there on the display */
-            else if (v >> 24 == 0xff) *dst = v;
-            else if (v >> 24 != 0) *dst = over(v, *dst);
+            if (mix) {
+                if (v >> 24 == 0xff) *dst = v;
+                else if (v >> 24 != 0) *dst = over(v, *dst);
+            } else if (v >> 24 == 0xff || open == OPEN_BLACK) {
+                *dst = v | 0xff000000u; /* a window is all there on the display */
+            } else if (open == OPEN_BAR) {
+                *dst = over(v, p->under);
+            } else {
+                *dst = v >> 24 >= THERE ? whole(v) : 0xff000000u;
+            }
         }
     }
 }
@@ -168,21 +201,66 @@ static void draw_tree(const painter *p, const surface *f, int ox, int oy, int de
     }
 }
 
+/* A popup's shape: of each row of its inner part, from where to where
+ * the program drew something (half there and more). The Mac's window is
+ * cut to it, so a menu's round corners and its arrow show what is behind
+ * the menu. A whole rectangle, or a shape of more rows than are told,
+ * is none. Reads the program's memory: inside paint()'s guard. */
+static void shape(mwm_server *s, window *w) {
+    mwm_band found[MWM_MAX_BANDS];
+    int count = 0;
+    const buffer *b = w->surface->current;
+    if (b && b->alpha && w->surface->scale == w->scale && mwm_shell_parent(w)) {
+        box inner = mwm_shell_inner(w);
+        const uint8_t *pixels = b->pool->map + b->offset;
+        for (int y = inner.y1; y < inner.y2; y++) {
+            const uint8_t *row = pixels + (size_t)y * (size_t)b->stride;
+            int x1 = inner.x1, x2 = inner.x2;
+            uint32_t v;
+            for (; x1 < x2; x1++) {
+                memcpy(&v, row + (size_t)x1 * 4, 4);
+                if (v >> 24 >= THERE) break;
+            }
+            for (; x2 > x1; x2--) {
+                memcpy(&v, row + (size_t)(x2 - 1) * 4, 4);
+                if (v >> 24 >= THERE) break;
+            }
+            mwm_band band = {1, (uint16_t)(x2 > x1 ? x1 - inner.x1 : 0), (uint16_t)(x2 - x1)};
+            if (count > 0 && found[count - 1].x == band.x && found[count - 1].width == band.width) {
+                found[count - 1].height++;
+            } else if (count < MWM_MAX_BANDS) {
+                found[count++] = band;
+            } else {
+                count = 0;
+                break;
+            }
+        }
+        if (count == 1 && found[0].width == inner.x2 - inner.x1) count = 0;
+    }
+    if (count == w->band_count && memcmp(found, w->bands, (size_t)count * sizeof found[0]) == 0) return;
+    memcpy(w->bands, found, (size_t)count * sizeof found[0]);
+    w->band_count = count;
+    s->generation++;
+}
+
 /* Draws that part of the window again. False when the program's memory was gone. */
-static bool paint(mwm_server *s, const window *w, box area) {
+static bool paint(mwm_server *s, window *w, box area) {
     area = common(area, (box){0, 0, w->width, w->height});
     if (empty(area)) return true;
-    painter p = {.s = s, .w = w, .area = area, .plain = w->surface->stack[0] == w->surface};
+    painter p = {.s = s, .w = w, .area = area, .plain = w->surface->stack[0] == w->surface,
+                 .open = mwm_shell_own_bar(w) ? OPEN_BAR : mwm_shell_parent(w) ? OPEN_CUT : OPEN_BLACK};
+    p.under = p.open == OPEN_BAR ? 0xff000000u | w->bar_color : 0xff000000u;
     volatile bool ok = true;
     bus_guarded = 1;
     if (sigsetjmp(bus_jump, 1) == 0) {
-        if (!p.plain) { /* something is under the window's own surface: start from black */
+        if (!p.plain) { /* something is under the window's own surface: start from what is under them all */
             for (int y = area.y1; y < area.y2; y++) {
                 uint32_t *dst = s->screen.pixels + (size_t)(w->y + y) * (size_t)s->screen.stride + w->x + area.x1;
-                for (int x = area.x1; x < area.x2; x++) *dst++ = 0xff000000u;
+                for (int x = area.x1; x < area.x2; x++) *dst++ = p.under;
             }
         }
         draw_tree(&p, w->surface, 0, 0, 0);
+        shape(s, w);
     } else {
         ok = false;
     }
@@ -384,7 +462,10 @@ static void changed(mwm_server *s, surface *f, bool all) {
     if (!w) return;
     box area = take_dirty(w, root, 0, 0, 0);
     if (all) area = (box){0, 0, w->width, w->height};
-    if (!paint(s, w, area)) mwm_fail(root->owner, root->id, E_IMPLEMENTATION, "the buffer's memory is gone");
+    bool ok = paint(s, w, area);
+    /* Its bar changed colour: what it leaves open shows the new one (once; the colour is next looked at when it next draws). */
+    if (ok && mwm_shell_painted(s, w) && root->current && root->current->alpha) ok = paint(s, w, (box){0, 0, w->width, w->height});
+    if (!ok) mwm_fail(root->owner, root->id, E_IMPLEMENTATION, "the buffer's memory is gone");
 }
 
 /* A part's commit waits for its parent's: what it holds is added to what waits already. */

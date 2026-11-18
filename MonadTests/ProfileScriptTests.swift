@@ -357,9 +357,8 @@ final class ProfileScriptTests: XCTestCase {
         XCTAssertEqual(logLines().filter { $0.hasPrefix("wm-build") || $0.hasPrefix("systemctl") },
                        ["wm-build \(lib.path)", "systemctl daemon-reload", "systemctl disable --now monad-display.service",
                         "systemctl enable monad-wm.service"], "not started: this VM has no display")
-        let environment = try String(contentsOf: root.appendingPathComponent("etc/profile.d/monad-windows.sh"), encoding: .utf8)
-        XCTAssertTrue(environment.contains("WAYLAND_DISPLAY=wayland-0"), environment)
-        XCTAssertTrue(environment.contains("[ -S "), "only while the window manager is there")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("etc/profile.d/monad-windows.sh").path),
+                       "what programs need to find the window manager comes from the installer, as this Monad has it")
 
         // With a display the window manager starts at once.
         try fm.createDirectory(at: root.appendingPathComponent("dev/dri"), withIntermediateDirectories: true)

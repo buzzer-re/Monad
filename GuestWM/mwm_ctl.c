@@ -24,6 +24,9 @@ struct mwm_ctl {
     bool told_any;
     /* How the pointer is to look, as MonadHost was last told. */
     int told_cursor;
+    /* What a program last asked of its window, not told yet (0: nothing). */
+    uint32_t ask_window;
+    int ask_what;
     /* A table of keys being read: how many are still to come. */
     mwm_key keys[MWM_MAX_KEYS];
     int key_count, keys_expected;
@@ -34,12 +37,21 @@ struct mwm_ctl {
 
 static void copied(void *ctx, const char *text, size_t len);
 
+/* A program asks something of its own window: the last wish waits to be told (a program may ask without end). */
+static void asked(void *ctx, uint32_t window, mwm_ask what) {
+    mwm_ctl *c = ctx;
+    if (c->fd < 0) return;
+    c->ask_window = window;
+    c->ask_what = (int)what;
+}
+
 mwm_ctl *mwm_ctl_new(mwm_server *server) {
     mwm_ctl *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     c->server = server;
     c->fd = -1;
     mwm_server_on_copied(server, copied, c);
+    mwm_server_on_ask(server, asked, c);
     return c;
 }
 
@@ -49,6 +61,7 @@ static void drop(mwm_ctl *c) {
     c->in_len = 0;
     c->out_len = 0;
     c->keys_expected = 0;
+    c->ask_what = 0;
     free(c->paste);
     c->paste = NULL;
     c->paste_left = 0;
@@ -57,6 +70,7 @@ static void drop(mwm_ctl *c) {
 void mwm_ctl_free(mwm_ctl *c) {
     if (!c) return;
     mwm_server_on_copied(c->server, NULL, NULL);
+    mwm_server_on_ask(c->server, NULL, NULL);
     drop(c);
     free(c->out);
     free(c);
@@ -153,13 +167,18 @@ static void tell_windows(mwm_ctl *c) {
     int n = mwm_server_windows(c->server, list, MWM_MAX_WINDOWS);
     say(c, "windows %u %d\n", generation, n);
     for (int i = 0; i < n; i++) {
-        char app[3 * 128 + 1], title[3 * 128 + 1];
+        char app[3 * 128 + 1], title[3 * 128 + 1], bar[8] = "-";
         if (strlen(list[i].app_id) > 127 || strlen(list[i].title) > 127) continue; /* never: the server cuts them */
         word(app, list[i].app_id);
         word(title, list[i].title);
-        say(c, "window %u %d %d %d %d %d %d %d %d %d %u %d %d %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width, list[i].height,
-            list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height, list[i].parent,
-            list[i].offset_x, list[i].offset_y, app, title);
+        if (list[i].own_bar) snprintf(bar, sizeof bar, "%06x", (unsigned)(list[i].bar_color & 0xffffff));
+        say(c, "window %u %d %d %d %d %d %d %d %d %d %u %d %d %s %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width,
+            list[i].height, list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height,
+            list[i].parent, list[i].offset_x, list[i].offset_y, bar, app, title);
+        for (int k = 0; k < list[i].band_count; k++) {
+            say(c, "band %u %u %u %u\n", list[i].id, (unsigned)list[i].bands[k].height, (unsigned)list[i].bands[k].x,
+                (unsigned)list[i].bands[k].width);
+        }
     }
     say(c, "end\n");
     c->told = generation;
@@ -175,10 +194,24 @@ static void tell_cursor(mwm_ctl *c) {
     c->told_cursor = cursor;
 }
 
+/* What a program asked of its window, when MonadHost has read what was said before. */
+static void tell_ask(mwm_ctl *c) {
+    if (c->fd < 0 || c->out_len > 0 || c->ask_what == 0) return;
+    switch ((mwm_ask)c->ask_what) {
+    case MWM_ASK_MOVE: say(c, "move %u\n", c->ask_window); break;
+    case MWM_ASK_ZOOM: say(c, "zoom %u 1\n", c->ask_window); break;
+    case MWM_ASK_UNZOOM: say(c, "zoom %u 0\n", c->ask_window); break;
+    case MWM_ASK_MINIMIZE: say(c, "minimize %u\n", c->ask_window); break;
+    }
+    c->ask_what = 0;
+}
+
 void mwm_ctl_update(mwm_ctl *c) {
     tell_windows(c);
     flush(c);
     tell_cursor(c);
+    flush(c);
+    tell_ask(c);
     flush(c);
 }
 

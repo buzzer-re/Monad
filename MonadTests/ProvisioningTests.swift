@@ -420,13 +420,26 @@ final class CloudInitTests: XCTestCase {
             XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/wm/\(source.name) 0644 '\(b64(source.text))'\n"), source.name)
         }
         XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/wm-build 0755 '\(b64(try CloudInit.windowManagerBuildScript()))'\n"))
+        XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/wm-session 0755 '\(b64(try CloudInit.windowManagerSessionScript()))'\n"))
         let unit = try CloudInit.windowManagerUnit(user: "dev")
         XCTAssertTrue(script.contains("install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(unit))'\n"))
+        // What a program started from a tab needs to find the window manager, kept as this Monad has it.
+        XCTAssertTrue(script.contains("install_file /etc/profile.d/monad-windows.sh 0644 '\(b64(CloudInit.windowsEnvironmentScript))'\n"))
+        XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("WAYLAND_DISPLAY=wayland-0"))
+        XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("XDG_CURRENT_DESKTOP=Monad"), "the session's name, for the settings Monad gives it")
+        XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("if [ -S "), "only while the window manager is there")
+        // The build script comes last: the App windows profile takes it for the sign that the rest is here.
+        let last = try XCTUnwrap(script.range(of: "install_file /usr/local/lib/monad/wm-build ")).lowerBound
+        for other in ["/usr/local/lib/monad/wm-session ", "/etc/profile.d/monad-windows.sh ", "/etc/systemd/system/monad-wm.service ",
+                      "/usr/local/lib/monad/wm/mwm_main.c "] {
+            XCTAssertLessThan(try XCTUnwrap(script.range(of: "install_file " + other)).lowerBound, last, other)
+        }
         // A source this Monad no longer has would be built into the program: it goes.
         let kept = names.joined(separator: "|")
         XCTAssertTrue(script.contains("for f in /usr/local/lib/monad/wm/*; do\n    case ${f##*/} in \(kept)) ;; *) rm -f \"$f\" ;; esac\ndone\n"), script)
+        // The service starts again when its program was built anew, or when what it is started with changed.
         let said = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then\n"
-            + "    if [ \"$(sh /usr/local/lib/monad/wm-build)\" = built ]; then systemctl restart monad-wm.service || true; fi\n"
+            + "    if [ \"$(sh /usr/local/lib/monad/wm-build)\" = built ] || [ \"$windows_changed\" -eq 1 ]; then systemctl restart monad-wm.service || true; fi\n"
             + "    echo windows-ok\nfi\n"
         let at = try XCTUnwrap(script.range(of: said), script)
         XCTAssertLessThan(try XCTUnwrap(script.range(of: "systemctl daemon-reload")).lowerBound, at.lowerBound, "the service is known first")
@@ -438,6 +451,10 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(unit.contains("--owner \"$$uid\" --control vsock:\(CloudInit.windowsVsockPort)"), "a $ for the shell is $$ in a unit")
         XCTAssertTrue(unit.contains("id -u dev"))
         XCTAssertTrue(unit.contains("WantedBy=multi-user.target\n"))
+        // The user's session before it starts, and taken back after it stopped; the display as large as the VM affords.
+        XCTAssertTrue(unit.contains("ExecStartPre=/bin/sh /usr/local/lib/monad/wm-session start dev\n"))
+        XCTAssertTrue(unit.contains("ExecStopPost=-/bin/sh /usr/local/lib/monad/wm-session stop dev\n"), "its failing is not the service's")
+        XCTAssertTrue(unit.contains("--size \"$$(/bin/sh /usr/local/lib/monad/wm-session size)\""))
         XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: "dev; rm -rf /"), "a name that is none is not written into a unit")
         XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: ""))
 

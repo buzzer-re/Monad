@@ -37,6 +37,7 @@ static const struct {
     {"wl_data_device_manager", 3, T_DATA_MANAGER},
     {"zxdg_decoration_manager_v1", 1, T_DECORATION_MANAGER},
     {"wp_cursor_shape_manager_v1", 2, T_SHAPE_MANAGER},
+    {"org_kde_kwin_server_decoration_manager", 1, T_KDE_DECORATION_MANAGER},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -249,7 +250,9 @@ static void bind_global(client *c, mwm_msg *m) {
     obj_type type = globals[name - 1].type;
     if (!mwm_add(c, id, type, NULL)) return;
     c->objects[id].version = (uint8_t)version;
-    if (type == T_SEAT) {
+    if (type == T_KDE_DECORATION_MANAGER) {
+        mwm_event_uint(c, id, 0, 2); /* default_mode: the server draws frames, unless a window says it has its own bar */
+    } else if (type == T_SEAT) {
         mwm_seat_bound(c, id);
     } else if (type == T_SHM) {
         mwm_event_uint(c, id, 0, FORMAT_ARGB8888);
@@ -380,6 +383,8 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_POPUP:
     case T_DECORATION_MANAGER:
     case T_DECORATION:
+    case T_KDE_DECORATION_MANAGER:
+    case T_KDE_DECORATION:
         mwm_shell_request(s, c, o, m);
         break;
     case T_DATA_MANAGER:
@@ -549,22 +554,16 @@ int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
         const window *w = &s->windows[s->order[i]];
         if (out && n < max) {
             const xdg *x = w->surface ? w->surface->xdg : NULL;
-            /* The part that is the window, in its pixels; all of it unless the program said less. */
-            box inner = {0, 0, w->width, w->height};
-            if (x && x->geometry.x2 > x->geometry.x1 && x->geometry.y2 > x->geometry.y1) {
-                box g = {x->geometry.x1 * w->scale, x->geometry.y1 * w->scale, x->geometry.x2 * w->scale, x->geometry.y2 * w->scale};
-                if (g.x1 < 0) g.x1 = 0;
-                if (g.y1 < 0) g.y1 = 0;
-                if (g.x2 > w->width) g.x2 = w->width;
-                if (g.y2 > w->height) g.y2 = w->height;
-                if (g.x2 > g.x1 && g.y2 > g.y1) inner = g;
-            }
+            box inner = mwm_shell_inner(w);
+            bool own_bar = mwm_shell_own_bar(w);
             /* A popup: the window it is on, and where it stands from that window's own top left, in that window's pixels. */
             const window *on = mwm_shell_parent(w);
             out[n] = (mwm_window){.id = w->id, .x = w->x, .y = w->y, .width = w->width, .height = w->height, .scale = w->scale,
                                   .inner_x = inner.x1, .inner_y = inner.y1, .inner_width = inner.x2 - inner.x1,
                                   .inner_height = inner.y2 - inner.y1, .parent = on ? on->id : 0,
                                   .offset_x = on ? x->px * on->scale : 0, .offset_y = on ? x->py * on->scale : 0,
+                                  .own_bar = own_bar, .bar_color = own_bar ? w->bar_color : 0,
+                                  .bands = w->bands, .band_count = w->band_count,
                                   .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
         }
         n++;

@@ -73,7 +73,8 @@ static void test_the_windows_are_told(void) {
     CHECK(line_is(c, &h, "monad-wm 1 400 200"));
     snprintf(expected, sizeof expected, "windows %u 1", mwm_server_generation(s));
     CHECK(line_is(c, &h, expected));
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 app.one One", one.id);
+    /* A program that said nothing of its frame draws its own bar: the colour at its top is told with it. */
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 1100a0 app.one One", one.id);
     CHECK(line_is(c, &h, expected));
     CHECK(line_is(c, &h, "end"));
     CHECK(line(c, &h) == NULL);
@@ -86,10 +87,10 @@ static void test_the_windows_are_told(void) {
     mwm_ctl_update(c);
     snprintf(expected, sizeof expected, "windows %u 2", mwm_server_generation(s));
     CHECK(line_is(c, &h, expected));
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 app.one One", one.id);
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 1100a0 app.one One", one.id);
     CHECK(line_is(c, &h, expected));
     snprintf(expected, sizeof expected,
-             "window %u %d 0 100 50 1 0 0 100 50 0 0 0 - 50%%25%%20of%%09two%%0Awindow%%209%%200%%200%%201%%201%%20x%%20y", two.id,
+             "window %u %d 0 100 50 1 0 0 100 50 0 0 0 2200fa - 50%%25%%20of%%09two%%0Awindow%%209%%200%%200%%201%%201%%20x%%20y", two.id,
              64 + MWM_GAP);
     CHECK(line_is(c, &h, expected));
     CHECK(line_is(c, &h, "end"));
@@ -101,7 +102,7 @@ static void test_the_windows_are_told(void) {
     pump(s, &a);
     mwm_ctl_update(c);
     CHECK(line(c, &h) != NULL);
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 app.one caf%%C3%%A9%%20%%FF%%01", one.id);
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 0 0 0 1100a0 app.one caf%%C3%%A9%%20%%FF%%01", one.id);
     CHECK(line_is(c, &h, expected));
     CHECK(line(c, &h) != NULL && line_is(c, &h, "end"));
     char longest[200];
@@ -244,8 +245,8 @@ static void test_the_macs_pointer_and_keys_arrive(void) {
     uint32_t len;
     const uint8_t *states = mwm_get_array(&m, &len);
     uint32_t state;
-    CHECK(len == 4 && mwm_msg_done(&m));
-    memcpy(&state, states, 4);
+    CHECK(len == 20 && mwm_msg_done(&m)); /* its four edges at the Mac's frame, and: */
+    memcpy(&state, states + 16, 4);
     CHECK(state == 4); /* still the window in front */
     m = event(&a);
     CHECK(m.object == one.xdg && m.opcode == 0);
@@ -567,6 +568,71 @@ static void test_the_pointers_shape_is_told(void) {
     mwm_server_free(s);
 }
 
+/* What a program asks of its own window (to be moved by the bar it drew,
+ * zoomed, put away) is told MonadHost, which does it or not. */
+static void test_what_a_program_asks_of_its_window_is_told(void) {
+    mwm_server *s = server();
+    mwm_ctl *c = mwm_ctl_new(s);
+    client a = connect_client(s);
+    uint32_t seat = bind_global(&a, "wl_seat", 5);
+    pump(s, &a);
+    forget(&a);
+    window one = open_window(s, &a, "One", "app.one", 0x00110000, 64, 32);
+    forget(&a);
+    host h = attach(c);
+    while (line(c, &h)) {}
+    char text[100], expected[100];
+    request(&a, one.toplevel, 5, 2, seat, 1); /* move, with the pointer elsewhere: not told */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(line(c, &h) == NULL);
+
+    snprintf(text, sizeof text, "pointer %u 256 256\n", one.id);
+    say(c, &h, text);
+    request(&a, one.toplevel, 5, 2, seat, 1);
+    pump(s, &a);
+    mwm_ctl_update(c);
+    snprintf(expected, sizeof expected, "move %u", one.id);
+    CHECK(line_is(c, &h, expected));
+    request(&a, one.toplevel, 9, 0); /* set_maximized */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    snprintf(expected, sizeof expected, "zoom %u 1", one.id);
+    CHECK(line_is(c, &h, expected));
+    request(&a, one.toplevel, 10, 0); /* unset_maximized */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    snprintf(expected, sizeof expected, "zoom %u 0", one.id);
+    CHECK(line_is(c, &h, expected));
+    request(&a, one.toplevel, 13, 0); /* set_minimized */
+    pump(s, &a);
+    mwm_ctl_update(c);
+    snprintf(expected, sizeof expected, "minimize %u", one.id);
+    CHECK(line_is(c, &h, expected));
+    CHECK(line(c, &h) == NULL);
+
+    /* A program that asks without end, and a MonadHost that does not read: it hears the last wish, not each. */
+    for (int i = 0; i < 20000; i++) {
+        request(&a, one.toplevel, i % 2 ? 9 : 10, 0);
+        pump(s, &a);
+        forget(&a);
+        mwm_ctl_update(c);
+    }
+    request(&a, one.toplevel, 13, 0);
+    pump(s, &a);
+    mwm_ctl_update(c);
+    CHECK(mwm_ctl_fd(c) >= 0);
+    long lines = 0;
+    char last[MWM_CTL_LINE + 1] = "";
+    for (const char *got; (got = line(c, &h)) != NULL; lines++) snprintf(last, sizeof last, "%s", got);
+    snprintf(expected, sizeof expected, "minimize %u", one.id);
+    CHECK(strcmp(last, expected) == 0 && lines < 20000);
+    close(h.fd);
+    mwm_conn_free(a.c);
+    mwm_ctl_free(c);
+    mwm_server_free(s);
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     test_the_windows_are_told();
@@ -575,6 +641,7 @@ int main(void) {
     test_one_monadhost_at_a_time();
     test_the_clipboards_meet_when_the_user_says();
     test_the_pointers_shape_is_told();
+    test_what_a_program_asks_of_its_window_is_told();
     printf("test_wm_ctl: %d checks passed\n", checks);
     return 0;
 }

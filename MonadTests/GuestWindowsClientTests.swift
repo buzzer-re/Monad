@@ -23,11 +23,11 @@ final class GuestWindowsClientTests: XCTestCase {
         client.onDisplay = { displays.append($0) }
         client.onWindows = { lists.append($0) }
         client.start()
-        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 app Window%201\nend\n")
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 - app Window%201\nend\n")
         await assertEventually { lists.count == 1 }
         XCTAssertEqual(displays, [GuestDisplaySize(width: 1920, height: 1200)])
         XCTAssertEqual(lists.last, [window(1, x: 0)])
-        channel.agentSays("windows 2 2\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 app Window%201\nwindow 2 116 0 100 50 1 0 0 100 50 0 0 0 app Window%202\nend\n")
+        channel.agentSays("windows 2 2\nwindow 1 0 0 100 50 1 0 0 100 50 0 0 0 - app Window%201\nwindow 2 116 0 100 50 1 0 0 100 50 0 0 0 - app Window%202\nend\n")
         await assertEventually { lists.count == 2 }
         XCTAssertEqual(lists.last, [window(1, x: 0), window(2, x: 116)])
         client.stop()
@@ -62,7 +62,7 @@ final class GuestWindowsClientTests: XCTestCase {
         client.onWindows = { _ in lists += 1 }
         client.onDisconnect = { ended += 1 }
         client.start()
-        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 5000 0 100 50 1 0 0 100 50 0 0 0 app off-the-display\nend\nwindows 2 0\nend\n")
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 5000 0 100 50 1 0 0 100 50 0 0 0 - app off-the-display\nend\nwindows 2 0\nend\n")
         await assertEventually { ended == 1 }
         XCTAssertEqual(lists, 0)
         await assertEventually { channel.closed }

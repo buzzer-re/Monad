@@ -93,6 +93,20 @@ final class GuestWindowLayoutTests: XCTestCase {
         XCTAssertEqual(GuestWindowLayout.popupOffset(menu, on: window(scale: 2)), CGPoint(x: -15.5, y: -250), "it may reach outside its window")
     }
 
+    /// A popup's shape on the Mac: the rows the window manager told, in
+    /// points from the content's top left, down. Rows with nothing in
+    /// them leave nothing; a popup told with no shape is all there.
+    func testAPopupsShapeIsInPointsFromItsTopLeft() {
+        var menu = window(x: 900, width: 28, height: 12, scale: 2, inner: (2, 2, 24, 8))
+        menu.parent = 7
+        XCTAssertNil(GuestWindowLayout.shape(menu))
+        menu.shape = [GuestWindowBand(height: 1, x: 4, width: 16), GuestWindowBand(height: 6, x: 0, width: 24),
+                      GuestWindowBand(height: 1, x: 0, width: 0)]
+        XCTAssertEqual(GuestWindowLayout.shape(menu), [CGRect(x: 2, y: 0, width: 8, height: 0.5), CGRect(x: 0, y: 0.5, width: 12, height: 3)])
+        menu.shape = [GuestWindowBand(height: 8, x: 0, width: 0)]
+        XCTAssertEqual(GuestWindowLayout.shape(menu), [], "nothing of it is there: nothing is shown")
+    }
+
     /// A popup is shown only where it touches the window it is on: one
     /// put elsewhere on the screen would be a window with no title to say
     /// whose it is.
@@ -140,5 +154,43 @@ final class GuestWindowLayoutTests: XCTestCase {
         XCTAssertTrue(changes.opened.isEmpty && changes.changed.isEmpty)
         changes = GuestWindowLayout.changes(from: [a], to: [])
         XCTAssertEqual(changes.closed, [7])
+    }
+
+    /// The Mac's title bar takes the colour of the bar the program drew
+    /// under it, and its text is light on a dark one.
+    func testATitleBarIsLightOrDarkByItsColour() {
+        XCTAssertFalse(GuestWindowLayout.isDark(0xfafafa))
+        XCTAssertFalse(GuestWindowLayout.isDark(0xebebeb))
+        XCTAssertTrue(GuestWindowLayout.isDark(0x2e2e32))
+        XCTAssertTrue(GuestWindowLayout.isDark(0x000000))
+        XCTAssertTrue(GuestWindowLayout.isDark(0x0000ff), "blue is dark to the eye")
+        XCTAssertFalse(GuestWindowLayout.isDark(0xffff00), "yellow is light")
+        XCTAssertTrue(GuestWindowLayout.isDark(0xff2e2e32), "what is above the colour's bits is not looked at")
+    }
+
+    /// A program asks for its window to be moved, zoomed or put away. It
+    /// is done when it is the user's doing: the user's click or key in
+    /// that window came just before. A program gets nothing moved or
+    /// zoomed by asking on its own.
+    func testAProgramsWishIsDoneOnlyAsTheUsersDoing() {
+        let t0 = Date(timeIntervalSinceReferenceDate: 500)
+        func done(_ ask: GuestWindowAsk, window: UInt32 = 3, inputIn: UInt32 = 3, after: TimeInterval?, leftDown: Bool = false) -> Bool {
+            GuestWindowLayout.wishIsTheUsers(ask, window: window, lastInputWindow: inputIn, lastInputAt: after.map { t0.addingTimeInterval(-$0) },
+                                             leftButtonDown: leftDown, now: t0)
+        }
+        // A drag: the button is down in that window.
+        XCTAssertTrue(done(.move, after: 0.2, leftDown: true))
+        XCTAssertFalse(done(.move, after: 0.2, leftDown: false), "no button is held: nothing to drag by")
+        XCTAssertFalse(done(.move, inputIn: 4, after: 0.2, leftDown: true), "the button is down in another window")
+        XCTAssertFalse(done(.move, after: nil, leftDown: true))
+        XCTAssertFalse(done(.move, after: 30, leftDown: true), "held too long to be a drag just begun")
+        // A double click on its bar, or a key: soon after.
+        XCTAssertTrue(done(.zoom(true), after: 0.3))
+        XCTAssertTrue(done(.zoom(false), after: 0.3))
+        XCTAssertTrue(done(.minimize, after: 0.3))
+        XCTAssertFalse(done(.zoom(true), after: 5), "long after the user touched it")
+        XCTAssertFalse(done(.minimize, inputIn: 4, after: 0.3), "the user is in another window")
+        XCTAssertFalse(done(.zoom(true), after: nil), "the user never touched it")
+        XCTAssertFalse(done(.zoom(true), after: -1), "a clock that went back")
     }
 }

@@ -773,12 +773,16 @@ final class MonadTools {
                     description: "The Mac windows of a Linux VM's programs: each one's id, title, frame and where the VM's display "
                         + "lies behind it; with `window`, also what that window's view of the display holds, cut to what the "
                         + "window shows (the framebuffer, not the screen).",
-                    schema: Self.schema(["name": Self.vmName, "window": Self.integer("A window's id, for its picture.")],
+                    schema: Self.schema(["name": Self.vmName, "window": Self.integer("A window's id, for its picture."),
+                                         "frame": Self.boolean("With `window`: also the Mac window's own frame (title bar, buttons) as a second picture.")],
                                         required: ["name"]), risk: .read) { [unowned self] call in
                 let windows = try self.vm(try call.string("name")).debugAppWindows()
                 var result = MCPResult(text: windows.debugText)
                 if let id = try call.optionalInt("window"), let picture = windows.debugPicture(window: UInt32(clamping: id)) {
                     result.images = [picture]
+                    if try call.optionalBool("frame") ?? false, let frame = windows.debugFramePicture(window: UInt32(clamping: id)) {
+                        result.images.append(frame)
+                    }
                 }
                 return result
             },

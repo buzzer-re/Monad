@@ -39,12 +39,15 @@ static int32_t near(int64_t v) {
 /* Tells a window its size: a top-level window also whether it is in
  * front, a popup also where it stands on its parent. */
 static void configure(mwm_server *s, client *c, xdg *x) {
-    static const uint32_t activated = 4;
+    /* Every edge meets the Mac's frame (tiled left, right, top, bottom): a
+     * program that draws its own bar then draws no round corners and no
+     * shadow, which the Mac's window has. Last, when it is in front: activated. */
+    static const uint32_t states[] = {5, 6, 7, 8, 4};
     if (x->toplevel) {
         mwm_put_begin(c->conn, x->toplevel, 0);
         mwm_put_int(c->conn, x->width);
         mwm_put_int(c->conn, x->height);
-        mwm_put_array(c->conn, &activated, x->active ? sizeof activated : 0);
+        mwm_put_array(c->conn, states, x->active ? sizeof states : sizeof states - sizeof states[0]);
         mwm_put_end(c->conn);
     } else {
         mwm_put_begin(c->conn, x->popup, POPUP_CONFIGURE);
@@ -431,6 +434,7 @@ static void toplevel_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
         x->toplevel = 0;
         x->configured = false;
         x->active = false;
+        x->decorated = false;
         x->width = x->height = 0;
         mwm_del(c, m->object);
     } else if (m->opcode == 2 || m->opcode == 3) { /* set_title, set_app_id */
@@ -441,11 +445,71 @@ static void toplevel_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
             copy_text(field, text);
             if (x->surface && x->surface->window) s->generation++;
         }
-    } else if (m->opcode <= 13) { /* parent, menus, moves, sizes, states: the Mac's to decide, later */
+    } else if (m->opcode == 5 || m->opcode == 9 || m->opcode == 10 || m->opcode == 13) {
+        /* move (the user drags the bar the program drew), set_maximized and
+         * unset_maximized (a double click on it), set_minimized: the Mac's
+         * window is the one to do it, so the Mac is asked, when the user is
+         * at that window. */
+        mwm_skip_arguments(m);
+        window *w = x->surface ? x->surface->window : NULL;
+        if (!w || !s->asked || (s->seat.pointer != w && s->seat.keyboard != w && s->seat.wanted != w->id)) return;
+        s->asked(s->asked_ctx, w->id, m->opcode == 5 ? MWM_ASK_MOVE : m->opcode == 9 ? MWM_ASK_ZOOM
+                                      : m->opcode == 10 ? MWM_ASK_UNZOOM : MWM_ASK_MINIMIZE);
+    } else if (m->opcode <= 13) { /* parent, its own menu, resizing by its own edge, sizes, full screen: not the Mac's to do for it */
         mwm_skip_arguments(m);
     } else {
         mwm_fail(c, m->object, E_INVALID_METHOD, "xdg_toplevel has no such request");
     }
+}
+
+void mwm_server_on_ask(mwm_server *s, mwm_asked asked, void *ctx) {
+    s->asked = asked;
+    s->asked_ctx = ctx;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Who draws a window's title bar                                            */
+
+enum { KDE_NONE = 0, KDE_CLIENT = 1, KDE_SERVER = 2 };
+
+bool mwm_shell_own_bar(const window *w) {
+    const xdg *x = role_of(w);
+    return x && x->toplevel && !x->decorated && w->surface->kde_mode != KDE_SERVER;
+}
+
+box mwm_shell_inner(const window *w) {
+    const xdg *x = role_of(w);
+    box inner = {0, 0, w->width, w->height};
+    if (x && x->geometry.x2 > x->geometry.x1 && x->geometry.y2 > x->geometry.y1) {
+        box g = {x->geometry.x1 * w->scale, x->geometry.y1 * w->scale, x->geometry.x2 * w->scale, x->geometry.y2 * w->scale};
+        if (g.x1 < 0) g.x1 = 0;
+        if (g.y1 < 0) g.y1 = 0;
+        if (g.x2 > w->width) g.x2 = w->width;
+        if (g.y2 > w->height) g.y2 = w->height;
+        if (g.x2 > g.x1 && g.y2 > g.y1) inner = g;
+    }
+    return inner;
+}
+
+/* The colour of the program's own bar: what it drew at the middle of the
+ * window's top edge, a little down (its corners may be round). The Mac's
+ * title bar above takes it, so the two read as one. */
+bool mwm_shell_painted(mwm_server *s, window *w) {
+    box inner = mwm_shell_inner(w);
+    int x = w->x + (inner.x1 + inner.x2) / 2, y = w->y + inner.y1 + 2 * w->scale;
+    if (y >= w->y + inner.y2) y = w->y + inner.y2 - 1;
+    if (x < 0 || y < 0 || x >= s->screen.width || y >= s->screen.height) return false;
+    uint32_t color = s->screen.pixels[(size_t)y * (size_t)s->screen.stride + (size_t)x] & 0x00ffffff;
+    if (color == w->bar_color) return false;
+    w->bar_color = color;
+    if (!mwm_shell_own_bar(w)) return false;
+    s->generation++;
+    return true;
+}
+
+/* The program's word on its frame changed: the Mac is told when its window is there. */
+static void frame_changed(mwm_server *s, const surface *f) {
+    if (f && f->window) s->generation++;
 }
 
 /* Who draws a window's frame (zxdg_toplevel_decoration_v1): the Mac does,
@@ -455,6 +519,8 @@ static void decorate(mwm_server *s, client *c, uint32_t id, uint32_t toplevel) {
     enum { SERVER_SIDE = 2 };
     xdg *x = mwm_find_as(c, toplevel, T_TOPLEVEL);
     if (!x) return; /* the window went before its decoration object */
+    if (!x->decorated) frame_changed(s, x->surface);
+    x->decorated = true;
     mwm_event_uint(c, id, 0, SERVER_SIDE);
     if (x->configured) configure(s, c, x);
 }
@@ -479,13 +545,59 @@ void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
         break;
     case T_DECORATION: {
         uint32_t toplevel = (uint32_t)(uintptr_t)o->data;
-        if (m->opcode == 0) {
+        if (m->opcode == 0) { /* destroy: the program is on its own with its frame again */
+            xdg *x = mwm_find_as(c, toplevel, T_TOPLEVEL);
+            if (x && x->decorated) {
+                x->decorated = false;
+                frame_changed(s, x->surface);
+            }
             mwm_del(c, m->object);
         } else if (m->opcode == 1 || m->opcode == 2) { /* set_mode, unset_mode */
             if (m->opcode == 1) (void)mwm_get_uint(m);
             if (!m->bad) decorate(s, c, m->object, toplevel);
         } else {
             mwm_fail(c, m->object, E_INVALID_METHOD, "zxdg_toplevel_decoration_v1 has no such request");
+        }
+        break;
+    }
+    /* org_kde_kwin_server_decoration: how GTK asks. A window with a header
+     * bar says it draws its frame, and is let; a plain one leaves the frame
+     * to the server, and then draws no title bar under the Mac's. */
+    case T_KDE_DECORATION_MANAGER:
+        if (m->opcode == 0) { /* create, for a surface */
+            uint32_t id = mwm_get_uint(m), surface_id = mwm_get_uint(m);
+            if (m->bad) return;
+            if (!mwm_is(c, surface_id, T_SURFACE)) {
+                mwm_fail(c, m->object, E_INVALID_OBJECT, "not a surface");
+                return;
+            }
+            /* Kept by the surface's id, not its memory: the surface may go first.
+             * Until it says otherwise, its frame is the server's, as it is told. */
+            if (!mwm_add(c, id, T_KDE_DECORATION, (void *)(uintptr_t)surface_id)) return;
+            surface *f = mwm_find_as(c, surface_id, T_SURFACE);
+            if (f && f->kde_mode != KDE_SERVER) {
+                f->kde_mode = KDE_SERVER;
+                frame_changed(s, f);
+            }
+            mwm_event_uint(c, id, 0, KDE_SERVER);
+        } else {
+            mwm_fail(c, m->object, E_INVALID_METHOD, "org_kde_kwin_server_decoration_manager has no such request");
+        }
+        break;
+    case T_KDE_DECORATION: {
+        surface *f = mwm_find_as(c, (uint32_t)(uintptr_t)o->data, T_SURFACE);
+        if (m->opcode == 0) { /* release */
+            mwm_del(c, m->object);
+        } else if (m->opcode == 1) { /* request_mode */
+            uint32_t mode = mwm_get_uint(m);
+            if (m->bad || mode > KDE_SERVER) return; /* no mode there is: as it was */
+            if (f && f->kde_mode != mode) {
+                f->kde_mode = (uint8_t)mode;
+                frame_changed(s, f);
+            }
+            mwm_event_uint(c, m->object, 0, mode);
+        } else {
+            mwm_fail(c, m->object, E_INVALID_METHOD, "org_kde_kwin_server_decoration has no such request");
         }
         break;
     }
