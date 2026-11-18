@@ -671,6 +671,26 @@ final class HostClient: ObservableObject {
         try await request(.openDesktop, name: name)
     }
 
+    /// A running Linux VM's graphical programs, for its Apps menu. Their
+    /// names are the guest's; each is made fit to show again here.
+    func guiApps(_ name: String) async throws -> [GuestApp] {
+        guard !hostIsOutdated else {
+            throw MonadError("The VM service is from an older Monad and lists no programs yet. It is updated once no VM is running.")
+        }
+        let apps = try await request(.guiApps, name: name).apps ?? []
+        return apps.prefix(GuestApps.maxApps).filter { GuestApps.isID($0.id) }.map { app in
+            var app = app
+            app.name = app.name.plain(limit: 80)
+            if app.name.isEmpty { app.name = app.id }
+            return app
+        }
+    }
+
+    /// Starts one of VM `name`'s graphical programs, by its id.
+    func launchGuiApp(_ id: String, in name: String) async throws {
+        try await request(.launchGuiApp, name: name) { $0.app = id }
+    }
+
     /// Repair Disk (it takes minutes): what it did.
     func repairDisk(_ name: String) async throws -> String {
         try await request(.repairDisk, name: name).message ?? ""

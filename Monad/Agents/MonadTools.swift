@@ -803,6 +803,17 @@ final class MonadTools {
                                        x: Double(try call.optionalInt("x") ?? 0), y: Double(try call.optionalInt("y") ?? 0),
                                        text: try call.optionalString("text") ?? "", keyCode: try call.optionalInt("key") ?? 0)
                 return MCPResult(text: windows.debugText)
+            },
+            MCPTool(name: "read_apps",
+                    description: "A running Linux VM's graphical programs as its Apps menu has them (id, name, whether it has an icon); "
+                        + "with `start`, the program of that id is started first, as choosing it in the menu does.",
+                    schema: Self.schema(["name": Self.vmName, "start": Self.string("A program's id, to start it.")],
+                                        required: ["name"]), risk: .normal) { [unowned self] call in
+                let vm = try self.vm(try call.string("name"))
+                if let id = try call.optionalString("start") { try await vm.launchGuiApp(id) }
+                let apps = try await vm.guiApps()
+                return MCPResult(text: apps.isEmpty ? "No programs." : apps.map { "\($0.id)\t\($0.name)\t\($0.hasIcon ? "icon" : "no icon")" }
+                    .joined(separator: "\n"))
             }
         ]
         #else

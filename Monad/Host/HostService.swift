@@ -623,6 +623,16 @@ final class HostConnection {
             try target.openDesktop()
             return answer(target)
 
+        case .guiApps:
+            var reply = HostResponse(id: r.id)
+            reply.apps = try await vm(r.name).guiApps()
+            return reply
+
+        case .launchGuiApp:
+            let target = try vm(r.name)
+            try await target.launchGuiApp(r.app!)
+            return answer(target)
+
         case .repairDisk:
             let target = try vm(r.name)
             let summary = try await manager.repairDisk(target)

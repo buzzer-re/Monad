@@ -2178,6 +2178,65 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     }
 
+    // MARK: The VM's graphical programs (the Apps menu)
+
+    /// The VM's graphical programs, as its desktop entries name them
+    /// (GuestApps). Their icons are kept in the VM's folder, each asked of
+    /// the guest once.
+    func guiApps() async throws -> [GuestApp] {
+        guard config.guestOS == .linux, config.display else {
+            throw MonadError("\(name) has no display for programs to open windows on. Turn on Display in its settings.")
+        }
+        guard state == .ready else { throw MonadError("\(name) is not running. Start it to see its programs.") }
+        let listed = try await ssh(GuestApps.listCommand, timeout: 30)
+        guard listed.status == 0 else {
+            throw MonadError(listed.status == 127 || listed.status == 126
+                ? "\(name) has no list of programs yet. Restart it once: Monad brings what lists them when the VM starts."
+                : "The list of \(name)'s programs could not be had (status \(listed.status)).")
+        }
+        guard var apps = GuestApps.parseList(listed.stdout) else {
+            debug("apps: the guest's list of programs is no list (\(listed.stdout.count) bytes)")
+            throw MonadError("\(name) sent a list of programs that could not be read.")
+        }
+        let fm = FileManager.default
+        let folder = paths.appIcons
+        try? Paths.ensurePrivateDirectory(folder)
+        // Icons of programs that are gone go; the ones there already are not asked for again.
+        let wanted = Set(apps.compactMap { GuestApps.iconFile($0.id, in: folder)?.lastPathComponent })
+        for file in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] where !wanted.contains(file) {
+            try? fm.removeItem(at: folder.appendingPathComponent(file))
+        }
+        var missing = apps.map(\.id).filter { id in GuestApps.iconFile(id, in: folder).map { !fm.fileExists(atPath: $0.path) } ?? false }
+        while !missing.isEmpty, state == .ready {
+            let batch = Array(missing.prefix(GuestApps.iconsAtOnce))
+            missing.removeFirst(batch.count)
+            guard let command = GuestApps.iconsCommand(batch), let answer = try? await ssh(command, timeout: 60), answer.status == 0 else { break }
+            for (id, bytes) in GuestApps.parseIcons(answer.stdout, for: Set(batch)) {
+                guard let file = GuestApps.iconFile(id, in: folder) else { continue }
+                try? bytes.write(to: file, options: .atomic)
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            }
+        }
+        for i in apps.indices {
+            apps[i].hasIcon = GuestApps.iconFile(apps[i].id, in: folder).map { fm.fileExists(atPath: $0.path) } ?? false
+        }
+        debug("apps: \(apps.count) programs, \(apps.filter(\.hasIcon).count) with an icon")
+        return apps
+    }
+
+    /// Starts one of the VM's graphical programs, by its desktop entry's
+    /// id: its window opens on the Mac when the VM's window manager is there.
+    func launchGuiApp(_ id: String) async throws {
+        guard let command = GuestApps.launchCommand(id) else { throw MonadError("“\(id.plain(limit: 60))” is not a program's id.") }
+        guard state == .ready else { throw MonadError("\(name) is not running. Start it first.") }
+        let answer = try await ssh(command, timeout: 30)
+        guard answer.status == 0 else {
+            let said = answer.stderrString.split(separator: "\n").last.map { String($0).plain(limit: 200) } ?? ""
+            throw MonadError(said.isEmpty ? "The program could not be started (status \(answer.status))." : said)
+        }
+        debug("apps: started \(id)")
+    }
+
     /// Stops the profile being set up (its whole process group in the guest)
     /// and drops the ones waiting. What finished stays.
     func stopProfiles() {

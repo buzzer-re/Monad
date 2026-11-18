@@ -54,6 +54,10 @@ enum CloudInit {
     /// starts, and takes back when it stops (Guest/monad-wm-session.sh).
     static func windowManagerSessionScript() throws -> String { try bundled("monad-wm-session", "sh") }
 
+    /// Lists the VM's graphical programs, hands out their icons and starts
+    /// one, for the Apps menu (Guest/monad-apps.sh; GuestApps reads it).
+    static func guestAppsScript() throws -> String { try bundled("monad-apps", "sh") }
+
     /// What a program started from a tab needs to open as a window on the
     /// Mac, while the VM's window manager is there (/etc/profile.d).
     /// XDG_CURRENT_DESKTOP names the session, for the settings Monad gives
@@ -335,6 +339,7 @@ enum CloudInit {
                 + "install_file /etc/profile.d/monad-windows.sh 0644 '\(b64(windowsEnvironmentScript))'\n"
                 + "install_file /etc/systemd/system/monad-wm.service 0644 '\(b64(try windowManagerUnit(user: windowsUser)))'\n"
                 + "windows_changed=$changed\n[ \"$before_windows\" -eq 0 ] || changed=1\n"
+                + "install_file \(GuestApps.path) 0755 '\(b64(try guestAppsScript()))'\n"
                 + sources.map { "install_file \(lib)/wm/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
                 // A source this Monad no longer has would be built into the program.
                 + "for f in \(lib)/wm/*; do\n    case ${f##*/} in \(sources.map(\.name).joined(separator: "|"))) ;; *) rm -f \"$f\" ;; esac\ndone\n"

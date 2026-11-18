@@ -894,6 +894,71 @@ final class VMLifecycleTests: XCTestCase {
         XCTAssertTrue(vmLog(vm).contains("windows: the guest's window manager is gone"), vmLog(vm))
     }
 
+    /// The Apps menu: the VM's programs are asked of its script, their
+    /// icons kept in the VM's folder (each asked for once), and one is
+    /// started by its id.
+    func testAVMsProgramsAreListedAndStarted() async throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+        runner.setHandler { [ssh] call in
+            if let r = ssh!.handle(call) { return r }
+            if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
+            switch call.arguments.last {
+            case GuestApps.listCommand:
+                return .ok("app org.gnome.Calculator org.gnome.Calculator Calculator\napp foot foot Foot\nend 2\n")
+            case "/usr/local/lib/monad/apps icons org.gnome.Calculator foot":
+                var out = Data("icon org.gnome.Calculator \(png.count)\n".utf8)
+                out.append(png)
+                out.append(Data("end\n".utf8))
+                return .init(status: 0, stdout: out, stderr: Data())
+            case "/usr/local/lib/monad/apps icons foot":
+                return .ok("end\n")
+            case "/usr/local/lib/monad/apps launch org.gnome.Calculator":
+                return .init(status: 5, stdout: Data(), stderr: Data("The VM's window manager is not running.\n".utf8))
+            default:
+                return .ok()
+            }
+        }
+        let vm = try makeInstance { $0.display = true }
+        func refused(_ work: () async throws -> Void) async -> String {
+            do {
+                try await work()
+                return ""
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        var said = await refused { _ = try await vm.guiApps() }
+        XCTAssertTrue(said.contains("is not running"), said)
+        vm.start()
+        await assertEventually { vm.state == .ready }
+
+        let stale = vm.paths.appIcons.appendingPathComponent("gone.png")
+        try FileManager.default.createDirectory(at: vm.paths.appIcons, withIntermediateDirectories: true)
+        try Data([1]).write(to: stale)
+        var apps = try await vm.guiApps()
+        XCTAssertEqual(apps, [GuestApp(id: "org.gnome.Calculator", name: "Calculator", hasIcon: true), GuestApp(id: "foot", name: "Foot")])
+        let icon = vm.paths.appIcons.appendingPathComponent("org.gnome.Calculator.png")
+        XCTAssertEqual(try Data(contentsOf: icon), png)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: icon.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "the icon of a program that is gone goes")
+
+        // Again: the icon it has is not asked for again.
+        apps = try await vm.guiApps()
+        XCTAssertEqual(apps.map(\.hasIcon), [true, false])
+        let asked = runner.calls.compactMap(\.arguments.last).filter { $0.hasPrefix("/usr/local/lib/monad/apps icons") }
+        XCTAssertEqual(asked, ["/usr/local/lib/monad/apps icons org.gnome.Calculator foot", "/usr/local/lib/monad/apps icons foot"])
+
+        try await vm.launchGuiApp("foot")
+        XCTAssertTrue(runner.calls.contains { $0.arguments.last == "/usr/local/lib/monad/apps launch foot" })
+        said = await refused { try await vm.launchGuiApp("org.gnome.Calculator") }
+        XCTAssertEqual(said, "The VM's window manager is not running.", "what the guest's script said, as plain text")
+        let before = runner.calls.count
+        said = await refused { try await vm.launchGuiApp("foot; reboot") }
+        XCTAssertTrue(said.contains("is not a program's id"), said)
+        XCTAssertEqual(runner.calls.count, before, "nothing was run for it")
+        await vm.stop()
+    }
+
     /// The installer of a VM with a display carries the window manager's
     /// sources, for the VM's user; one without a display carries none.
     func testOnlyAVMWithADisplayIsSentTheWindowManager() async throws {

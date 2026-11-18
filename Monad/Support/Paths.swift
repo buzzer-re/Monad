@@ -106,6 +106,9 @@ struct InstancePaths {
     /// There while the VM's machine runs (when it started); one left behind
     /// means MonadHost ended without seeing the machine stop.
     var runningMark: URL { dir.appendingPathComponent("running") }
+    /// The icons of a Linux VM's graphical programs, as the guest handed
+    /// them out (GuestApps): PNG files named by the program's id.
+    var appIcons: URL { dir.appendingPathComponent("app-icons", isDirectory: true) }
     /// Profiles set up in the VM (not run again at boot).
     var appliedProfiles: URL { dir.appendingPathComponent("profiles.json") }
     /// The whole output of a profile's latest run (`id` is a profile id).

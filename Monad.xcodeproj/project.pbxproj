@@ -81,6 +81,7 @@
 				App/ConnectionsView.swift,
 				App/DesignKit.swift,
 				App/FirewallViews.swift,
+				App/GuestAppsView.swift,
 				App/HostCommandDraft.swift,
 				App/KeepAwake.swift,
 				App/LimaList.swift,

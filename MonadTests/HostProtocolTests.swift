@@ -341,6 +341,25 @@ final class HostProtocolTests: XCTestCase {
                          #"{"event":"sshPrompts","sshPrompts":[{"asked":"2026-09-21T14:13:20Z","canRemember":true,"host":"box","id":"AAAAAAAA-0000-4000-8000-000000000001","kind":"secret","prompt":"dev@example.com's password: ","retry":false}]}"#)
     }
 
+    /// The Apps menu: a VM's graphical programs are asked for by the VM's
+    /// name, and one is started by its id, which is nothing but an id.
+    func testAVMsPrograms() throws {
+        try assertGolden(HostRequest(id: 1, op: .guiApps, name: "web"), #"{"id":1,"name":"web","op":"guiApps"}"#)
+        try assertGolden(HostRequest(id: 2, op: .launchGuiApp, name: "web").with { $0.app = "org.gnome.Calculator" },
+                         #"{"app":"org.gnome.Calculator","id":2,"name":"web","op":"launchGuiApp"}"#)
+        var reply = HostResponse(id: 3)
+        reply.apps = [GuestApp(id: "org.gnome.Calculator", name: "Calculator", hasIcon: true), GuestApp(id: "foot", name: "Foot")]
+        try assertGolden(reply, #"{"apps":[{"hasIcon":true,"id":"org.gnome.Calculator","name":"Calculator"},"#
+                         + #"{"hasIcon":false,"id":"foot","name":"Foot"}],"id":3,"ok":true}"#)
+        XCTAssertThrowsError(try HostRequest(id: 4, op: .guiApps).validate())
+        XCTAssertThrowsError(try HostRequest(id: 4, op: .guiApps, name: "../etc").validate())
+        XCTAssertThrowsError(try HostRequest(id: 4, op: .launchGuiApp, name: "web").validate(), "no program named")
+        for bad in ["", "a b", "a;reboot", "$(reboot)", "../x", "-x", ".x"] {
+            XCTAssertThrowsError(try HostRequest(id: 4, op: .launchGuiApp, name: "web").with { $0.app = bad }.validate(), bad)
+        }
+        XCTAssertNoThrow(try HostRequest(id: 4, op: .launchGuiApp, name: "web").with { $0.app = "firefox_firefox" }.validate())
+    }
+
     /// What reaches MonadHost about an SSH host is checked like any request.
     func testSSHRequestsAreValidated() {
         func invalid(_ r: HostRequest, _ line: UInt = #line) {

@@ -99,6 +99,8 @@ struct HostRequest: Codable, Equatable, Sendable {
         case sshTicket       // name: for one ssh the app starts to that host (SSHAskpass) → ticket
         case askSSH          // ticket, prompt, promptHint?: one ssh question, from the askpass helper → secret
         case answerSSHPrompt // promptID, secret? (absent: cancelled), remember?: the user answered a question of ssh's
+        case guiApps         // name: a running Linux VM's graphical programs (GuestApps) → apps
+        case launchGuiApp    // name, app (its id): started in the VM; its window opens on the Mac → instance
     }
 
     var id: UInt64
@@ -128,6 +130,8 @@ struct HostRequest: Codable, Equatable, Sendable {
     /// takeSnapshot, temporarySnapshot: ephemeral VMs are copies of that
     /// snapshot from now on (Use as temporary VM), or, false, no longer.
     var temporary: Bool?
+    /// launchGuiApp: the program's id (its desktop entry's name).
+    var app: String?
     /// setSSHHost: the host.
     var sshHost: SSHHost?
     /// setSSHHost: a typed password; answerSSHPrompt: the answer. Never logged.
@@ -167,7 +171,8 @@ struct HostRequest: Codable, Equatable, Sendable {
         case .list, .ensureDefault, .createEphemeral, .stopAll, .shutdown, .traffic:
             break
         case .start, .stop, .restart, .delete, .attach, .detach, .stopProfiles, .connections, .setDefault,
-             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot, .temporarySnapshot:
+             .openDesktop, .repairDisk, .pause, .resume, .takeSnapshot, .restoreSnapshot, .deleteSnapshot, .temporarySnapshot,
+             .guiApps, .launchGuiApp:
             guard let name, InstanceConfig.isValidName(name) else {
                 throw HostProtocolError.invalid("\(op.rawValue) needs a valid VM name.")
             }
@@ -180,6 +185,9 @@ struct HostRequest: Codable, Equatable, Sendable {
             }
             if op == .temporarySnapshot, temporary == nil {
                 throw HostProtocolError.invalid("temporarySnapshot needs to be on or off.")
+            }
+            if op == .launchGuiApp, !(app.map(GuestApps.isID) ?? false) {
+                throw HostProtocolError.invalid("launchGuiApp needs a program's id.")
             }
         case .create, .update:
             guard let config, InstanceConfig.isValidName(config.name) else {
@@ -289,6 +297,8 @@ struct HostResponse: Codable, Equatable, Sendable {
     var ticket: String?
     /// askSSH: the answer for ssh.
     var secret: String?
+    /// guiApps: the VM's graphical programs.
+    var apps: [GuestApp]?
 
     init(id: UInt64, version: Int? = nil, instance: VMSnapshot? = nil, instances: [VMSnapshot]? = nil) {
         self.id = id

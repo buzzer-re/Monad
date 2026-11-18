@@ -197,6 +197,8 @@ run: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.
 	@if command -v bash >/dev/null; then WM_BUILD_SHELL=bash sh test_wm_build.sh $(BUILD)/wm-build-bash; fi
 	@WM_SESSION_SHELL=sh sh test_wm_session.sh $(BUILD)/wm-session-sh
 	@if command -v bash >/dev/null; then WM_SESSION_SHELL=bash sh test_wm_session.sh $(BUILD)/wm-session-bash; fi
+	@APPS_SHELL=sh sh test_apps.sh $(BUILD)/apps-sh
+	@if command -v bash >/dev/null; then APPS_SHELL=bash sh test_apps.sh $(BUILD)/apps-bash; fi
 	@sh test_agent_live.sh
 
 clean:

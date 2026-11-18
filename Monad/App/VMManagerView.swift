@@ -756,6 +756,7 @@ private struct VMRow: View {
                         .help(vm.isRunning ? "Stop it first: its disk is in use while it runs." : "")
                     Divider()
                 } else if vm.config.display {
+                    GuestAppsMenu(vm: vm, host: host, onError: onError)
                     Button("Open Desktop") { run { try await (NSApp.delegate as? AppDelegate)?.openDesktop(of: vm.name) } }
                         .disabled(!vm.isRunning)
                     Divider()
@@ -797,6 +798,14 @@ private struct VMRow: View {
         .controlSize(.large)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+        // A Linux VM with a display, once it runs: its programs are asked for, for its Apps menu.
+        .task(id: vm.state == .ready && vm.config.display && vm.config.guestOS == .linux) {
+            if vm.state == .ready, vm.config.display, vm.config.guestOS == .linux {
+                GuestAppsStore.shared.load(vm.name, host: host)
+            } else {
+                GuestAppsStore.shared.forget(vm.name)
+            }
+        }
         // Simultaneous: it must not take the mouse from the handle's drag.
         .simultaneousGesture(TapGesture(count: 2).onEnded { (NSApp.delegate as? AppDelegate)?.showDetails(of: vm) })
         .overlay(alignment: dropEdge == .above ? .top : .bottom) {
