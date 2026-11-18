@@ -2,8 +2,8 @@
 
 A Linux VM has no display unless its Display setting is on. With it on, the VM gets a framebuffer, a
 keyboard and a pointer, and its ⋯ menu's Open Desktop shows the display in a window on the Mac.
-Programs with windows run on it. This page says what is built, what was measured on the way, and
-what is not there yet: each Linux program as a Mac window of its own, and drawing by the Mac's GPU.
+A desktop runs on it. This page says what is built and what was measured on the way. A VM's
+programs as Mac windows of their own need no display: `docs/WINDOWS.md`.
 
 ## What is built
 
@@ -47,167 +47,18 @@ the distribution's full kernel first.
 | Does Apple pass a GPU to a Linux guest? | No. The guest's kernel says of the device: `features: -virgl -edid -resource_blob -host_visible`, `-context_init`, `number of cap sets: 0`. No 3D commands, no memory shared with the Mac, no way to carry OpenGL or Vulkan through it. The macOS 27.2 SDK's headers name no 3D for it either. OpenGL in the guest is drawn by its CPUs (Mesa's llvmpipe) |
 | What the Mac gets of the display | `VZVirtualMachineView`'s layer shows an `IOSurface` of the display's size (BGRA), from a chain of three that swap as the guest draws. The Mac's compositor draws it straight from there: no copy by Monad, no encoding, no network |
 | Several views of one display | Yes: two views on one machine showed the same surface at once |
-| A part of the display in another window | Each window holds a `VZVirtualMachineView` of its own, as large as the whole display and moved behind the window so that only one part of it is inside. With foot on the display, the view in its Mac window held a 3840×2160 framebuffer and the window's part of it was foot, at scale 2 (read from the view's layer; the screen itself was not looked at) |
+| A part of the display in another window | It can be done: a window holding a `VZVirtualMachineView` of its own, as large as the whole display and moved behind the window so that only one part of it is inside. With foot on the display, the view in its Mac window held a 3840×2160 framebuffer and the window's part of it was foot, at scale 2 (read from the view's layer; the screen itself was not looked at) |
 | Does the display follow its window? | The Mac's new size reaches the guest as the display's first mode within a second. labwc does not take it by itself (its own list of modes keeps the old sizes): `display-follow` sets it as a custom mode on each change. Checked: a window of 2400×1500 pixels gave a display, a session and a surface of 2400×1500, at scale 2 |
 | Sizes | 1920×1200 at start. The guest can set any size itself up to 8192×8192 (the kernel's limits for the device), and the Mac's surface follows: 5120×2880, 8192×4320 and 8192×8192 were set from the guest and read back on the Mac. That is room for about eight full Retina screens of windows side by side. A surface that large costs its memory three times on the Mac (the chain) |
 | Can a program of Monad's own drive the display? | Yes: kernel mode setting through ioctls alone (no library), compiled in the guest with its `cc`; a test pattern and then real programs' windows were read back on the Mac |
 | First start with the profile | About a minute to install it; the session is up 9 seconds after a later start |
 
-## Each Linux program as a Mac window: the App windows profile
+## Each Linux program as a Mac window
 
-The Desktop profile puts the programs inside one window, the VM's display. The App windows
-profile is the other way, and takes the display in its place: Monad's own window manager in the
-guest lays every program's window out on one large display and tells MonadHost where each is;
-on the Mac each becomes a window showing its part of the display, so the pixels still go from
-the VM to the screen without a copy; keys, clicks and scrolling go back to the guest over
-Monad's own channel.
-
-**Setting it up** (`Monad/Profiles/app-windows.profile.json`, for distributions with apt; run on
-Ubuntu 26.04): a VM with Display on and the App windows profile. The window manager is C, and a
-Mac cannot build a Linux program, so the VM builds it: Monad's installer puts its sources
-(`GuestWM/`, as they are in the app), a build script (`monad-wm-build.sh`) and its service
-(`monad-wm.service`, off) in every VM with a display at each boot; the profile installs a C
-compiler and a terminal (foot), builds the program and turns the service on. From then on the
-installer rebuilds it at a boot where this Monad's sources are not the ones it was built from, so
-the window manager is always this Monad's. The service takes the display as root and goes on as
-the VM's user, in a session of that user's (`monad-wm-session.sh`: the user's services run, so a
-program finds its settings and portals). The display is 7680×4320 where the VM has 3.5 GB of
-memory or more (its framebuffer is 127 MB), else 3840×2160: at a Retina scale two large windows
-fill the smaller one. Turning Display on in a VM's settings or the New VM sheet adds the profile
-where it can be installed, and says so; where it cannot, the note says nothing is set up to
-show on the display. A program started from a tab (`foot &`) or from the VM's Apps menu opens
-as a window on the Mac. A new VM
-made with Display and the profile had its window manager answering MonadHost 80 seconds after
-its first boot began, and 11 seconds after a restart.
-
-**In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
-takes the display and speaks Wayland to programs with code of its own (the wire format,
-`wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows and popups,
-`wl_seat`, xdg-decoration, cursor-shape). Each window gets a place of its own on the display, in
-rows, a gap from the next; what the program drew is drawn there from its buffers, only where it
-says something changed, at the scale it drew at (programs are told the Mac screen's). A menu, a
-tooltip or a list that drops down is a window too, told with the window it is on and where the
-program put it there; a menu that asked for the keyboard has it while it is up. Programs that
-ask are told the frame is not theirs to draw (xdg-decoration, and KDE's protocol, which GTK
-asks through); a window is told that every edge of it meets a frame (tiled), so a program that
-draws a bar of its own draws square corners and no shadow. What such a window still leaves
-see-through shows the bar's colour, as the Mac's window has behind it; a popup's see-through
-parts are told to the Mac as its shape, row by row (128 rows at most), with its edges drawn in
-their own colour. Telling Apple's display takes until its next frame, so a thread of its own
-does it and the window manager goes on hearing the pointer meanwhile. The pointer and the keyboard are not read from the
-VM's devices: the window manager is told which window the pointer is over and which one is in
-front, and only the program owning that window hears of it. The clipboard is the programs' own
-(`wl_data_device`): what one copies the one in front can paste, in every kind it is offered in,
-written by the copier into the paster's pipe; only the program in front sets it or is told what
-is on it, and nothing is dragged. How the pointer is to look is the word of the program it is
-over, by name (`wp_cursor_shape_v1`: text, pointer, a resize), or none when the program hides
-it. It is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux
-programs, and Monad ships no binary it did not build.
-
-**Between the two**, one channel: lines of text on vsock port 1025, which MonadHost dials when
-the guest's installer says the window manager is set up, and which the window manager takes
-from the Mac only (`GuestWM/mwm_ctl.h` has every line; `GuestWindowProtocol.swift` reads the
-guest's as hostile).
-
-**On the Mac** (`LinuxAppWindows.swift`, shown by MonadHost like the desktop): a window for each
-of the guest's, titled with the program's title and the VM's name, the size the program drew at
-in points. Dragging its edge asks the program to draw at the new size; its red button asks the
-program to close the window. A popup is a window with no frame on the window it belongs to,
-moving with it, shown only where it touches that window, see-through outside the shape the
-program drew (round corners, a menu's arrow), with the Mac's shadow around what is left; turning to something else (the
-window's frame, another window, another app) tells the program its menus are done with. The
-keys are the Mac's layout as it is: a table of what each key types (plain, with Shift, with
-Option) made with `UCKeyTranslate` and written out in the guest as the programs' keymap, dead
-keys included, sent again when the layout changes. Command is sent as Control (⌘C, ⌘V, ⌘S, ⌘Q,
-⌘W do in a Linux program what they do on the Mac), the left Option as Alt, the right Option as
-the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the Mac's.
-
-**The Mac's clipboard and the VM's** meet on those keys and at no other time
-(`GuestClipboard.swift`). ⌘V (⇧⌘V in a terminal) gives the VM the Mac's text before the program
-hears the key, when something was copied on the Mac since the VM last had its clipboard: at
-most 1 MiB, text only, and from then on it is what a paste in the VM gives. ⌘C and ⌘X ask the
-window manager for what the program in front copies next: its text comes back once, within two
-seconds, at most 100 KiB, without control characters, and becomes the Mac's clipboard while the
-user is still in that VM's windows. A copy that is no text (a picture) stays in the VM, and the
-Mac's older text is not pasted over it. A program in the VM never reads the Mac's clipboard and
-never sets it by itself; Copy chosen from a program's own menu stays in the VM.
-
-**One title bar.** A program that draws a header bar of its own (GTK's, with its menus and
-buttons in it) keeps it, under the Mac's title bar, and the two are made to read as one: the
-guest's session is named `Monad` as a desktop, and a settings override for that desktop alone
-(`90_monad.gschema.override`, written by `monad-wm-session.sh`; the user's own settings and the
-Desktop profile's are not touched) takes the close button out of GTK's headers, so the window's
-buttons are the Mac's only; the Mac's title bar takes the colour at the top of the header, with
-light or dark buttons to match. Dragging the header, or double-clicking it, is the program
-asking for its window to be moved or zoomed (`move`, `zoom`, `minimize` on the channel):
-MonadHost does it only as the user's doing, when the left button went down in that window
-within the last seconds (a move) or the user just clicked or typed there (the others). Programs
-that leave the frame to the Mac (Qt, foot) have the Mac's plain title bar.
-
-**The VM's programs** are in the VM's "…" menu under Apps (`GuestApps.swift`,
-`GuestAppsView.swift`): the VM's desktop entries as `monad-apps.sh` lists them over the VM's
-ssh connection, favourites first, with a panel to search them. Their icons are PNG files the
-guest hands out (an SVG is drawn by the guest's `rsvg-convert` where it has one), kept by
-MonadHost in the VM's folder (`app-icons/`) and decoded by Monad's own PNG decoder in the app,
-at most 96 pixels. Favourites are the app's own preferences on this Mac.
-
-**The pointer** is the Mac's, drawn by the Mac (`GuestCursor.swift`): an I-beam over text, a
-hand over a link, the Mac's resize cursors, by the number of the shape the program named. No
-picture comes from the VM: a program that draws a cursor of its own gets the arrow, and one that
-hides the pointer hides it over its own window only. Apple's view of the display would hide the
-Mac's pointer whenever the guest shows none (it has no cursor plane here), so the view in these
-windows takes no part in the pointer at all (`GuestDisplayView`).
-
-Run in Debug VMs (first with the window manager installed by hand, then in a new VM made with
-Display and the profile): foot opened as a Mac window "foot — wm-try" at Retina scale; a command
-typed into it through this Mac's layout ran; a second foot opened as a second window; resizing
-the Mac's window resized the terminal (40 rows by 138 columns at 897×520 points); closing it
-ended foot. GNOME's Calculator (GTK 4) opened as a window; clicks on its buttons gave 7+5=12;
-its mode menu opened as a popup under its button, and choosing Advanced there closed the menu
-and widened the window to the new layout. With a clipboard of the test's own in the place of the
-Mac's: ⌘V typed its `7*6` into Calculator, Return, ⌘A and ⌘C brought `42` back, ⇧⌘V in foot then
-pasted that 42 (one program's copy into another, the Mac's being no newer), and 306,000 bytes
-pasted into `cat` in foot arrived whole within a second. The pointer's shape, as the window
-manager told it, was the I-beam over foot and over Calculator's entry and the arrow over its
-buttons. The typing, clicking, resizing and closing were done through the Debug tool
-`drive_window`, which calls what the window's own events call, and what a window shows was read
-from its view (`read_windows`, which also gives the Mac window's own frame and a popup's cut).
-Calculator, GTK 3's widget factory, foot and FeatherPad (Qt 6) were then looked at on the
-screen and used with a real pointer: one set of window buttons, the header and the title bar in
-one colour, square corners with nothing black, menus in their own shape. `read_apps` listed the
-VM's seven programs and stored three icons. The Apps menu and panel were not looked at, and the
-Mac's real clipboard was never read or set (macOS may ask before MonadHost reads it; not seen).
-
-**It lags, and why** (measured, one spinner turning in a GTK window): the program takes 25% of
-a guest CPU and the window manager 10%; on the Mac the VM's Virtualization process takes 60% of
-a core and WindowServer 40% (22% with no Linux window open), at 3840×2160 and at 7680×4320
-alike. Each update of Apple's display takes 11 ms in the guest however small the rectangle. So
-the cost is Apple's display device and the compositing of its surface, per update and not per
-pixel changed, and Monad's code on either side is a small part of it. The way out is a pixel
-path of Monad's own: the window manager sends each window's changed rectangles to MonadHost
-over Monad's channel and each Mac window draws its own pixels, with no display device in
-between. Not built; it would make MonadHost read pixels a guest sends, which it does not today.
-
-Not there yet: the clipboard carries text only between the Mac and the VM (a picture or files
-copied in the VM paste in the VM); a cursor a program draws itself (the arrow in its place); X11
-programs through Xwayland; a program's header bar is under the Mac's title bar, not in it; a
-popup's shape is cut at whole pixels (no soft edge) and of 128 rows at most (a rectangle
-beyond); a popup is where the program put it, with no regard for the Mac screen's edges; a
-window with no room left on the display is not shown; MonadHost has no Dock icon or menus, so
-these windows are not in ⌘Tab; the desktop and the windows cannot be had at once (each profile
-turns the other's service off; Open Desktop on a VM with App windows shows the display the
-windows are laid out on); distributions without apt; programs that read no GNOME settings keep
-window buttons of their own in their headers.
-
-**Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
-Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls
-out of the guest over Monad's channel and run them on the Mac with Metal: a graphics library for
-the guest and an OpenGL-to-Metal implementation with a shader compiler on the Mac, written from
-nothing (Monad takes no third-party code, so not ANGLE, MoltenVK or virglrenderer). Projects of
-that kind are years of work for a team. Until then: windows are put on screen by the Mac's GPU;
-what is in them is drawn by the VM's CPUs. That is the speed of a Linux desktop without a graphics
-card: fine for editors, terminals, tools and most pages in a browser; slow for WebGL, video at
-large sizes and 3D programs.
+Not a matter of the display any more: `docs/WINDOWS.md`. The windows first showed Apple's view of
+this display, each its own part of it (the rows above); that lagged, and they now draw pixels
+the VM's window manager sends over Monad's own channel. A VM needs no display for them, and can
+have the desktop and the windows at once.
 
 ## Security
 
@@ -215,4 +66,4 @@ A display is three more devices of Apple's that a hostile guest can talk to (the
 device's commands, two USB devices), in Apple's process for the VM, not in MonadHost. That is why
 it is off unless asked for, set apart when settings are imported, said when an edit turns it on,
 and never given to a VM another VM makes (`docs/SECURITY.md`). Monad's own code reads nothing the
-guest draws: the window shows it, and that is all.
+guest draws on it: the window shows it, and that is all.

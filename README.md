@@ -66,9 +66,9 @@ Tick a profile in New VM and the VM is set up on its first boot. Agentic brings 
 
 ## Linux programs with windows
 
-Turn on Display for a Linux VM (New VM, or its settings) and tick the Desktop profile: the VM gets a display, and its ⋯ menu's Open Desktop shows it in a window on your Mac, the size of the window and sharp on a Retina screen. `gui firefox` in a tab starts a program there; ⌘V in the window brings your Mac's text to the VM's clipboard. What the programs draw is drawn by the VM's CPUs: Apple passes no GPU to a Linux VM.
+Turn on Display for a Linux VM (New VM, or its settings; the Desktop profile comes with it): the VM gets a display, and its ⋯ menu's Open Desktop shows it in a window on your Mac, the size of the window and sharp on a Retina screen. `gui firefox` in a tab starts a program there; ⌘V in the window brings your Mac's text to the VM's clipboard. What the programs draw is drawn by the VM's CPUs: Apple passes no GPU to a Linux VM.
 
-With the App windows profile instead (turning Display on adds it), each Linux program's window is a window on your Mac, with one title bar, your Mac's keyboard layout, and ⌘C and ⌘V carrying text between it and your Mac; the VM's programs are in its “…” menu under Apps, with a search and favourites. That is new: it was tried with a terminal, GTK programs (GNOME's Calculator) and a Qt editor, it lags while something in a window moves, and programs for X11 do not open yet ([docs/DISPLAY.md](docs/DISPLAY.md) says what is built, what was measured and what is missing).
+With the App windows profile, each Linux program's window is a window on your Mac instead, with one title bar, your Mac's keyboard layout, and ⌘C and ⌘V carrying text between it and your Mac; the VM's programs are in its “…” menu under Apps, with a search and favourites. It needs no display: the VM sends each window's pixels where they changed. That is new: it was tried with a terminal, GTK programs (GNOME's Calculator) and a Qt editor; what is in a window is still drawn by the VM's CPUs, and programs for X11 do not open yet ([docs/WINDOWS.md](docs/WINDOWS.md) says what is built, what was measured and what is missing).
 
 ## Splits and contexts
 

@@ -101,11 +101,11 @@ it is saved.
 | `agents` | object | none | What the VM may do with Monad itself: `role` (`hostCommands` or `orchestrator`), `guestPort` (Monad's MCP endpoint on the VM's loopback, default 7766), and for an orchestrator `maxChildren` (default 4), `childCPUs` and `childMemoryGiB` (its VMs together; default its own size). Reaches into the Mac. |
 | `parent` | string | none | The orchestrator VM that made this one. Fixed. |
 | `autoForward` | object | on, from port 1024 | Forwarding of the ports the guest listens on (see below). |
-| `profiles` | list of strings | none | Profile ids set up on first boot: built in `agentic`, `desktop` and `server`, or yours in `~/.monad/profiles`. |
+| `profiles` | list of strings | none | Profile ids set up on first boot: built in `agentic`, `server`, `desktop` and `app-windows`, or yours in `~/.monad/profiles`. |
 | `theme` | string | the app's | A terminal theme id for this VM's tabs (`monad-dark`, `automatic`, or one of yours). |
 | `startAtLaunch` | true or false | false | Start the VM when Monad opens, without a tab. Written only when true. |
 | `inlineImages` | true or false | false | Programs in the VM can show pictures in its tabs (iTerm2's inline images, as `img` in every VM, neofetch, fastfetch and imgcat use them: PNG, JPEG or GIF, at most 4 MB). Monad decodes image data the VM sends only when this is on. Written only when true. |
-| `display` | true or false | false | Linux only: the VM has a display, a keyboard and a pointer, and its ⋯ menu's Open Desktop shows the display in a window (`docs/DISPLAY.md`). Off: it has none of the three devices. Written only when true. Applies at the next start. |
+| `display` | true or false | false | Linux only: the VM has a display, a keyboard and a pointer, and its ⋯ menu's Open Desktop shows the display in a window (`docs/DISPLAY.md`). Off: it has none of the three devices. Its programs as windows of their own (the `app-windows` profile, `docs/WINDOWS.md`) need none. Written only when true. Applies at the next start. |
 | `ephemeral` | true or false | false | Deleted when its last tab closes. Never imported. Fixed. |
 | `createdAt` | date | now | ISO 8601 (`2026-10-10T12:00:00Z`). Fixed. |
 | `guestOS` | `linux` or `macos` | `linux` | What runs in the VM, from its distribution's kind. Written only for macOS. Fixed. |

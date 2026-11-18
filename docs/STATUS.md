@@ -46,48 +46,44 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   at the screen's scale, ⌘V bringing the Mac's text in. The Desktop profile (apt; run on Ubuntu
   26.04) puts labwc with Xwayland on it and `gui` to start programs there. Checked in a Debug VM:
   the devices in the guest, the session at boot, a terminal and a file manager drawn on it, the
-  display following a window of 2400×1500 pixels at scale 2. Not seen: the window itself on the
-  Mac's screen (keys, clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
+  display following a window of 2400×1500 pixels at scale 2. Turning Display on adds the Desktop
+  profile where it can be installed. Not seen: the window itself on the Mac's screen (keys,
+  clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
   none to a Linux guest: measured), a desktop with a panel (XFCE fails to start this way on Ubuntu
   26.04), Debian's and Kali's cloud kernels.
-- **Linux programs as Mac windows: works for a terminal and a GTK program, driven by tools so far**
-  (`docs/DISPLAY.md`). A VM with Display on and the App windows profile: the VM builds Monad's own
-  window manager (`GuestWM/`, C, with the VM's compiler) from sources Monad's installer puts
-  there at each boot, and a program started from a tab opens as a window on the Mac. In the
-  guest: the Wayland wire format; top-level windows, their subsurfaces and their popups (menus),
-  drawn from shared memory where the program says something changed, each at a place of its own
-  on the display; a pointer and a keyboard told from outside; a clipboard among the programs; a
-  channel to MonadHost on a vsock port only the Mac can dial. On the Mac, MonadHost dials it
-  when the guest says it is there, reads its windows as hostile text, and shows each as a Mac
-  window (`LinuxAppWindows.swift`) with the Mac's pointer, the Mac's keyboard layout as it is,
-  resize and close; a popup as a frameless window on its window, cut to the shape the program
-  drew (round corners, a menu's arrow). One title bar: programs that draw a header bar of their
-  own (GTK) draw no window buttons in it and no round corners under the Mac's frame, the Mac's
-  title bar takes the header's colour, and dragging or double-clicking the header moves or zooms
-  the Mac's window. A VM's programs are in its "…" menu under Apps, with their icons, a search
-  and favourites (`GuestApps.swift`, `monad-apps.sh`); turning Display on adds the App windows
-  profile where it can be installed. ⌘V gives the VM the Mac's text
-  and ⌘C or ⌘X brings the program's copy back as text, on those keys only
+- **Linux programs as Mac windows** (`docs/WINDOWS.md`), with the App windows profile and no
+  display: the VM builds Monad's own window manager (`GuestWM/`, C, with the VM's compiler) from
+  sources Monad's installer puts in every Linux VM at each boot, and a program started from a
+  tab or from the VM's Apps menu opens as a window on the Mac. In the guest: the Wayland wire
+  format; top-level windows, their subsurfaces and their popups (menus), drawn from shared
+  memory where the program says something changed, each at a place of its own on a sheet of
+  memory; a pointer and a keyboard told from outside; a clipboard among the programs; a
+  connection to MonadHost on a vsock port only the Mac can dial, over which it sends the windows
+  and their pixels where they changed, packed. On the Mac, MonadHost dials it when the guest
+  says it is there, reads what it says as hostile, and shows each window as a Mac window
+  (`LinuxAppWindows.swift`) that draws those pixels (`GuestPicture.swift`), with the Mac's
+  pointer, the Mac's keyboard layout as it is, resize and close; a popup as a frameless window
+  on its window, see-through where the program drew nothing. One title bar: programs that draw
+  a header bar of their own (GTK) draw no window buttons in it and no round corners under the
+  Mac's frame, the Mac's title bar takes the header's colour, and dragging or double-clicking
+  the header moves or zooms the Mac's window. A VM's programs are in its "…" menu under Apps,
+  with their icons, a search and favourites (`GuestApps.swift`, `monad-apps.sh`). ⌘V gives the
+  VM the Mac's text and ⌘C or ⌘X brings the program's copy back as text, on those keys only
   (`GuestClipboard.swift`). The pointer looks as the program under it names it, as one of the
-  Mac's own cursors (`GuestCursor.swift`). Checked in Debug VMs, the last one made new with
-  Display and the profile: foot at Retina scale, typed into, resized, a second one, closed, back
-  after a restart, rebuilt at boot when Monad's sources changed; GNOME's Calculator clicked
-  through a sum and its mode menu; text pasted into Calculator and foot and copied back out,
-  with a clipboard of the test's own in the place of the Mac's; the I-beam named over foot and
-  Calculator's entry. All of it through the Debug tools `drive_window` and `read_windows`, which
-  call what the windows' own events call and read what their views hold. Calculator, a GTK 3
-  program, foot and a Qt editor (FeatherPad) have been looked at on the screen and used with a
-  real pointer; the Apps panel and menu have not been looked at, and the Mac's real clipboard
-  was not read or set (macOS may ask before MonadHost reads it).
-  Slow: Apple's display device costs about a Mac core for as long as anything in a window moves
-  (measured: 60% in the VM's process and 40% in WindowServer for one spinner, the same at
-  3840×2160 and 7680×4320), which shows as lag. The way out is a pixel path of Monad's own
-  (`docs/DISPLAY.md`), not built.
-  Next: that pixel path and drawing by the Mac's GPU, Xwayland, a Dock icon and menus for
-  MonadHost, the desktop and the windows at once, pictures and files on the clipboard, cursors
-  programs draw themselves. Not tried: a program that shrinks its shared memory under the window
-  manager (the guard is written, not run), more windows than fit on the display (one with no
-  room is not shown), two screens of different scales.
+  Mac's own cursors (`GuestCursor.swift`).
+  Checked in Debug VMs, the last one made new with the profile and no display: foot typed
+  into, resized and closed; GNOME's Calculator, a GTK 3 program and a Qt editor opened; small
+  animations go as small parts (7 MB a second), a full Retina window of scrolling text at 62
+  pictures a second in 9 MB a second. All of it through the Debug tools `drive_window` and
+  `read_windows`, which call what the windows' own events call and read their pictures'
+  memory. Not seen since the windows draw their own pixels: the windows on the Mac's screen
+  (that the picture is the right way up, its colours); the Apps menu and panel; the Mac's real
+  clipboard being read or set (macOS may ask before MonadHost reads it).
+  Not built: drawing by the Mac's GPU (what is in a window is drawn by the VM's CPUs, which is
+  most of what a busy window costs), Xwayland, a Dock icon and menus for MonadHost, pictures
+  and files on the clipboard, cursors programs draw themselves, the Mac screen's size told to
+  programs. Not tried: a program that shrinks its shared memory under the window manager (the
+  guard is written, not run), two screens of different scales.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, Desktop, App windows, custom),
@@ -186,7 +182,7 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server, pointer and keyboard, its channel to MonadHost), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server, pointer and keyboard, its channel to MonadHost, the packing of pixels and MonadHost's unpacking), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
 | `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,300 Swift tests |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
