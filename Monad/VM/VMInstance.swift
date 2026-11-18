@@ -2195,3 +2195,13 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     }
 }
+
+#if DEBUG
+/// For working on Monad (the read_display tool).
+extension VMInstance {
+    func debugDisplayPicture(maxWidth: CGFloat) async -> (picture: Data?, info: String) {
+        guard let real = machine as? VZMachine else { return (nil, "not running") }
+        return await real.displayPicture(maxWidth: maxWidth)
+    }
+}
+#endif

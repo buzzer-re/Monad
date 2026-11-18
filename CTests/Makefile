@@ -1,6 +1,9 @@
 # Portable tests for Monad's pure-C backend (runs on macOS and Linux).
 #   make -C CTests          # build + run under ASan/UBSan
 SRC := ../Monad/Backend
+# The window manager for a Linux VM's display, compiled in the guest; its
+# portable parts are tested here.
+WM := ../GuestWM
 CC ?= cc
 CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Wshadow -Werror \
           -fsanitize=address,undefined -fno-omit-frame-pointer -I$(SRC)
@@ -9,7 +12,7 @@ BUILD ?= build
 
 VT_SRC := $(wildcard $(SRC)/vt/*.c)
 
-TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck
+TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server fuzz_wm
 
 all: run
 
@@ -78,11 +81,15 @@ $(BUILD)/fuzz_decoders: fuzz_decoders.c $(SRC)/mnd_qcow2.c $(SRC)/mnd_tar.c $(SR
 $(BUILD)/fuzz_vt: fuzz_vt.c $(VT_SRC) $(wildcard $(SRC)/vt/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
+$(BUILD)/fuzz_wm: fuzz_wm.c $(WM)/mwm_server.c $(WM)/mwm_wire.c $(WM)/mwm_server.h $(WM)/mwm_wire.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
 # Longer runs: make fuzz FUZZ_ITERS=200000 [FUZZ_SEED=n]
-fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt $(BUILD)/fuzz_decoders $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar $(BUILD)/disk_cloud.regions
+fuzz: $(BUILD)/fuzz_net $(BUILD)/fuzz_vt $(BUILD)/fuzz_decoders $(BUILD)/fuzz_wm $(BUILD)/fx_v3_512.qcow2 $(BUILD)/xz_mixed.xz $(BUILD)/tar_plain.tar $(BUILD)/disk_cloud.regions
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_net
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),100000) $(BUILD)/fuzz_vt
 	FUZZ_ITERS=$(or $(FUZZ_ITERS),20000) $(BUILD)/fuzz_decoders $(BUILD)
+	FUZZ_ITERS=$(or $(FUZZ_ITERS),50000) $(BUILD)/fuzz_wm
 
 $(BUILD)/test_loop: test_loop.c $(SRC)/net/mnd_loop.c $(SRC)/net/mnd_loop.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
@@ -128,6 +135,12 @@ $(BUILD)/fx_v3_512.qcow2: gen_qcow2_fixture.py | $(BUILD)
 
 $(BUILD)/test_diskcheck: test_diskcheck.c $(SRC)/mnd_diskcheck.c $(SRC)/mnd_diskcheck.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+$(BUILD)/test_wm_wire: test_wm_wire.c $(WM)/mwm_wire.c $(WM)/mwm_wire.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+$(BUILD)/test_wm_server: test_wm_server.c $(WM)/mwm_server.c $(WM)/mwm_wire.c $(WM)/mwm_server.h $(WM)/mwm_wire.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/disk_cloud.regions: gen_disk_fixtures.py | $(BUILD)
 	python3 gen_disk_fixtures.py $(BUILD)

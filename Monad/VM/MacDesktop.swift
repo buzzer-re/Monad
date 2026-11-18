@@ -275,14 +275,17 @@ final class MacScreenReader {
         return grids.isEmpty ? nil : MacRecovery.Screen(cells: grids.flatMap { $0 })
     }
 
-    /// The live framebuffer (the largest) as a PNG; nil while not drawn.
-    func picture() -> Data? {
+    /// The live framebuffer (the largest) as a PNG, `maxWidth` pixels wide
+    /// at most; nil while not drawn.
+    func picture(maxWidth: CGFloat = 1280) -> Data? {
         guard isDrawn, let surface = Self.surfaces(in: view)
                 .max(by: { IOSurfaceGetWidth($0) * IOSurfaceGetHeight($0) < IOSurfaceGetWidth($1) * IOSurfaceGetHeight($1) })
         else { return nil }
-        // At most 1280 wide: recovery's text stays readable, and the picture small enough for an agent.
+        // By default at most 1280 wide: recovery's text stays readable, and the picture small enough for an agent.
+        // A display is opaque whatever its fourth byte says (a Linux guest's XRGB leaves it 0).
         var image = CIImage(ioSurface: surface)
-        let scale = min(1, 1280 / image.extent.width)
+        image = image.settingAlphaOne(in: image.extent)
+        let scale = min(1, maxWidth / image.extent.width)
         if scale < 1 { image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
         guard let cg = CIContext().createCGImage(image, from: image.extent.integral) else { return nil }
         return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])

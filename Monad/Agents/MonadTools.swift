@@ -755,6 +755,19 @@ final class MonadTools {
                 var result = MCPResult(text: "Screens: \(names.joined(separator: ", ")). Shown: \(shown).")
                 result.images = [try Data(contentsOf: dir.appendingPathComponent("\(shown).png"))]
                 return result
+            },
+            MCPTool(name: "read_display",
+                    description: "A running VM's display as the Mac has it now, as a picture (at most `width` pixels wide, "
+                        + "1280 by default), with the framebuffer's size. For a VM with a display (a Linux VM with Display on, "
+                        + "a macOS VM).",
+                    schema: Self.schema(["name": Self.vmName, "width": Self.integer("The picture's width at most, in pixels.")],
+                                        required: ["name"]), risk: .read) { [unowned self] call in
+                let vm = try self.vm(try call.string("name"))
+                let width = min(max(try call.optionalInt("width") ?? 1280, 64), 8192)
+                let shown = await vm.debugDisplayPicture(maxWidth: CGFloat(width))
+                var result = MCPResult(text: "Framebuffer: \(shown.info).")
+                if let picture = shown.picture { result.images = [picture] }
+                return result
             }
         ]
         #else

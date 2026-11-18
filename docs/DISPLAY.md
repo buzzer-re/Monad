@@ -49,19 +49,29 @@ the distribution's full kernel first.
 | Several views of one display | Yes: two views on one machine showed the same surface at once |
 | A part of the surface in another window | A plain layer takes the same `IOSurface` as its contents with a `contentsRect`: set without error; how it looks on screen was not seen |
 | Does the display follow its window? | The Mac's new size reaches the guest as the display's first mode within a second. labwc does not take it by itself (its own list of modes keeps the old sizes): `display-follow` sets it as a custom mode on each change. Checked: a window of 2400×1500 pixels gave a display, a session and a surface of 2400×1500, at scale 2 |
-| Sizes | 1920×1200 at start; 4096×2160 is listed; larger was not tried |
+| Sizes | 1920×1200 at start. The guest can set any size itself up to 8192×8192 (the kernel's limits for the device), and the Mac's surface follows: 5120×2880, 8192×4320 and 8192×8192 were set from the guest and read back on the Mac. That is room for about eight full Retina screens of windows side by side. A surface that large costs its memory three times on the Mac (the chain) |
+| Can a program of Monad's own drive the display? | Yes: kernel mode setting through ioctls alone (no library), compiled in the guest with its `cc`; a test pattern and then real programs' windows were read back on the Mac |
 | First start with the profile | About a minute to install it; the session is up 9 seconds after a later start |
 
 ## What is not built
 
 **Each Linux program as its own Mac window.** Today the programs are inside one window, the VM's
-display. The way to separate windows that the measurements support: Monad's own window manager in
-the guest lays every program's window out side by side on one large display and tells Monad where
-each is; on the Mac each becomes a window showing its part of the same surface (the `contentsRect`
-above), so the pixels still go from the VM to the screen without a copy; keys, clicks and
-scrolling go back to the guest over Monad's own channel. That is a window manager to write (the
-Wayland protocol, X11 programs through Xwayland), the channel, and the Mac's side, with the guest
-treated as hostile throughout.
+display. The way there, which the measurements support: Monad's own window manager in the guest
+lays every program's window out side by side on one large display and tells Monad where each is;
+on the Mac each becomes a window showing its part of the same surface, so the pixels still go from
+the VM to the screen without a copy; keys, clicks and scrolling go back to the guest over Monad's
+own channel.
+
+Its first part is written (`GuestWM/`, tested in `CTests/test_wm_wire.c` and `test_wm_server.c`):
+`monad-wm` takes the display, speaks Wayland to programs with code of its own (the wire format,
+`wl_compositor`, `wl_shm`, `xdg_wm_base` top-level windows), gives each window a place of its own
+and copies what the program drew there, and prints where each window is. Run by hand in a Debug
+VM, two `weston-simple-shm` stood side by side and moved, read back on the Mac. Not there yet:
+keyboard and pointer, menus and other popups, the clipboard, X11 programs through Xwayland (most
+real programs need at least the first two: foot, GTK and Qt do not start on it yet), the channel
+to MonadHost, the Mac's windows, and installing it (the Desktop profile still sets up labwc). It
+is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux programs, and
+Monad ships no binary it did not build.
 
 **Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
 Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls

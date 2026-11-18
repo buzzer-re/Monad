@@ -1,0 +1,387 @@
+/*
+ * test_wm_server.c — the window manager's Wayland server (GuestWM/mwm_server)
+ * against a client that speaks the wire format by hand: a window gets its
+ * place on the display and its pixels are copied there; a client that
+ * breaks the protocol is told and dropped, and takes nothing with it.
+ */
+#include "mwm_server.h"
+#include "mwm_wire.h"
+
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static int checks;
+#define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+
+enum { W = 400, H = 200 };
+static uint32_t pixels[W * H];
+static int presented, last_x, last_y, last_w, last_h;
+
+static void present(void *ctx, int x, int y, int w, int h) {
+    (void)ctx;
+    presented++;
+    last_x = x;
+    last_y = y;
+    last_w = w;
+    last_h = h;
+}
+
+static mwm_server *server(void) {
+    memset(pixels, 0, sizeof pixels);
+    presented = 0;
+    mwm_screen screen = {.pixels = pixels, .width = W, .height = H, .stride = W, .present = present};
+    mwm_server *s = mwm_server_new(&screen);
+    CHECK(s);
+    return s;
+}
+
+/* A client: its end of the socket, the server's descriptor, and the ids
+ * it gave what it bound. */
+typedef struct {
+    mwm_conn *c;
+    int server_fd;
+    uint32_t next;
+    uint32_t compositor, shm, wm;
+} client;
+
+static void pump(mwm_server *s, client *k) {
+    (void)mwm_conn_flush(k->c);
+    mwm_server_service(s, k->server_fd, true, true);
+    (void)mwm_conn_read(k->c);
+}
+
+/* The next event, which must be there. */
+static mwm_msg event(client *k) {
+    mwm_msg m;
+    CHECK(mwm_conn_next(k->c, &m));
+    return m;
+}
+
+static bool no_event(client *k) {
+    mwm_msg m;
+    return !mwm_conn_next(k->c, &m);
+}
+
+enum { DISPLAY_ERROR = 0, DISPLAY_DELETE_ID = 1 };
+
+/* Connects and binds what a window needs, by the names the registry gave. */
+static client connect_client(mwm_server *s) {
+    int sv[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    client k = {.c = mwm_conn_new(sv[0]), .server_fd = sv[1], .next = 2};
+    CHECK(mwm_server_add_client(s, sv[1]));
+    uint32_t registry = k.next++;
+    mwm_put_begin(k.c, 1, 1); /* wl_display.get_registry */
+    mwm_put_uint(k.c, registry);
+    mwm_put_end(k.c);
+    pump(s, &k);
+    uint32_t names[3] = {0, 0, 0}, versions[3] = {0, 0, 0};
+    static const char *wanted[3] = {"wl_compositor", "wl_shm", "xdg_wm_base"};
+    mwm_msg m;
+    while (mwm_conn_next(k.c, &m)) {
+        CHECK(m.object == registry && m.opcode == 0); /* wl_registry.global */
+        uint32_t name = mwm_get_uint(&m), len;
+        const char *interface = mwm_get_string(&m, &len);
+        uint32_t version = mwm_get_uint(&m);
+        CHECK(interface && mwm_msg_done(&m));
+        for (int i = 0; i < 3; i++)
+            if (strcmp(interface, wanted[i]) == 0) {
+                names[i] = name;
+                versions[i] = version;
+            }
+    }
+    uint32_t *ids[3] = {&k.compositor, &k.shm, &k.wm};
+    for (int i = 0; i < 3; i++) {
+        CHECK(names[i] != 0 && versions[i] >= 1);
+        *ids[i] = k.next++;
+        mwm_put_begin(k.c, registry, 0); /* wl_registry.bind */
+        mwm_put_uint(k.c, names[i]);
+        mwm_put_string(k.c, wanted[i]);
+        mwm_put_uint(k.c, 1);
+        mwm_put_uint(k.c, *ids[i]);
+        mwm_put_end(k.c);
+    }
+    pump(s, &k);
+    m = event(&k);
+    CHECK(m.object == k.shm && m.opcode == 0); /* wl_shm.format: ARGB8888 */
+    CHECK(mwm_get_uint(&m) == 0);
+    m = event(&k);
+    CHECK(m.object == k.shm && m.opcode == 0 && mwm_get_uint(&m) == 1); /* XRGB8888 */
+    CHECK(no_event(&k));
+    return k;
+}
+
+static void request(client *k, uint32_t object, uint16_t opcode, int count, ...);
+
+#include <stdarg.h>
+static void request(client *k, uint32_t object, uint16_t opcode, int count, ...) {
+    va_list ap;
+    va_start(ap, count);
+    mwm_put_begin(k->c, object, opcode);
+    for (int i = 0; i < count; i++) mwm_put_uint(k->c, va_arg(ap, uint32_t));
+    mwm_put_end(k->c);
+    va_end(ap);
+}
+
+/* A file of `words` pixels, each `color` plus its index in the low byte. */
+static int pixel_file(uint32_t color, int words) {
+    char path[] = "/tmp/monad-wm-test-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    unlink(path);
+    for (int i = 0; i < words; i++) {
+        uint32_t v = color + (uint32_t)(i & 0xff);
+        CHECK(write(fd, &v, 4) == 4);
+    }
+    return fd;
+}
+
+typedef struct {
+    uint32_t surface, xdg, toplevel, pool, buffer;
+} window;
+
+/* A top-level window of w × h pixels, mapped: the whole exchange. */
+static window open_window(mwm_server *s, client *k, const char *title, const char *app, uint32_t color, int w, int h) {
+    window v = {.surface = k->next++, .xdg = k->next++, .toplevel = k->next++, .pool = k->next++, .buffer = k->next++};
+    int before = mwm_server_windows(s, NULL, 0);
+    request(k, k->compositor, 0, 1, v.surface);         /* create_surface */
+    request(k, k->wm, 2, 2, v.xdg, v.surface);          /* get_xdg_surface */
+    request(k, v.xdg, 1, 1, v.toplevel);                /* get_toplevel */
+    mwm_put_begin(k->c, v.toplevel, 2);                 /* set_title */
+    mwm_put_string(k->c, title);
+    mwm_put_end(k->c);
+    mwm_put_begin(k->c, v.toplevel, 3);                 /* set_app_id */
+    mwm_put_string(k->c, app);
+    mwm_put_end(k->c);
+    request(k, v.surface, 6, 0);                        /* commit: asks for its first configure */
+    pump(s, k);
+    mwm_msg m = event(k);
+    CHECK(m.object == v.toplevel && m.opcode == 0);     /* xdg_toplevel.configure: any size */
+    CHECK(mwm_get_int(&m) == 0 && mwm_get_int(&m) == 0);
+    m = event(k);
+    CHECK(m.object == v.xdg && m.opcode == 0);          /* xdg_surface.configure */
+    uint32_t serial = mwm_get_uint(&m);
+    CHECK(mwm_msg_done(&m));
+    CHECK(mwm_server_windows(s, NULL, 0) == before);    /* nothing to show before it drew */
+    request(k, v.xdg, 4, 1, serial);                    /* ack_configure */
+    int fd = pixel_file(color, w * h);
+    mwm_put_begin(k->c, k->shm, 0);                     /* create_pool */
+    mwm_put_uint(k->c, v.pool);
+    mwm_put_fd(k->c, fd);
+    mwm_put_int(k->c, w * h * 4);
+    mwm_put_end(k->c);
+    close(fd);
+    request(k, v.pool, 0, 6, v.buffer, 0, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4, 1); /* create_buffer, XRGB8888 */
+    request(k, v.surface, 1, 3, v.buffer, 0, 0);        /* attach */
+    request(k, v.surface, 2, 4, 0, 0, (uint32_t)w, (uint32_t)h); /* damage */
+    request(k, v.surface, 6, 0);                        /* commit */
+    pump(s, k);
+    return v;
+}
+
+static uint32_t at(int x, int y) { return pixels[y * W + x]; }
+
+/* A window is copied to its place; a second one stands beside it; when the
+ * first goes, its place is cleared and the other stays where it is. */
+static void test_windows_stand_side_by_side(void) {
+    mwm_server *s = server();
+    client a = connect_client(s);
+    window one = open_window(s, &a, "One", "app.one", 0x00112200, 64, 32);
+    CHECK(no_event(&a));
+    mwm_window list[4];
+    CHECK(mwm_server_windows(s, list, 4) == 1);
+    CHECK(list[0].x == 0 && list[0].y == 0 && list[0].width == 64 && list[0].height == 32);
+    CHECK(strcmp(list[0].title, "One") == 0 && strcmp(list[0].app_id, "app.one") == 0);
+    CHECK(at(0, 0) == 0xff112200 && at(1, 0) == 0xff112201 && at(63, 31) == (0xff112200u | ((63 + 31 * 64) & 0xff)));
+    CHECK(at(64, 0) == 0 && at(0, 32) == 0); /* nothing beside or under it */
+    CHECK(presented >= 1 && last_x == 0 && last_y == 0 && last_w == 64 && last_h == 32);
+    uint32_t generation = mwm_server_generation(s);
+
+    client b = connect_client(s);
+    window two = open_window(s, &b, "Two", "app.two", 0x00330000, 100, 50);
+    CHECK(mwm_server_windows(s, list, 4) == 2);
+    CHECK(list[1].x == 64 + MWM_GAP && list[1].y == 0 && list[1].width == 100 && list[1].height == 50);
+    CHECK(at(64 + MWM_GAP, 0) == 0xff330000 && at(64 + MWM_GAP + 99, 49) == (0xff330000u | ((99 + 49 * 100) & 0xff)));
+    CHECK(at(0, 0) == 0xff112200); /* the first is as it was */
+    CHECK(mwm_server_generation(s) != generation);
+    CHECK(list[0].id != list[1].id);
+    (void)two;
+
+    /* The first window's program asks when to draw again, and is told at the next frame. */
+    uint32_t callback = a.next++;
+    request(&a, one.surface, 3, 1, callback); /* frame */
+    request(&a, one.surface, 6, 0);
+    pump(s, &a);
+    CHECK(no_event(&a));
+    mwm_server_frame(s, 1234);
+    pump(s, &a);
+    mwm_msg m = event(&a);
+    CHECK(m.object == callback && m.opcode == 0 && mwm_get_uint(&m) == 1234);
+    m = event(&a);
+    CHECK(m.object == 1 && m.opcode == DISPLAY_DELETE_ID && mwm_get_uint(&m) == callback);
+
+    /* The first program ends: its window's place is empty again. */
+    mwm_conn_free(a.c);
+    mwm_server_service(s, a.server_fd, true, false);
+    CHECK(mwm_server_windows(s, list, 4) == 1);
+    CHECK(strcmp(list[0].title, "Two") == 0 && list[0].x == 64 + MWM_GAP);
+    CHECK(at(0, 0) == 0 && at(63, 31) == 0);
+    CHECK(at(64 + MWM_GAP, 0) == 0xff330000);
+    int fds[4];
+    bool wants[4];
+    CHECK(mwm_server_sockets(s, fds, wants, 4) == 1 && fds[0] == b.server_fd);
+    mwm_conn_free(b.c);
+    mwm_server_free(s);
+}
+
+/* A new buffer replaces the old one, which the program gets back. */
+static void test_a_new_buffer_releases_the_old_one(void) {
+    mwm_server *s = server();
+    client a = connect_client(s);
+    window v = open_window(s, &a, "W", "app", 0x00445500, 20, 10);
+    uint32_t second = a.next++;
+    request(&a, v.pool, 0, 6, second, 0, 10, 10, 40, 1); /* the left half of the same pixels, as a buffer of its own */
+    request(&a, v.surface, 1, 3, second, 0, 0);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    mwm_msg m = event(&a);
+    CHECK(m.object == v.buffer && m.opcode == 0); /* wl_buffer.release */
+    mwm_window list[2];
+    CHECK(mwm_server_windows(s, list, 2) == 1 && list[0].width == 10 && list[0].height == 10);
+    CHECK(at(9, 9) != 0 && at(10, 0) == 0); /* what the larger one left is cleared */
+    mwm_conn_free(a.c);
+    mwm_server_free(s);
+}
+
+/* The error the server sent before dropping the client: its code. */
+static int dropped_with(mwm_server *s, client *k, uint32_t *object) {
+    pump(s, k);
+    mwm_msg m;
+    int code = -1;
+    while (mwm_conn_next(k->c, &m)) {
+        if (m.object == 1 && m.opcode == DISPLAY_ERROR) {
+            uint32_t len;
+            *object = mwm_get_uint(&m);
+            code = (int)mwm_get_uint(&m);
+            CHECK(mwm_get_string(&m, &len) != NULL);
+        }
+    }
+    int fds[4];
+    bool wants[4];
+    CHECK(mwm_server_sockets(s, fds, wants, 4) == 0); /* gone from the server */
+    mwm_conn_free(k->c);
+    return code;
+}
+
+enum { ERROR_INVALID_OBJECT = 0, ERROR_INVALID_METHOD = 1, ERROR_NO_MEMORY = 2, ERROR_IMPLEMENTATION = 3 };
+
+/* What a broken or hostile program gets: an error and the door. */
+static void test_a_client_that_breaks_the_protocol_is_dropped(void) {
+    uint32_t object;
+    mwm_server *s = server();
+
+    client k = connect_client(s);
+    request(&k, 999, 0, 0); /* an object that does not exist */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_OBJECT && object == 999);
+
+    k = connect_client(s);
+    request(&k, k.compositor, 77, 0); /* a request the interface does not have */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_METHOD && object == k.compositor);
+
+    k = connect_client(s);
+    request(&k, k.compositor, 0, 1, k.compositor); /* a new object under an id in use */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_OBJECT);
+
+    k = connect_client(s);
+    request(&k, k.compositor, 0, 1, 0x7fffffff); /* an id far beyond what a client may have */
+    CHECK(dropped_with(s, &k, &object) == ERROR_NO_MEMORY);
+
+    k = connect_client(s);
+    request(&k, k.compositor, 0, 0); /* create_surface without its argument */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_METHOD);
+
+    k = connect_client(s);
+    request(&k, k.wm, 2, 2, k.next, k.shm); /* get_xdg_surface of something that is no surface */
+    CHECK(dropped_with(s, &k, &object) == ERROR_INVALID_OBJECT);
+
+    /* A pool said to be larger than its file: reading it would kill the window manager. */
+    k = connect_client(s);
+    int fd = pixel_file(0, 16);
+    mwm_put_begin(k.c, k.shm, 0);
+    mwm_put_uint(k.c, k.next++);
+    mwm_put_fd(k.c, fd);
+    mwm_put_int(k.c, 1 << 20);
+    mwm_put_end(k.c);
+    close(fd);
+    CHECK(dropped_with(s, &k, &object) >= 0);
+
+    /* A buffer that reaches past its pool, each way. */
+    static const int32_t bad[][5] = {
+        {0, 64, 64, 256, 1},           /* more rows than the pool has */
+        {-4, 4, 4, 16, 1},             /* before its start */
+        {0, 4, 4, 8, 1},               /* rows shorter than their pixels */
+        {0, 0x7fffffff, 2, 0x7ffffffc, 1}, /* sizes that overflow */
+        {0, 4, 4, 16, 0x34325258},     /* a format never offered */
+        {0, 0, 4, 16, 1},              /* no width */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        k = connect_client(s);
+        fd = pixel_file(0, 16);
+        uint32_t pool = k.next++;
+        mwm_put_begin(k.c, k.shm, 0);
+        mwm_put_uint(k.c, pool);
+        mwm_put_fd(k.c, fd);
+        mwm_put_int(k.c, 64);
+        mwm_put_end(k.c);
+        close(fd);
+        request(&k, pool, 0, 6, k.next++, (uint32_t)bad[i][0], (uint32_t)bad[i][1], (uint32_t)bad[i][2], (uint32_t)bad[i][3],
+                (uint32_t)bad[i][4]);
+        CHECK(dropped_with(s, &k, &object) >= 0);
+    }
+
+    CHECK(mwm_server_windows(s, NULL, 0) == 0);
+    bool clean = true;
+    for (int i = 0; i < W * H; i++) clean = clean && pixels[i] == 0;
+    CHECK(clean); /* nothing of theirs on the display */
+    mwm_server_free(s);
+}
+
+/* A window larger than what is left of the display is cut at its edge. */
+static void test_a_window_too_large_is_cut_at_the_edge(void) {
+    mwm_server *s = server();
+    client a = connect_client(s);
+    (void)open_window(s, &a, "Wide", "app", 0x00777700, 500, 250);
+    mwm_window list[2];
+    CHECK(mwm_server_windows(s, list, 2) == 1);
+    CHECK(list[0].width == W && list[0].height == H); /* what of it is on the display */
+    CHECK(at(W - 1, H - 1) != 0);
+    mwm_conn_free(a.c);
+    mwm_server_free(s);
+}
+
+/* No more programs than there may be. */
+static void test_clients_are_bounded(void) {
+    mwm_server *s = server();
+    int kept[MWM_MAX_CLIENTS + 1][2];
+    for (int i = 0; i <= MWM_MAX_CLIENTS; i++) {
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, kept[i]) == 0);
+        bool ok = mwm_server_add_client(s, kept[i][1]);
+        CHECK(ok == (i < MWM_MAX_CLIENTS));
+    }
+    for (int i = 0; i <= MWM_MAX_CLIENTS; i++) close(kept[i][0]);
+    mwm_server_free(s);
+}
+
+int main(void) {
+    test_windows_stand_side_by_side();
+    test_a_new_buffer_releases_the_old_one();
+    test_a_client_that_breaks_the_protocol_is_dropped();
+    test_a_window_too_large_is_cut_at_the_edge();
+    test_clients_are_bounded();
+    printf("test_wm_server: %d checks passed\n", checks);
+    return 0;
+}

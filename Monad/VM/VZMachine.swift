@@ -170,6 +170,10 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 
     /// Read once recovery asks (its machine has the display).
     private var screenReader: MacScreenReader?
+    #if DEBUG
+    /// The read_display tool's reader.
+    private var displayReader: MacScreenReader?
+    #endif
 
     /// Recovery's steps read the screen: from then on Monad types into this
     /// machine, so its desktop only watches.
@@ -214,6 +218,10 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
                 MacDesktop.shared.close(owner: ObjectIdentifier(self))
                 screenReader?.close()
                 screenReader = nil
+                #if DEBUG
+                displayReader?.close()
+                displayReader = nil
+                #endif
             default: break
             }
             switch newState {
@@ -226,3 +234,19 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 }
 
 extension MNDVsockChannel: ByteChannel {}
+
+#if DEBUG
+/// For working on Monad (the read_display tool): the display as it is on
+/// the Mac, through a reader of its own that leaves the desktop's keys
+/// and clicks alone.
+extension VZMachine {
+    func displayPicture(maxWidth: CGFloat) async -> (picture: Data?, info: String) {
+        guard vm.config.displayWidth > 0 else { return (nil, "no display") }
+        if displayReader == nil { displayReader = MacScreenReader(machine: vm.machine) }
+        guard let reader = displayReader else { return (nil, "needs macOS 27") }
+        // The first frame comes once macOS has drawn the reader's window.
+        for _ in 0..<20 where reader.picture(maxWidth: 16) == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+        return (reader.picture(maxWidth: maxWidth), reader.info)
+    }
+}
+#endif
