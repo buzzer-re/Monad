@@ -400,6 +400,19 @@ final class CloudInitTests: XCTestCase {
         XCTAssertEqual(CloudInit.guestInstallCommand, "sudo -n sh -s")
     }
 
+    /// The installer says whether the guest has Monad's window manager set
+    /// up (the Desktop profile's doing): MonadHost dials it only then.
+    func testTheInstallerSaysWhetherTheGuestHasTheWindowManager() throws {
+        let script = try CloudInit.guestInstallScript(guest: ubuntu)
+        let line = "if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then echo windows-ok; fi\n"
+        let said = try XCTUnwrap(script.range(of: line), script)
+        XCTAssertLessThan(said.lowerBound, try XCTUnwrap(script.range(of: "echo agent-ok\n")).lowerBound)
+        XCTAssertTrue(CloudInit.saysWindows("windows-ok\nagent-ok\n"))
+        XCTAssertFalse(CloudInit.saysWindows("agent-ok\n"))
+        XCTAssertFalse(CloudInit.saysWindows("no windows-ok here\nagent-ok\n"), "the line, not the words somewhere")
+        XCTAssertEqual(CloudInit.windowsVsockPort, 1025)
+    }
+
     /// A Lima VM's seed keeps Lima working on the same disk (Phase 9): the
     /// network sshd is masked only until the next reboot, at each Monad boot
     /// (Lima needs it); host keys are kept; Lima's hostname and mounts stay

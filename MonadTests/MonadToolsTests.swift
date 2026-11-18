@@ -152,7 +152,7 @@ final class MonadToolsTests: XCTestCase {
                                "set_macos_security", "add_ssh_forward"])
         XCTAssertEqual(Set(all.filter { $0.risk == .read }.map(\.name)),
                        ["list_vms", "get_vm", "list_distros", "list_networks", "list_connections", "list_canvas",
-                        "read_vm_log", "read_recovery_screens", "read_display", "list_ssh_hosts"])
+                        "read_vm_log", "read_recovery_screens", "read_display", "read_windows", "list_ssh_hosts"])
     }
 
     /// A VM's log (what Monad did with it), its last lines; read only.

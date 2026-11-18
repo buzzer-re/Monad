@@ -137,6 +137,15 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 
     var onDesktopScale: (@MainActor (Int) -> Void)?
 
+    /// This machine's programs as windows of their own (a Linux VM with a display).
+    private var appWindows: LinuxAppWindows?
+
+    func guestWindowPresenter(title: String) -> GuestWindowPresenting? {
+        guard vm.config.virtioDisplay, vm.config.displayWidth > 0 else { return nil }
+        if appWindows == nil { appWindows = LinuxAppWindows(machine: vm.machine, vmName: title) }
+        return appWindows
+    }
+
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         guard vm.config.displayWidth > 0 else {
             throw MonadError("\(title) was started without a display. Restart it to open its desktop.")
@@ -216,6 +225,8 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
             switch newState {
             case .stopped, .error:
                 MacDesktop.shared.close(owner: ObjectIdentifier(self))
+                appWindows?.disconnected()
+                appWindows = nil
                 screenReader?.close()
                 screenReader = nil
                 #if DEBUG
@@ -248,5 +259,8 @@ extension VZMachine {
         for _ in 0..<20 where reader.picture(maxWidth: 16) == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
         return (reader.picture(maxWidth: maxWidth), reader.info)
     }
+
+    /// The read_windows and drive_window tools: this machine's programs' windows on the Mac.
+    var debugAppWindows: LinuxAppWindows? { appWindows }
 }
 #endif

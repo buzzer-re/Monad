@@ -768,6 +768,36 @@ final class MonadTools {
                 var result = MCPResult(text: "Framebuffer: \(shown.info).")
                 if let picture = shown.picture { result.images = [picture] }
                 return result
+            },
+            MCPTool(name: "read_windows",
+                    description: "The Mac windows of a Linux VM's programs: each one's id, title, frame and where the VM's display "
+                        + "lies behind it; with `window`, also what that window's view of the display holds, cut to what the "
+                        + "window shows (the framebuffer, not the screen).",
+                    schema: Self.schema(["name": Self.vmName, "window": Self.integer("A window's id, for its picture.")],
+                                        required: ["name"]), risk: .read) { [unowned self] call in
+                let windows = try self.vm(try call.string("name")).debugAppWindows()
+                var result = MCPResult(text: windows.debugText)
+                if let id = try call.optionalInt("window"), let picture = windows.debugPicture(window: UInt32(clamping: id)) {
+                    result.images = [picture]
+                }
+                return result
+            },
+            MCPTool(name: "drive_window",
+                    description: "Does in a Linux program's Mac window what the user could, without the Mac's pointer or keyboard: "
+                        + "focus; move or click at x, y (points from the content's top left); scroll by x, y; type `text` through "
+                        + "this Mac's keyboard layout; key (a Mac key code in `key`, with command, shift, option or control named "
+                        + "in `text`); resize to x by y; close.",
+                    schema: Self.schema(["name": Self.vmName, "window": Self.integer("The window's id (read_windows)."),
+                                         "action": Self.string("focus, move, click, scroll, type, key, resize or close."),
+                                         "x": Self.integer("Points."), "y": Self.integer("Points."),
+                                         "text": Self.string("What to type, or the modifiers of a key."),
+                                         "key": Self.integer("A Mac virtual key code.")],
+                                        required: ["name", "window", "action"]), risk: .normal) { [unowned self] call in
+                let windows = try self.vm(try call.string("name")).debugAppWindows()
+                try windows.debugDrive(window: UInt32(clamping: try call.int("window")), action: try call.string("action"),
+                                       x: Double(try call.optionalInt("x") ?? 0), y: Double(try call.optionalInt("y") ?? 0),
+                                       text: try call.optionalString("text") ?? "", keyCode: try call.optionalInt("key") ?? 0)
+                return MCPResult(text: windows.debugText)
             }
         ]
         #else

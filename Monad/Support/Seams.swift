@@ -169,6 +169,10 @@ protocol VirtualMachineControlling: AnyObject {
     /// Told how many pixels a point has on the screen the desktop window
     /// is on (2 on a Retina screen): when it opens, and when that changes.
     var onDesktopScale: (@MainActor (Int) -> Void)? { get set }
+    /// What shows this machine's programs as windows on the Mac (a Linux
+    /// VM with a display); nil when it has nothing to show them from.
+    /// `title`: the VM's name, which every such window carries.
+    func guestWindowPresenter(title: String) -> GuestWindowPresenting?
 }
 
 extension VirtualMachineControlling {
@@ -190,6 +194,8 @@ extension VirtualMachineControlling {
     func showDesktop(title: String, actions: [DesktopAction], paste: @escaping @MainActor (String) async -> Void) throws {
         throw MonadError("This VM has no display to show.")
     }
+
+    func guestWindowPresenter(title: String) -> GuestWindowPresenting? { nil }
 }
 
 /// A button on a VM's desktop window.

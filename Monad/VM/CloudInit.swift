@@ -14,6 +14,15 @@ enum CloudInit {
     static let vsockSSHPort: UInt32 = 22
     /// The host dials the guest agent here (see Guest/monad-agent.sh).
     static let agentVsockPort: UInt32 = 1024
+    /// The host dials the guest's window manager here (GuestWM/mwm_main.c),
+    /// when the guest has it.
+    static let windowsVsockPort: UInt32 = 1025
+
+    /// Whether the installer's answer says the guest has Monad's window
+    /// manager set up: the line, by itself.
+    static func saysWindows(_ answer: String) -> Bool {
+        answer.split(separator: "\n").contains("windows-ok")
+    }
 
     /// The guest agent, shipped inside the app bundle.
     static func agentScript() throws -> String {
@@ -281,6 +290,7 @@ enum CloudInit {
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
             systemctl enable monad-health.service >/dev/null 2>&1 || true
             if [ "$health_changed" -eq 1 ]; then systemctl restart monad-health.service || true; else systemctl start monad-health.service || true; fi
+            if systemctl is-enabled --quiet monad-wm.service 2>/dev/null; then echo windows-ok; fi
             \(console)\(clock)echo agent-ok
 
             """

@@ -47,42 +47,61 @@ the distribution's full kernel first.
 | Does Apple pass a GPU to a Linux guest? | No. The guest's kernel says of the device: `features: -virgl -edid -resource_blob -host_visible`, `-context_init`, `number of cap sets: 0`. No 3D commands, no memory shared with the Mac, no way to carry OpenGL or Vulkan through it. The macOS 27.2 SDK's headers name no 3D for it either. OpenGL in the guest is drawn by its CPUs (Mesa's llvmpipe) |
 | What the Mac gets of the display | `VZVirtualMachineView`'s layer shows an `IOSurface` of the display's size (BGRA), from a chain of three that swap as the guest draws. The Mac's compositor draws it straight from there: no copy by Monad, no encoding, no network |
 | Several views of one display | Yes: two views on one machine showed the same surface at once |
-| A part of the surface in another window | A plain layer takes the same `IOSurface` as its contents with a `contentsRect`: set without error; how it looks on screen was not seen |
+| A part of the display in another window | Each window holds a `VZVirtualMachineView` of its own, as large as the whole display and moved behind the window so that only one part of it is inside. With foot on the display, the view in its Mac window held a 3840×2160 framebuffer and the window's part of it was foot, at scale 2 (read from the view's layer; the screen itself was not looked at) |
 | Does the display follow its window? | The Mac's new size reaches the guest as the display's first mode within a second. labwc does not take it by itself (its own list of modes keeps the old sizes): `display-follow` sets it as a custom mode on each change. Checked: a window of 2400×1500 pixels gave a display, a session and a surface of 2400×1500, at scale 2 |
 | Sizes | 1920×1200 at start. The guest can set any size itself up to 8192×8192 (the kernel's limits for the device), and the Mac's surface follows: 5120×2880, 8192×4320 and 8192×8192 were set from the guest and read back on the Mac. That is room for about eight full Retina screens of windows side by side. A surface that large costs its memory three times on the Mac (the chain) |
 | Can a program of Monad's own drive the display? | Yes: kernel mode setting through ioctls alone (no library), compiled in the guest with its `cc`; a test pattern and then real programs' windows were read back on the Mac |
 | First start with the profile | About a minute to install it; the session is up 9 seconds after a later start |
 
-## What is not built
+## Each Linux program as a Mac window: built as far as a terminal, by hand
 
-**Each Linux program as its own Mac window.** Today the programs are inside one window, the VM's
-display. The way there, which the measurements support: Monad's own window manager in the guest
-lays every program's window out side by side on one large display and tells Monad where each is;
-on the Mac each becomes a window showing its part of the same surface, so the pixels still go from
-the VM to the screen without a copy; keys, clicks and scrolling go back to the guest over Monad's
-own channel.
+Today the Desktop profile puts the programs inside one window, the VM's display. The other way
+is being built: Monad's own window manager in the guest lays every program's window out on one
+large display and tells MonadHost where each is; on the Mac each becomes a window showing its
+part of the display, so the pixels still go from the VM to the screen without a copy; keys,
+clicks and scrolling go back to the guest over Monad's own channel.
 
-Its guest side is written as far as one real program (`GuestWM/`, tested in `CTests/test_wm_*.c`
-and fuzzed by `fuzz_wm`): `monad-wm` takes the display and speaks Wayland to programs with code of
-its own (the wire format, `wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level
-windows, `wl_seat`). Each window gets a place of its own on the display, in rows, a gap from the
+**In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
+takes the display and speaks Wayland to programs with code of its own (the wire format,
+`wl_compositor` with subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows, `wl_seat`,
+xdg-decoration). Each window gets a place of its own on the display, in rows, a gap from the
 next; what the program drew is drawn there from its buffers, only where it says something
-changed, at the scale it drew at (programs are told the Mac screen's). The pointer and the
-keyboard are not read from the VM's devices: the Mac has them, so the window manager is told which
-window the pointer is over and which one is in front, and only the program owning that window
-hears of it. The keys are a table (what each types plain, with Shift, with the third-level key,
-with both) written out as an XKB keymap, so the Mac's own layout can be handed over as it is; a US
-keyboard until then. All of that comes over one channel, lines of text, on a vsock port only the
-Mac can dial (`GuestWM/mwm_ctl.h` has every line); the windows go back the same way.
+changed, at the scale it drew at (programs are told the Mac screen's). Programs that ask are told
+the frame is not theirs to draw. The pointer and the keyboard are not read from the VM's devices:
+the window manager is told which window the pointer is over and which one is in front, and only
+the program owning that window hears of it. It is C, compiled in the guest by the distribution's
+`cc`: Xcode cannot build Linux programs, and Monad ships no binary it did not build.
 
-Run by hand in a Debug VM: foot (a terminal) starts on it, and `echo Hi Mac | tr a-z A-Z` typed
-through the channel printed `HI MAC` in its window, read back on the Mac. Not there yet:
-MonadHost's end of the channel and the Mac's windows (so nothing shows these windows to anyone
-yet), menus and other popups, the clipboard (programs may bind its interface, and nothing is
-carried), window frames left to the Mac (foot draws its own title bar above its window, where it
-is cut off), X11 programs through Xwayland, and installing it (the Desktop profile still sets up
-labwc). It is C, compiled in the guest by the distribution's `cc`: Xcode cannot build Linux
-programs, and Monad ships no binary it did not build.
+**Between the two**, one channel: lines of text on vsock port 1025, which MonadHost dials when
+the guest's installer says the window manager is set up, and which the window manager takes
+from the Mac only (`GuestWM/mwm_ctl.h` has every line; `GuestWindowProtocol.swift` reads the
+guest's as hostile).
+
+**On the Mac** (`LinuxAppWindows.swift`, shown by MonadHost like the desktop): a window for each
+of the guest's, titled with the program's title and the VM's name, the size the program drew at
+in points. Dragging its edge asks the program to draw at the new size; its red button asks the
+program to close the window. The keys are the Mac's layout as it is: a table of what each key
+types (plain, with Shift, with Option) made with `UCKeyTranslate` and written out in the guest
+as the programs' keymap, dead keys included, sent again when the layout changes. Command is sent
+as Control (⌘C, ⌘V, ⌘S, ⌘Q, ⌘W do in a Linux program what they do on the Mac), the left Option
+as Alt, the right Option as the key for the characters Option types. ⌘M, ⌘H and ⌘` stay the
+Mac's.
+
+Run in a Debug VM, with the window manager installed by hand as a service: foot opened as a Mac
+window "foot — wm-dev" at Retina scale; a command typed into it through this Mac's layout ran; a
+second foot opened as a second window; resizing the Mac's window resized the terminal (40 rows by
+138 columns at 897×520 points); closing it ended foot. The typing, clicking, resizing and closing
+were done through the Debug tool `drive_window`, which calls what the window's own events call,
+and what a window shows was read from its view (`read_windows`): nobody has looked at these
+windows on the screen yet, or used them with a real pointer and keyboard.
+
+Not there yet: installing it (the Desktop profile still sets up labwc, and the choice between
+the two is no setting yet); menus and other popups (a program that opens one is dropped, so
+GTK and Qt programs are not usable); the clipboard (programs may bind its interface, and nothing
+is carried, so even copy and paste inside foot does nothing); the pointer's shape (always the
+Mac's arrow); X11 programs through Xwayland; programs that draw their own title bar whatever
+they are told (GTK's) get the Mac's as well; a window with no room left on the display is not
+shown; MonadHost has no Dock icon or menus, so these windows are not in ⌘Tab.
 
 **Drawing by the Mac's GPU.** Apple's device cannot carry it (the first row above), and
 Virtualization takes no device of Monad's own. What remains is to send a program's OpenGL calls

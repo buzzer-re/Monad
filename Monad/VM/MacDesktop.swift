@@ -318,7 +318,7 @@ final class MacScreenReader {
     }
 
     /// Every layer under the view showing an IOSurface (the framebuffers).
-    private static func surfaces(in view: NSView) -> [IOSurfaceRef] {
+    static func surfaces(in view: NSView) -> [IOSurfaceRef] {
         var found: [IOSurfaceRef] = []
         var seen: Set<ObjectIdentifier> = []
         func collect(_ layer: CALayer?) {

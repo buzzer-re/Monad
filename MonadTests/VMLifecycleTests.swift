@@ -798,6 +798,94 @@ final class VMLifecycleTests: XCTestCase {
         return try makeInstance(edit: edit)
     }
 
+    // MARK: A Linux VM's programs as windows
+
+    /// A VM with a display, whose installer says `windows` when the guest
+    /// has Monad's window manager.
+    private func windowsVM(display: Bool = true, installer: String = "windows-ok\nagent-ok\n") throws -> VMInstance {
+        runner.setHandler { [ssh] call in
+            if let r = ssh!.handle(call) { return r }
+            if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
+            if call.arguments.last == CloudInit.guestInstallCommand { return .ok(installer) }
+            return .ok()
+        }
+        return try makeInstance { $0.display = display }
+    }
+
+    private var windowDials: Int { factory.machine.openedPorts.filter { $0 == CloudInit.windowsVsockPort }.count }
+
+    /// MonadHost dials the guest's window manager, shows the windows it
+    /// tells, and tells it what the Mac's pointer and keys do; when the
+    /// window manager goes its windows go, and it is dialed again.
+    func testAGuestsWindowsAreShownAndGoWithIt() async throws {
+        let channel = SocketPairChannel(), second = SocketPairChannel()
+        factory.machine.windowChannels = [channel, second]
+        let vm = try windowsVM()
+        vm.start()
+        await assertEventually { self.windowDials == 1 }
+        let shown = factory.machine.guestWindows
+        XCTAssertEqual(shown.titles, ["unit"])
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 0 0 100 50 1 0 0 100 50 app Title\nend\n")
+        await assertEventually { shown.windows.count == 1 }
+        XCTAssertEqual(shown.display, GuestDisplaySize(width: 1920, height: 1200))
+        XCTAssertEqual(shown.windows.first?.title, "Title")
+        XCTAssertTrue(vmLog(vm).contains("windows: the guest's window manager answered, display 1920×1200"), vmLog(vm))
+
+        shown.onCommand?(.focus(window: 1))
+        shown.onCommand?(.key(code: 30, down: true))
+        var sent = ""
+        await assertEventually {
+            sent += channel.hostSent()
+            return sent == "focus 1\nkey 30 1\n"
+        }
+
+        channel.hangUp()
+        await assertEventually { shown.disconnects == 1 }
+        XCTAssertTrue(shown.windows.isEmpty)
+        await assertEventually { self.windowDials == 2 }
+        second.agentSays("monad-wm 1 1920 1200\nwindows 1 0\nend\n")
+        await assertEventually { shown.connects == 2 }
+
+        await vm.stop()
+        await assertEventually { shown.disconnects == 2 && second.closed }
+        let dials = windowDials
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(windowDials, dials, "a stopped VM is not dialed")
+    }
+
+    /// Only a guest that has the window manager is dialed, and only when the VM has a display.
+    func testAGuestWithoutTheWindowManagerIsNotDialed() async throws {
+        var vm = try windowsVM(installer: "agent-ok\n")
+        vm.start()
+        await assertEventually { vm.agentAvailable }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(windowDials, 0)
+        XCTAssertTrue(factory.machine.guestWindows.titles.isEmpty)
+        await vm.stop()
+
+        vm = try windowsVM(display: false)
+        vm.start()
+        await assertEventually { vm.agentAvailable }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(windowDials, 0, "no display: nothing to show windows of")
+    }
+
+    /// A window manager that says nonsense is hung up on, shows nothing,
+    /// and is dialed less and less often.
+    func testAWindowManagerThatSaysNonsenseShowsNothing() async throws {
+        let channel = SocketPairChannel()
+        factory.machine.windowChannels = [channel]
+        let vm = try windowsVM()
+        vm.start()
+        await assertEventually { self.windowDials == 1 }
+        let shown = factory.machine.guestWindows
+        channel.agentSays("monad-wm 1 1920 1200\nwindows 1 1\nwindow 1 4000 0 100 50 1 0 0 100 50 app off-the-display\nend\n")
+        await assertEventually { channel.closed }
+        await assertEventually { shown.disconnects == 1 }
+        XCTAssertTrue(shown.windows.isEmpty)
+        XCTAssertTrue(vmLog(vm).contains("windows: the guest's window manager is gone"), vmLog(vm))
+    }
+
     // MARK: Lima VMs
 
     /// A Lima VM does not start while Lima runs it, and Monad forgets the

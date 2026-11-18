@@ -156,6 +156,16 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
         desktopPaste = paste
     }
 
+    /// What shows this machine's programs as windows, and the titles it was asked for.
+    let guestWindows = FakeGuestWindows()
+    func guestWindowPresenter(title: String) -> GuestWindowPresenting? {
+        guestWindows.titles.append(title)
+        return guestWindows
+    }
+
+    /// Channels handed out to who dials the guest's window manager, in order.
+    var windowChannels: [ByteChannel] = []
+
     /// What was typed into its display (US layout; Return as a newline).
     private(set) var typed = ""
 
@@ -218,12 +228,39 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
     func openChannel(port: UInt32, timeout: TimeInterval) async throws -> ByteChannel {
         openedPorts.append(port)
         onOpen?()
+        if port == CloudInit.windowsVsockPort {
+            guard !windowChannels.isEmpty else { throw TestError("connection refused") }
+            return windowChannels.removeFirst()
+        }
         guard !channels.isEmpty else { throw TestError("connection refused") }
         return channels.removeFirst()
     }
 
     /// Simulate the guest crashing / VZ reporting an error.
     func emit(_ event: VMRuntimeEvent) { onEvent?(event) }
+}
+
+/// The windows of a VM's programs, recorded instead of shown.
+@MainActor
+final class FakeGuestWindows: GuestWindowPresenting {
+    var onCommand: ((GuestWindowCommand) -> Void)?
+    var titles: [String] = []
+    private(set) var display: GuestDisplaySize?
+    private(set) var windows: [GuestWindow] = []
+    private(set) var connects = 0
+    private(set) var disconnects = 0
+
+    func connected(display: GuestDisplaySize) {
+        self.display = display
+        connects += 1
+    }
+
+    func show(_ windows: [GuestWindow]) { self.windows = windows }
+
+    func disconnected() {
+        windows = []
+        disconnects += 1
+    }
 }
 
 @MainActor

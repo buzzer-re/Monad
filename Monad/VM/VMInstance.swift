@@ -117,6 +117,11 @@ final class VMInstance: ObservableObject, Identifiable {
 
     private var agent: AgentClient?
     private var agentTask: Task<Void, Never>?
+    /// A Linux guest with Monad's window manager: the connection to it,
+    /// and what shows its programs' windows on the Mac.
+    private var guestWindows: GuestWindowsClient?
+    private var guestWindowsTask: Task<Void, Never>?
+    private var guestWindowPresenter: GuestWindowPresenting?
 
     private let env: VMEnvironment
     private var machine: VirtualMachineControlling?
@@ -1258,6 +1263,9 @@ final class VMInstance: ObservableObject, Identifiable {
                     Log.vm.notice("\(self.name, privacy: .public): guest agent installed")
                     self.agentAvailable = true
                     self.connectAgent()
+                    if self.config.display, self.config.guestOS == .linux, CloudInit.saysWindows(r.stdoutString) {
+                        self.connectGuestWindows()
+                    }
                 } else {
                     Log.vm.error("\(self.name, privacy: .public): agent install failed: \(r.stderrString, privacy: .public)")
                 }
@@ -1382,6 +1390,66 @@ final class VMInstance: ObservableObject, Identifiable {
         }
     }
 
+    /// Keep a channel to the guest's window manager open while the VM is
+    /// ready: its programs' windows are shown on the Mac while it lasts,
+    /// and go with it. Dialed again when it goes away, less and less often
+    /// when it does not last.
+    private func connectGuestWindows() {
+        guestWindowsTask?.cancel()
+        guestWindowsTask = Task { [weak self] in
+            var delay: TimeInterval = 1
+            while let self, !Task.isCancelled, self.state == .ready {
+                guard let m = self.machine, let presenter = self.guestWindowPresenter ?? m.guestWindowPresenter(title: self.name) else {
+                    self.debug("windows: this VM has no display to show them from")
+                    return
+                }
+                self.guestWindowPresenter = presenter
+                guard let channel = try? await m.openChannel(port: CloudInit.windowsVsockPort, timeout: 5) else {
+                    self.debug("windows: no answer on vsock port \(CloudInit.windowsVsockPort), trying again in \(Int(delay)) s")
+                    await self.env.clock.sleep(seconds: delay)
+                    delay = min(delay * 2, 30)
+                    continue
+                }
+                guard !Task.isCancelled, self.state == .ready else {
+                    channel.close()
+                    return
+                }
+                let connectedAt = self.env.clock.now()
+                let client = GuestWindowsClient(channel: channel)
+                self.guestWindows = client
+                let disconnected = self.follow(client, showing: presenter)
+                client.start()
+                for await _ in disconnected {}
+                guard !Task.isCancelled else { return } // the VM is stopping: what it showed was taken down there
+                self.debug("windows: the guest's window manager is gone")
+                presenter.onCommand = nil
+                presenter.disconnected()
+                self.guestWindows = nil
+                let pause: TimeInterval
+                if self.env.clock.now().timeIntervalSince(connectedAt) >= Self.healthyAgentConnection {
+                    delay = 1
+                    pause = 0.5
+                } else {
+                    pause = delay
+                    delay = min(delay * 2, 30)
+                }
+                if !Task.isCancelled { await self.env.clock.sleep(seconds: pause) }
+            }
+        }
+    }
+
+    /// Joins the connection to the guest's window manager and what shows
+    /// its windows; the stream ends when the connection does.
+    private func follow(_ client: GuestWindowsClient, showing presenter: GuestWindowPresenting) -> AsyncStream<Void> {
+        presenter.onCommand = { [weak client] command in client?.send(command) }
+        client.onDisplay = { [weak self] display in
+            self?.debug("windows: the guest's window manager answered, display \(display.width)×\(display.height)")
+            presenter.connected(display: display)
+        }
+        client.onWindows = { windows in presenter.show(windows) }
+        return AsyncStream<Void> { cont in client.onDisconnect = { cont.finish() } }
+    }
+
     /// The guest's boot (Linux's boot_id, macOS's boot session).
     static let bootIDCommand = "cat /proc/sys/kernel/random/boot_id 2>/dev/null || sysctl -n kern.bootsessionuuid"
 
@@ -1428,6 +1496,13 @@ final class VMInstance: ObservableObject, Identifiable {
         agentTask = nil
         agent?.stop()
         agent = nil
+        guestWindowsTask?.cancel()
+        guestWindowsTask = nil
+        guestWindows?.stop()
+        guestWindows = nil
+        guestWindowPresenter?.onCommand = nil
+        guestWindowPresenter?.disconnected()
+        guestWindowPresenter = nil
         guestBoot = nil
         guestPorts = []
     }
@@ -2202,6 +2277,14 @@ extension VMInstance {
     func debugDisplayPicture(maxWidth: CGFloat) async -> (picture: Data?, info: String) {
         guard let real = machine as? VZMachine else { return (nil, "not running") }
         return await real.displayPicture(maxWidth: maxWidth)
+    }
+
+    /// The windows this VM's programs have on the Mac (the read_windows and drive_window tools).
+    func debugAppWindows() throws -> LinuxAppWindows {
+        guard let windows = (machine as? VZMachine)?.debugAppWindows else {
+            throw MonadError("\(name) shows no windows: it is not running, has no display, or its guest has no window manager.")
+        }
+        return windows
     }
 }
 #endif
