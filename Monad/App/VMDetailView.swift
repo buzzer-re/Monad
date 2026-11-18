@@ -407,7 +407,11 @@ struct VMDetailView: View {
                 Section("Desktop") {
                     SettingRow(symbol: "display", color: .blue, title: "Display",
                                detail: VMSettingsDraft.displayDetail) {
-                        Toggle("", isOn: $draft.config.display).labelsHidden().toggleStyle(.switch)
+                        Toggle("", isOn: Binding(get: { draft.config.display }, set: { draft.setDisplay($0, offered: offeredProfiles) }))
+                            .labelsHidden().toggleStyle(.switch)
+                    }
+                    if let note = draft.displayNote {
+                        Label(note, systemImage: "info.circle").font(Design.caption).foregroundStyle(.secondary)
                     }
                     if vm.config.display {
                         SettingRow(symbol: "macwindow", color: .blue, title: "Desktop",
@@ -583,6 +587,13 @@ struct VMDetailView: View {
         } message: {
             Text(VMSettingsDraft.disableSIPConfirmation(vm: vm.name, newVM: false).message)
         }
+    }
+
+    /// The profiles that can be set up in this VM (its distribution's package manager).
+    private var offeredProfiles: [String] {
+        let catalog = (try? ProfileCatalog.bundled(custom: ProfileStore())) ?? profileCatalog
+        guard let manager = DistroCatalog.packageManager(of: vm.config) else { return [] }
+        return catalog.all.filter { $0.supports(packageManager: manager) }.map(\.id)
     }
 
     // MARK: Profiles

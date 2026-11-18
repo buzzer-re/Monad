@@ -15,6 +15,8 @@ struct VMSettingsDraft {
     /// The firewall's own rules, with their ports as typed; the switches and
     /// tags are edited in `config.firewall`.
     var firewallRules: FirewallRulesEditor
+    /// The App windows profile was ticked by turning Display on, not by the user.
+    private var displayAddedProfile = false
 
     init(_ config: InstanceConfig) {
         original = config
@@ -73,6 +75,18 @@ struct VMSettingsDraft {
             config.profiles.removeAll { $0 == id }
         }
     }
+
+    /// Display, on or off (it applies at the next start). A display with
+    /// nothing set up to show on it shows nothing, so the App windows
+    /// profile is chosen with it where it can be set up (`offered`: the
+    /// profiles there are for this VM's distribution), and taken back with it.
+    mutating func setDisplay(_ on: Bool, offered: [String]) {
+        config.display = on
+        displayAddedProfile = Self.displayChanged(to: on, profiles: &config.profiles, offered: offered, addedBefore: displayAddedProfile)
+    }
+
+    /// What the settings say under Display.
+    var displayNote: String? { Self.displayNote(display: config.display, profiles: config.profiles, added: displayAddedProfile) }
 
     /// Share a Mac folder read-only in the user's home in the guest.
     /// `confirmed`: the user agreed to a folder SharePolicy guards.
@@ -211,6 +225,40 @@ struct VMSettingsDraft {
     /// A Linux VM's display (display), in the New VM sheet and the VM's
     /// settings.
     static let displayDetail = "A display, a keyboard and a pointer for the VM, for a desktop and programs with windows: its ⋯ menu's Open Desktop shows it in a window on this Mac. What is on it is drawn by the VM's CPUs (Apple passes no GPU to a Linux VM). Off: the VM has none of the three devices. Applies at the next start."
+
+    /// The profiles that put something on a Linux VM's display: each
+    /// program as a window on the Mac, or a whole desktop in one window.
+    static let displayProfiles = ["app-windows", "desktop"]
+
+    static let displayProfileAdded = "The App windows profile was added with it: the VM's programs then open as windows on this Mac, and its ⋯ menu lists them under Apps. For a whole desktop in one window, choose the Desktop profile instead."
+    static let displayNeedsProfile = "Nothing is set up to show on the display. The App windows profile opens the VM's programs as windows on this Mac; the Desktop profile gives a whole desktop in one window (both for distributions with apt)."
+
+    /// A display with neither profile shows nothing.
+    static func displayLacksProfile(display: Bool, profiles: [String]) -> Bool {
+        display && Set(profiles).isDisjoint(with: displayProfiles)
+    }
+
+    /// Display was turned on or off. On, with nothing chosen to show on
+    /// it: the App windows profile is added where it can be set up
+    /// (`offered`), and true says so. Off: what was added for it
+    /// (`addedBefore`) goes again; what the user chose stays.
+    static func displayChanged(to on: Bool, profiles: inout [String], offered: [String], addedBefore: Bool) -> Bool {
+        if on {
+            guard displayLacksProfile(display: true, profiles: profiles), offered.contains("app-windows") else { return false }
+            profiles.append("app-windows")
+            return true
+        }
+        if addedBefore { profiles.removeAll { $0 == "app-windows" } }
+        return false
+    }
+
+    /// What to say under Display: that a profile was added with it, or
+    /// that nothing is set up to show on it; nil when there is nothing to say.
+    static func displayNote(display: Bool, profiles: [String], added: Bool) -> String? {
+        guard display else { return nil }
+        if displayLacksProfile(display: true, profiles: profiles) { return displayNeedsProfile }
+        return added && profiles.contains("app-windows") ? displayProfileAdded : nil
+    }
 
     // MARK: Forwards
 

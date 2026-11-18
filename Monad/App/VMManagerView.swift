@@ -1464,8 +1464,11 @@ struct CreateVMSheet: View {
                 if !f.isMac {
                     SettingRow(symbol: "display", color: .blue, title: "Display",
                                detail: VMSettingsDraft.displayDetail) {
-                        Toggle("", isOn: Binding(get: { f.display }, set: { form?.display = $0 }))
+                        Toggle("", isOn: Binding(get: { f.display }, set: { form?.setDisplay($0) }))
                             .labelsHidden().toggleStyle(.switch)
+                    }
+                    if let note = f.displayNote {
+                        Label(note, systemImage: "info.circle").font(Design.caption).foregroundStyle(.secondary)
                     }
                 }
             }

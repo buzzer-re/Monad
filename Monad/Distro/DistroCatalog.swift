@@ -172,6 +172,12 @@ struct DistroCatalog: Sendable {
             ?? [config.distro.capitalized, config.release].compactMap { $0 }.joined(separator: " ")
     }
 
+    /// The package manager of a VM's distribution, which says what
+    /// profiles can be set up in it; nil when the distribution is not known.
+    static func packageManager(of config: InstanceConfig) -> String? {
+        (shipped?.distro(config.distro) ?? live?.distro(config.distro))?.guest.packageManager
+    }
+
     /// Monad's distros and the user's, read again each time (a distro added
     /// in Settings is there at once, in the app and in MonadHost).
     static var live: DistroCatalog? { shipped?.adding(userDirectory: Paths.distros) }

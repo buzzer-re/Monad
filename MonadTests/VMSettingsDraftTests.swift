@@ -516,4 +516,40 @@ final class VMSettingsDraftTests: XCTestCase {
         ])
         XCTAssertEqual(VMSettingsDraft.reachChoices(through: "bastion", hosts: []).map(\.address), ["127.0.0.1"])
     }
+
+    /// A display with nothing set up to show on it shows nothing: turning
+    /// Display on adds the App windows profile, says so, and takes it back
+    /// when Display is turned off again without it having been wanted.
+    func testTurningDisplayOnAddsWhatShowsOnIt() {
+        var profiles = ["agentic"]
+        var added = VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: ["agentic", "app-windows", "desktop"], addedBefore: false)
+        XCTAssertTrue(added)
+        XCTAssertEqual(profiles, ["agentic", "app-windows"])
+        XCTAssertEqual(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: added), VMSettingsDraft.displayProfileAdded)
+        // Off again: what was added for it goes; what the user chose stays.
+        added = VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: ["agentic", "app-windows", "desktop"], addedBefore: true)
+        XCTAssertFalse(added)
+        XCTAssertEqual(profiles, ["agentic"])
+        XCTAssertNil(VMSettingsDraft.displayNote(display: false, profiles: profiles, added: false))
+
+        // The user has chosen what shows on it already: nothing is added, and nothing said.
+        for chosen in ["desktop", "app-windows"] {
+            profiles = [chosen]
+            XCTAssertFalse(VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: ["app-windows", "desktop"], addedBefore: false))
+            XCTAssertEqual(profiles, [chosen])
+            XCTAssertNil(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: false))
+            XCTAssertFalse(VMSettingsDraft.displayChanged(to: false, profiles: &profiles, offered: ["app-windows", "desktop"], addedBefore: false))
+            XCTAssertEqual(profiles, [chosen], "the user's own choice is not taken back")
+        }
+
+        // A distribution the profile cannot be set up on (no apt): nothing to add, and that is said.
+        profiles = []
+        XCTAssertFalse(VMSettingsDraft.displayChanged(to: true, profiles: &profiles, offered: ["agentic"], addedBefore: false))
+        XCTAssertEqual(profiles, [])
+        XCTAssertEqual(VMSettingsDraft.displayNote(display: true, profiles: profiles, added: false), VMSettingsDraft.displayNeedsProfile)
+        // The user unticked what was added: said as well.
+        XCTAssertEqual(VMSettingsDraft.displayNote(display: true, profiles: ["agentic"], added: true), VMSettingsDraft.displayNeedsProfile)
+        XCTAssertFalse(VMSettingsDraft.displayLacksProfile(display: false, profiles: []))
+        XCTAssertTrue(VMSettingsDraft.displayLacksProfile(display: true, profiles: ["server"]))
+    }
 }

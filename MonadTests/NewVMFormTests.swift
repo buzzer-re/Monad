@@ -65,7 +65,7 @@ final class NewVMFormTests: XCTestCase {
         var f = try form()
         XCTAssertFalse(f.display)
         XCTAssertFalse(f.apply(to: InstanceConfig.defaults(name: "box")).display)
-        f.display = true
+        f.setDisplay(true)
         XCTAssertTrue(f.apply(to: InstanceConfig.defaults(name: "box")).display)
         f.distro = "macos"
         XCTAssertTrue(f.isMac)
@@ -219,5 +219,36 @@ final class NewVMFormTests: XCTestCase {
         XCTAssertEqual(f.distro, "ubuntu")
         f.release = "0.1"
         XCTAssertEqual(f.release, "26.04")
+    }
+
+    /// Display in the New VM sheet: turned on, the App windows profile is
+    /// ticked with it (a display with nothing to show on it shows nothing),
+    /// and the sheet says so.
+    func testDisplayTicksTheProfileThatShowsOnIt() throws {
+        var f = try form()
+        f.setProfiles(try ProfileCatalog.bundled())
+        XCTAssertNil(f.displayNote)
+        f.setDisplay(true)
+        XCTAssertTrue(f.display && f.isChosen("app-windows"))
+        XCTAssertEqual(f.displayNote, VMSettingsDraft.displayProfileAdded)
+        XCTAssertEqual(f.apply(to: InstanceConfig.defaults(name: "box")).profiles, ["app-windows"])
+        f.setDisplay(false)
+        XCTAssertFalse(f.display || f.isChosen("app-windows"))
+        XCTAssertNil(f.displayNote)
+
+        // The user ticked Desktop first: Display adds nothing to it.
+        f.toggleProfile("desktop")
+        f.setDisplay(true)
+        XCTAssertFalse(f.isChosen("app-windows"))
+        XCTAssertNil(f.displayNote)
+        f.setDisplay(false)
+        XCTAssertTrue(f.isChosen("desktop"))
+
+        // Fedora (dnf): the profile cannot be set up there, and the sheet says what is missing.
+        f.toggleProfile("desktop")
+        f.distro = "fedora"
+        f.setDisplay(true)
+        XCTAssertFalse(f.isChosen("app-windows"))
+        XCTAssertEqual(f.displayNote, VMSettingsDraft.displayNeedsProfile)
     }
 }

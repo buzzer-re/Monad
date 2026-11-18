@@ -52,8 +52,10 @@ struct NewVMForm {
     var firewall = VMFirewall()
     /// Images in the terminal: off unless chosen.
     var inlineImages = false
-    /// A Linux VM's display, keyboard and pointer: off unless chosen.
-    var display = false
+    /// A Linux VM's display, keyboard and pointer: off unless chosen (setDisplay).
+    private(set) var display = false
+    /// The App windows profile was ticked by turning Display on, not by the user.
+    private var displayAddedProfile = false
 
     init(catalog: DistroCatalog) {
         self.catalog = catalog
@@ -163,6 +165,23 @@ struct NewVMForm {
 
     mutating func toggleProfile(_ id: String) {
         if let i = chosenProfiles.firstIndex(of: id) { chosenProfiles.remove(at: i) } else { chosenProfiles.append(id) }
+    }
+
+    /// Display, on or off. A display with nothing set up to show on it
+    /// shows nothing, so the App windows profile is ticked with it where
+    /// it can be set up, and unticked again with it.
+    mutating func setDisplay(_ on: Bool) {
+        display = on
+        displayAddedProfile = VMSettingsDraft.displayChanged(to: on, profiles: &chosenProfiles,
+                                                             offered: profileChoices.filter(\.supported).map(\.id),
+                                                             addedBefore: displayAddedProfile)
+    }
+
+    /// What the sheet says under Display (VMSettingsDraft.displayNote).
+    var displayNote: String? {
+        let supported = Set(profileChoices.filter(\.supported).map(\.id))
+        return VMSettingsDraft.displayNote(display: display && !isMac, profiles: chosenProfiles.filter { supported.contains($0) },
+                                           added: displayAddedProfile)
     }
 
     /// The networks there are (Settings › Networks). A chosen network that
