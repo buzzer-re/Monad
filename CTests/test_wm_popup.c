@@ -1,6 +1,6 @@
 /*
  * test_wm_popup.c — menus and other popups (GuestWM/mwm_shell: xdg_popup
- * and xdg_positioner): a popup is a window of its own on the display, told
+ * and xdg_positioner): a popup is a window of its own on the sheet, told
  * with the window it belongs to and where it stands on it; it takes the
  * keyboard when it asks to, gives it back when it goes, and goes when the
  * Mac says the user clicked elsewhere.
@@ -61,7 +61,7 @@ static popup ask_popup(mwm_server *s, client *k, uint32_t parent_xdg, uint32_t p
     return p;
 }
 
-/* The popup draws: it is on the display from then on. */
+/* The popup draws: it is on the sheet from then on. */
 static void map_popup(mwm_server *s, client *k, popup *p, uint32_t color) {
     int before = mwm_server_windows(s, NULL, 0);
     uint32_t pool = k->next++;
@@ -96,7 +96,7 @@ static void forget(client *k) {
 }
 
 /* A menu under a button: the popup is told where it stands on its window,
- * gets a place of its own on the display, and is told to the Mac with the
+ * gets a place of its own on the sheet, and is told to the Mac with the
  * window it belongs to. */
 static void test_a_popup_is_a_window_on_its_parent(void) {
     mwm_server *s = server();
@@ -365,95 +365,6 @@ static void test_popups_misused_drop_the_program(void) {
     mwm_server_free(s);
 }
 
-/* A popup the program drew round, or with an arrow: the parts of it
- * that are there are told row by row, so that the Mac's window can be
- * of that shape and show what is behind it, not black. */
-static void test_a_popups_shape_is_told(void) {
-    enum { WIDE = 12, HIGH = 8 };
-    mwm_server *s = server();
-    mwm_ctl *c = mwm_ctl_new(s);
-    client a = connect_client(s);
-    window v = open_window(s, &a, "W", "app", 0, 120, 60);
-    popup p = ask_popup(s, &a, v.xdg, positioner(&a, WIDE, HIGH, 10, 20, 80, 24, BOTTOM_LEFT, BOTTOM_RIGHT, 0, 0), 0);
-    map_popup(s, &a, &p, 0x00aa0000); /* drawn with no word on what is there: all of it is */
-    forget(&a);
-    CHECK(find_window(s, p.id).band_count == 0);
-
-    /* Round at the top and the bottom: a row of four, a row of eight, four whole rows, and back. */
-    static const int from[HIGH] = {4, 2, 0, 0, 0, 0, 2, 4}, to[HIGH] = {8, 10, 12, 12, 12, 12, 10, 8};
-    uint32_t drawn[WIDE * HIGH];
-    for (int y = 0; y < HIGH; y++)
-        for (int x = 0; x < WIDE; x++) drawn[y * WIDE + x] = x >= from[y] && x < to[y] ? 0xff336699u : 0;
-    drawn[1 * WIDE + 2] = 0x80402010u; /* an edge half there is of the shape */
-    drawn[1 * WIDE + 1] = 0x7f402010u; /* one less than half there is not */
-    uint32_t generation = mwm_server_generation(s), pool = a.next++, buffer = a.next++;
-    make_drawn(&a, pool, buffer, drawn, WIDE, HIGH);
-    show_buffer(s, &a, p.surface, buffer, WIDE, HIGH);
-    forget(&a);
-    mwm_window w = find_window(s, p.id);
-    static const mwm_band bands[] = {{1, 4, 4}, {1, 2, 8}, {4, 0, 12}, {1, 2, 8}, {1, 4, 4}};
-    CHECK(w.band_count == 5 && memcmp(w.bands, bands, sizeof bands) == 0);
-    CHECK(mwm_server_generation(s) != generation); /* the Mac is told */
-    /* The edge is shown in its own colour, not darkened by the black it would be mixed with. */
-    CHECK(at(w.x + 2, w.y + 1) == 0xff804020u && at(w.x + 5, w.y) == 0xff336699u);
-
-    /* MonadHost reads the shape after the popup's line. */
-    int sv[2];
-    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0 && fcntl(sv[0], F_SETFL, O_NONBLOCK) == 0);
-    mwm_ctl_attach(c, sv[1]);
-    char text[2048], expected[300];
-    ssize_t n = read(sv[0], text, sizeof text - 1);
-    CHECK(n > 0);
-    text[n] = 0;
-    snprintf(expected, sizeof expected,
-             "window %u %d %d 12 8 1 0 0 12 8 %u 10 44 - - -\nband %u 1 4 4\nband %u 1 2 8\nband %u 4 0 12\nband %u 1 2 8\nband %u 1 4 4\n",
-             p.id, w.x, w.y, v.id, p.id, p.id, p.id, p.id, p.id);
-    CHECK(strstr(text, expected) != NULL);
-    CHECK(strstr(text, "band") > strstr(text, "window")); /* never before a window's line */
-
-    /* Drawn again the same: nothing new to tell. */
-    generation = mwm_server_generation(s);
-    show_buffer(s, &a, p.surface, buffer, WIDE, HIGH);
-    forget(&a);
-    CHECK(mwm_server_generation(s) == generation);
-
-    /* All of it there again: a plain rectangle, and no shape to speak of. */
-    for (int i = 0; i < WIDE * HIGH; i++) drawn[i] = 0xff336699u;
-    uint32_t pool2 = a.next++, buffer2 = a.next++;
-    make_drawn(&a, pool2, buffer2, drawn, WIDE, HIGH);
-    show_buffer(s, &a, p.surface, buffer2, WIDE, HIGH);
-    forget(&a);
-    CHECK(find_window(s, p.id).band_count == 0 && mwm_server_generation(s) != generation);
-    /* A window of its own has a frame around it: its shape is not looked at. */
-    CHECK(find_window(s, v.id).band_count == 0);
-    close(sv[0]);
-    mwm_conn_free(a.c);
-    mwm_ctl_free(c);
-    mwm_server_free(s);
-}
-
-/* A shape of more rows than are told is none: the popup is a rectangle, as it was. */
-static void test_a_shape_of_too_many_rows_is_not_told(void) {
-    enum { WIDE = 8, HIGH = MWM_MAX_BANDS + 40 };
-    mwm_server *s = server();
-    client a = connect_client(s);
-    window v = open_window(s, &a, "W", "app", 0, 120, 20);
-    popup p = ask_popup(s, &a, v.xdg, positioner(&a, WIDE, HIGH, 0, 0, 10, 10, BOTTOM_LEFT, BOTTOM_RIGHT, 0, 0), 0);
-    CHECK(p.width == WIDE && p.height == HIGH);
-    static uint32_t drawn[WIDE * HIGH];
-    for (int y = 0; y < HIGH; y++)
-        for (int x = 0; x < WIDE; x++) drawn[y * WIDE + x] = x < 4 + y % 2 ? 0xff336699u : 0; /* no two rows alike */
-    uint32_t pool = a.next++;
-    p.buffer = a.next++;
-    make_drawn(&a, pool, p.buffer, drawn, WIDE, HIGH);
-    show_buffer(s, &a, p.surface, p.buffer, WIDE, HIGH);
-    forget(&a);
-    mwm_window list[MWM_MAX_WINDOWS];
-    CHECK(mwm_server_windows(s, list, MWM_MAX_WINDOWS) == 2 && list[1].parent == v.id && list[1].band_count == 0);
-    mwm_conn_free(a.c);
-    mwm_server_free(s);
-}
-
 /* MonadHost is told a popup with the window it is on, and says when the user clicked away. */
 static void test_the_mac_is_told_popups_and_dismisses_them(void) {
     mwm_server *s = server();
@@ -494,8 +405,6 @@ int main(void) {
     test_a_menu_has_the_keyboard_while_it_is_up();
     test_popups_are_dismissed();
     test_popups_misused_drop_the_program();
-    test_a_popups_shape_is_told();
-    test_a_shape_of_too_many_rows_is_not_told();
     test_the_mac_is_told_popups_and_dismisses_them();
     printf("test_wm_popup: %d checks passed\n", checks);
     return 0;

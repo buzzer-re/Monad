@@ -28,27 +28,23 @@ final class GuestWindowLayoutTests: XCTestCase {
                        CGSize(width: 400, height: 300))
     }
 
-    /// The whole display lies behind the window, moved so that the
-    /// window's own part is what shows through. Counted from the content's
-    /// top left, as the display is: the content can then change size (the
-    /// user dragging its edge) without the display behind it moving.
-    func testTheDisplayLiesBehindTheWindow() {
-        // A window at the display's top left: the display's top left corner is the content's.
-        var frame = GuestWindowLayout.displayFrame(window(), display: display)
-        XCTAssertEqual(frame, CGRect(x: 0, y: 0, width: 3840, height: 2160))
-        // Further right and down: the display moves left and up by as much.
-        frame = GuestWindowLayout.displayFrame(window(x: 816, y: 100), display: display)
-        XCTAssertEqual(frame, CGRect(x: -816, y: -100, width: 3840, height: 2160))
-        // Drawn at 2: a point is two of the display's pixels.
-        frame = GuestWindowLayout.displayFrame(window(x: 816, y: 100, width: 1600, height: 1200, scale: 2), display: display)
-        XCTAssertEqual(frame, CGRect(x: -408, y: -50, width: 1920, height: 1080))
-        // With a shadow around it: the window proper starts further in.
-        frame = GuestWindowLayout.displayFrame(window(x: 816, y: 100, width: 900, height: 700, scale: 2, inner: (50, 40, 800, 600)),
-                                               display: display)
-        XCTAssertEqual(frame, CGRect(x: -433, y: -70, width: 1920, height: 1080))
+    /// What the program drew (its picture, all of the window with any
+    /// shadow around it) lies in the Mac window's content so that the
+    /// window proper is what shows: counted from the content's top left,
+    /// in points. The content can then change size (the user dragging its
+    /// edge) without the picture moving.
+    func testThePictureLiesInTheWindowSoThatItsOwnPartShows() {
+        XCTAssertEqual(GuestWindowLayout.pictureFrame(window()), CGRect(x: 0, y: 0, width: 800, height: 600))
+        // Where it stands on the window manager's sheet is nothing to the Mac.
+        XCTAssertEqual(GuestWindowLayout.pictureFrame(window(x: 816, y: 100)), CGRect(x: 0, y: 0, width: 800, height: 600))
+        // Drawn at 2: a point is two of its pixels.
+        XCTAssertEqual(GuestWindowLayout.pictureFrame(window(width: 1600, height: 1200, scale: 2)), CGRect(x: 0, y: 0, width: 800, height: 600))
+        // With a shadow around it: the picture begins up and left of the content by as much.
+        XCTAssertEqual(GuestWindowLayout.pictureFrame(window(width: 900, height: 700, scale: 2, inner: (50, 40, 800, 600))),
+                       CGRect(x: -25, y: -20, width: 450, height: 350))
         // An odd pixel at scale 2 is half a point, not a point lost.
-        frame = GuestWindowLayout.displayFrame(window(x: 17, y: 33, width: 100, height: 100, scale: 2), display: display)
-        XCTAssertEqual(frame.origin, CGPoint(x: -8.5, y: -16.5))
+        XCTAssertEqual(GuestWindowLayout.pictureFrame(window(width: 101, height: 99, scale: 2, inner: (17, 33, 50, 50))),
+                       CGRect(x: -8.5, y: -16.5, width: 50.5, height: 49.5))
     }
 
     /// The pointer, from the content's top left in points, in the program's
@@ -91,20 +87,6 @@ final class GuestWindowLayoutTests: XCTestCase {
         menu.offsetX = -31
         menu.offsetY = -500
         XCTAssertEqual(GuestWindowLayout.popupOffset(menu, on: window(scale: 2)), CGPoint(x: -15.5, y: -250), "it may reach outside its window")
-    }
-
-    /// A popup's shape on the Mac: the rows the window manager told, in
-    /// points from the content's top left, down. Rows with nothing in
-    /// them leave nothing; a popup told with no shape is all there.
-    func testAPopupsShapeIsInPointsFromItsTopLeft() {
-        var menu = window(x: 900, width: 28, height: 12, scale: 2, inner: (2, 2, 24, 8))
-        menu.parent = 7
-        XCTAssertNil(GuestWindowLayout.shape(menu))
-        menu.shape = [GuestWindowBand(height: 1, x: 4, width: 16), GuestWindowBand(height: 6, x: 0, width: 24),
-                      GuestWindowBand(height: 1, x: 0, width: 0)]
-        XCTAssertEqual(GuestWindowLayout.shape(menu), [CGRect(x: 2, y: 0, width: 8, height: 0.5), CGRect(x: 0, y: 0.5, width: 12, height: 3)])
-        menu.shape = [GuestWindowBand(height: 8, x: 0, width: 0)]
-        XCTAssertEqual(GuestWindowLayout.shape(menu), [], "nothing of it is there: nothing is shown")
     }
 
     /// A popup is shown only where it touches the window it is on: one

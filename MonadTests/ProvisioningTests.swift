@@ -445,16 +445,17 @@ final class CloudInitTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(script.range(of: "systemctl daemon-reload")).lowerBound, at.lowerBound, "the service is known first")
         XCTAssertLessThan(at.lowerBound, try XCTUnwrap(script.range(of: "echo agent-ok\n")).lowerBound)
 
-        // The service: the display taken as root, the programs' side as the VM's user, MonadHost on the port only the Mac can dial.
-        XCTAssertTrue(unit.contains("ConditionPathExists=/dev/dri/card0\n"))
-        XCTAssertTrue(unit.contains("Conflicts=monad-display.service\n"), "one of the two has the display")
+        // The service: the programs' side as the VM's user, MonadHost on the port only the Mac can dial. It takes
+        // no display (the windows' pixels go over that port), so it runs in a VM without one, and beside a desktop.
+        XCTAssertFalse(unit.contains("/dev/dri"), unit)
+        XCTAssertFalse(unit.contains("Conflicts="), unit)
+        XCTAssertFalse(unit.contains("--size"), "the sheet the windows are drawn on is as large as it gets: only what is used takes memory")
         XCTAssertTrue(unit.contains("--owner \"$$uid\" --control vsock:\(CloudInit.windowsVsockPort)"), "a $ for the shell is $$ in a unit")
         XCTAssertTrue(unit.contains("id -u dev"))
         XCTAssertTrue(unit.contains("WantedBy=multi-user.target\n"))
-        // The user's session before it starts, and taken back after it stopped; the display as large as the VM affords.
+        // The user's session before it starts, and taken back after it stopped.
         XCTAssertTrue(unit.contains("ExecStartPre=/bin/sh /usr/local/lib/monad/wm-session start dev\n"))
         XCTAssertTrue(unit.contains("ExecStopPost=-/bin/sh /usr/local/lib/monad/wm-session stop dev\n"), "its failing is not the service's")
-        XCTAssertTrue(unit.contains("--size \"$$(/bin/sh /usr/local/lib/monad/wm-session size)\""))
         XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: "dev; rm -rf /"), "a name that is none is not written into a unit")
         XCTAssertThrowsError(try CloudInit.windowManagerUnit(user: ""))
 

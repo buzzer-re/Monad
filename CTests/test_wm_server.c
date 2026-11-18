@@ -1,7 +1,7 @@
 /*
  * test_wm_server.c — the window manager's Wayland server (GuestWM/mwm_server)
  * against a client that speaks the wire format by hand: a window gets its
- * place on the display and its pixels are copied there; a client that
+ * place on the sheet and its pixels are copied there; a client that
  * breaks the protocol is told and dropped, and takes nothing with it.
  */
 #include "wm_test_client.h"
@@ -19,7 +19,7 @@ static void test_windows_stand_side_by_side(void) {
     CHECK(strcmp(list[0].title, "One") == 0 && strcmp(list[0].app_id, "app.one") == 0);
     CHECK(at(0, 0) == 0xff112200 && at(1, 0) == 0xff112201 && at(63, 31) == (0xff112200u | ((63 + 31 * 64) & 0xff)));
     CHECK(at(64, 0) == 0 && at(0, 32) == 0); /* nothing beside or under it */
-    CHECK(presented >= 1 && last_x == 0 && last_y == 0 && last_w == 64 && last_h == 32);
+    CHECK(drew(s, one.id, 0, 0, 64, 32));
     uint32_t generation = mwm_server_generation(s);
 
     client b = connect_client(s);
@@ -145,18 +145,18 @@ static void test_a_client_that_breaks_the_protocol_is_dropped(void) {
     CHECK(mwm_server_windows(s, NULL, 0) == 0);
     bool clean = true;
     for (int i = 0; i < W * H; i++) clean = clean && pixels[i] == 0;
-    CHECK(clean); /* nothing of theirs on the display */
+    CHECK(clean); /* nothing of theirs on the sheet */
     mwm_server_free(s);
 }
 
-/* A window larger than what is left of the display is cut at its edge. */
+/* A window larger than what is left of the sheet is cut at its edge. */
 static void test_a_window_too_large_is_cut_at_the_edge(void) {
     mwm_server *s = server();
     client a = connect_client(s);
     (void)open_window(s, &a, "Wide", "app", 0x00777700, 500, 250);
     mwm_window list[2];
     CHECK(mwm_server_windows(s, list, 2) == 1);
-    CHECK(list[0].width == W && list[0].height == H); /* what of it is on the display */
+    CHECK(list[0].width == W && list[0].height == H); /* what of it is on the sheet */
     CHECK(at(W - 1, H - 1) != 0);
     mwm_conn_free(a.c);
     mwm_server_free(s);

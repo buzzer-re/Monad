@@ -4,9 +4,7 @@
  * of its own (GTK's header bars) is told apart from one that leaves the
  * frame to the Mac, with the colour its bar has, so that the Mac's title
  * bar can continue it; and a drag of that bar, or a double click on it,
- * reaches the Mac as a wish, only from the window the user is in. What
- * such a window leaves see-through (round corners) shows the bar's
- * colour, as the Mac's window does behind it, and never black.
+ * reaches the Mac as a wish, only from the window the user is in.
  */
 #include "wm_test_client.h"
 
@@ -182,7 +180,7 @@ static void test_a_program_asks_for_its_window_to_move_and_zoom(void) {
 
 /* Every edge of a window meets the Mac's frame: a program told so (GTK)
  * draws square corners and no shadow, where its round ones would show
- * what is behind the window on the display. */
+ * what is behind the window on the sheet. */
 static void test_a_window_is_told_its_edges_meet_a_frame(void) {
     enum { ACTIVATED = 4, TILED_LEFT = 5, TILED_RIGHT = 6, TILED_TOP = 7, TILED_BOTTOM = 8 };
     mwm_server *s = server();
@@ -214,56 +212,11 @@ static void test_a_window_is_told_its_edges_meet_a_frame(void) {
     mwm_server_free(s);
 }
 
-/* What a program with a bar of its own leaves see-through shows the
- * bar's colour: the Mac's window has that colour behind it, so nothing
- * of the display's black is seen at a round corner. */
-static void test_what_a_window_leaves_open_shows_its_bars_colour(void) {
-    enum { WIDE = 64, HIGH = 32 };
-    mwm_server *s = server();
-    client a = connect_client(s);
-    window v = open_window(s, &a, "W", "app", 0x00112233, WIDE, HIGH);
-    forget(&a);
-    static uint32_t drawn[WIDE * HIGH];
-    for (int i = 0; i < WIDE * HIGH; i++) drawn[i] = 0xff204060u;
-    drawn[0] = 0x00000000u;            /* a corner: nothing of the window there */
-    drawn[1] = 0x80101010u;            /* its edge: half there */
-    drawn[HIGH * WIDE - 1] = 0x00000000u;
-    uint32_t pool = a.next++, buffer = a.next++;
-    make_drawn(&a, pool, buffer, drawn, WIDE, HIGH);
-    show_buffer(s, &a, v.surface, buffer, WIDE, HIGH);
-    forget(&a);
-    mwm_window w = listed(s, v.id);
-    CHECK(w.own_bar && w.bar_color == 0x00204060);
-    CHECK(at(w.x, w.y) == 0xff204060u && at(w.x + WIDE - 1, w.y + HIGH - 1) == 0xff204060u);
-    CHECK(at(w.x + 1, w.y) == 0xff203040u); /* half of it over half of the bar's colour */
-    CHECK(at(w.x + 2, w.y) == 0xff204060u);
-
-    /* The bar changes colour (the window is no longer the one in front): what is open follows. */
-    for (int i = 0; i < WIDE * HIGH; i++)
-        if (drawn[i] == 0xff204060u) drawn[i] = 0xffa0b0c0u;
-    uint32_t pool2 = a.next++, buffer2 = a.next++;
-    make_drawn(&a, pool2, buffer2, drawn, WIDE, HIGH);
-    show_buffer(s, &a, v.surface, buffer2, WIDE, HIGH);
-    forget(&a);
-    CHECK(listed(s, v.id).bar_color == 0x00a0b0c0 && at(w.x, w.y) == 0xffa0b0c0u);
-
-    /* The frame is the Mac's: there is no bar to continue, and what is open is black as it was. */
-    uint32_t manager = bind_global(&a, "zxdg_decoration_manager_v1", 1), decoration = a.next++;
-    request(&a, manager, 1, 2, decoration, v.toplevel);
-    pump(s, &a);
-    forget(&a);
-    show_buffer(s, &a, v.surface, buffer, WIDE, HIGH);
-    CHECK(!listed(s, v.id).own_bar && at(w.x, w.y) == 0xff000000u);
-    mwm_conn_free(a.c);
-    mwm_server_free(s);
-}
-
 int main(void) {
     test_a_program_that_draws_its_own_bar_is_told_apart();
     test_gtk_says_which_of_its_windows_have_a_bar();
     test_a_program_asks_for_its_window_to_move_and_zoom();
     test_a_window_is_told_its_edges_meet_a_frame();
-    test_what_a_window_leaves_open_shows_its_bars_colour();
     printf("test_wm_frame: %d checks passed\n", checks);
     return 0;
 }

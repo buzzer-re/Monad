@@ -135,21 +135,8 @@ run FAILS=glib-compile-schemas -- start dev
 check "the schemas do not compile: it starts all the same" 0 "$status"
 check "the schemas do not compile: no override left" no "$([ -e "$OVERRIDE" ] && echo yes || echo no)"
 
-# The display: large where the VM has the memory for its pixels.
-mkdir -p "$ROOT/proc"
-printf 'MemTotal:        4014892 kB\nMemFree:          123456 kB\n' > "$ROOT/proc/meminfo"
 run -- size
-check "size: a VM with 4 GiB" "0 7680x4320" "$status $(cat "$WORK/out")"
-printf 'MemTotal:        2014892 kB\n' > "$ROOT/proc/meminfo"
-run -- size
-check "size: a VM with 2 GiB" "0 3840x2160" "$status $(cat "$WORK/out")"
-printf 'MemTotal: lots\n' > "$ROOT/proc/meminfo"
-run -- size
-check "size: memory it cannot read" "0 3840x2160" "$status $(cat "$WORK/out")"
-rm "$ROOT/proc/meminfo"
-run -- size
-check "size: no memory told" "0 3840x2160" "$status $(cat "$WORK/out")"
-check "size: nothing is run for it" "" "$(calls)"
+check "a word that is none: refused" 64 "$status"
 
 # Stopping: the session is as it was for whatever has the display next.
 run -- stop dev

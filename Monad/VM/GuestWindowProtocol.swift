@@ -22,12 +22,6 @@ struct GuestDisplaySize: Equatable, Sendable {
     let height: Int
 }
 
-/// Some rows of a popup and the part of each that is there: `height`
-/// rows, `width` pixels from `x` of its inner part (none when 0).
-struct GuestWindowBand: Equatable, Sendable {
-    let height: Int, x: Int, width: Int
-}
-
 /// A program's window as it is on the VM's display.
 struct GuestWindow: Equatable, Sendable, Identifiable {
     let id: UInt32
@@ -50,12 +44,19 @@ struct GuestWindow: Equatable, Sendable, Identifiable {
     /// title bar takes so that the two read as one. nil: the frame is all
     /// the Mac's.
     var ownBar: UInt32?
-    /// A popup the program did not draw as a whole rectangle (round
-    /// corners, an arrow): its inner part from the top down, row by row.
-    /// The Mac's window is cut to it. Empty: all of it is there.
-    var shape: [GuestWindowBand] = []
 
     var isPopup: Bool { parent != 0 }
+}
+
+/// A part of what a window shows: where it is in the window (from its
+/// top left, in its pixels), and the pixels, row by row from the top,
+/// four bytes each (blue, green, red, and how much of the pixel is there:
+/// the colours with that share taken already). Fewer bytes than that:
+/// the same pixels packed (GuestWM/mwm_pack.h), which GuestPicture unpacks.
+struct GuestPixels: Equatable, Sendable {
+    let window: UInt32
+    let x: Int, y: Int, width: Int, height: Int
+    let data: Data
 }
 
 /// What a program asks of its own window. A wish: who shows the windows
@@ -83,6 +84,9 @@ enum GuestWindowEvent: Equatable, Sendable {
     case cursor(Int)
     /// The program of that window asks something of it.
     case asked(window: UInt32, GuestWindowAsk)
+    /// What a window shows, where its program drew: always of a window
+    /// in the list last told, and inside it.
+    case pixels(GuestPixels)
 }
 
 /// A key of the Mac's keyboard for the VM: the Linux kernel's code for it,
@@ -150,10 +154,10 @@ struct GuestWindowReader {
     /// mwm_ctl.h's MWM_CTL_LINE.
     static let maxLineLength = 1024
     static let maxWindows = 64
-    /// The rows of a popup's shape at most: mwm_server.h's MWM_MAX_BANDS.
-    static let maxBands = 128
-    /// The largest display Virtualization gives, each way.
+    /// The largest the window manager's sheet is, each way, and so a window.
     static let maxSide = 8192
+    /// The most pixels of a window in one piece: mwm_ctl.h's MWM_CTL_PIXELS.
+    static let maxPiecePixels = 8 << 20
     static let maxScale = 4
     /// A title's bytes at most (the window manager cuts at 127).
     static let maxTextBytes = 128
@@ -175,12 +179,34 @@ struct GuestWindowReader {
     /// A copy being read: its bytes so far, and how many are still to come.
     private var copy: [UInt8] = []
     private var copyLeft = 0
+    /// The windows of the list last told, and how large each is: what pixels may be of.
+    private var known: [UInt32: (width: Int, height: Int)] = [:]
+    /// Pixels being read: whose and where, their bytes so far, and how many are still to come.
+    private var piece: GuestPixels?
+    private var pieceData = Data()
+    private var pieceLeft = 0
 
     /// Feed bytes; returns what became whole with them.
     mutating func feed(_ data: Data) -> [GuestWindowEvent] {
         var events: [GuestWindowEvent] = []
-        for byte in data {
-            if isBroken { break }
+        var at = data.startIndex
+        while at < data.endIndex, !isBroken {
+            if pieceLeft > 0, let header = piece {
+                // Pixels, as many as there are at once: no byte of them is looked at.
+                let take = min(pieceLeft, data.endIndex - at)
+                pieceData.append(data[at..<(at + take)])
+                at += take
+                pieceLeft -= take
+                if pieceLeft == 0 {
+                    events.append(.pixels(GuestPixels(window: header.window, x: header.x, y: header.y, width: header.width,
+                                                      height: header.height, data: pieceData)))
+                    piece = nil
+                    pieceData = Data()
+                }
+                continue
+            }
+            let byte = data[at]
+            at += 1
             if copyLeft > 0 {
                 copy.append(byte)
                 copyLeft -= 1
@@ -200,6 +226,10 @@ struct GuestWindowReader {
             expected = nil
             copy = []
             copyLeft = 0
+            known = [:]
+            piece = nil
+            pieceData = Data()
+            pieceLeft = 0
         }
         return events
     }
@@ -223,27 +253,30 @@ struct GuestWindowReader {
             list = []
             return nil
         case "window":
-            guard let expected, list.count < expected, Self.shapeHolds(list.last), let window = window(words),
-                  !list.contains(where: { $0.id == window.id }) else { return broken() }
+            guard let expected, list.count < expected, let window = window(words), !list.contains(where: { $0.id == window.id })
+            else { return broken() }
             list.append(window)
             return nil
-        case "band":
-            // Rows of the popup just told, from where the rows before them ended.
-            guard expected != nil, words.count == 5, let last = list.last, last.isPopup, last.shape.count < Self.maxBands,
-                  Self.number(words[1], 1...Int(UInt32.max)) == Int(last.id),
-                  case let left = last.innerHeight - last.shape.reduce(0, { $0 + $1.height }), left >= 1,
-                  let height = Self.number(words[2], 1...left),
-                  let x = Self.number(words[3], 0...last.innerWidth), let width = Self.number(words[4], 0...(last.innerWidth - x))
-            else { return broken() }
-            list[list.count - 1].shape.append(GuestWindowBand(height: height, x: x, width: width))
-            return nil
         case "end":
-            guard let count = expected, list.count == count, words.count == 1, Self.shapeHolds(list.last), Self.popupsHold(list)
-            else { return broken() }
+            guard let count = expected, list.count == count, words.count == 1, Self.popupsHold(list), let display,
+                  // Each window has a place of its own on the sheet: together they are no more than the sheet.
+                  list.reduce(0, { $0 + $1.width * $1.height }) <= display.width * display.height else { return broken() }
             let whole = list
             expected = nil
             list = []
+            known = Dictionary(uniqueKeysWithValues: whole.map { ($0.id, (width: $0.width, height: $0.height)) })
             return .windows(whole)
+        case "pixels":
+            // Of a window as it was last told, inside it; the bytes follow, as they are.
+            // As many bytes as the pixels are, or fewer when they are packed (never fewer than a packed pixel takes).
+            guard expected == nil, words.count == 7, let id = Self.number(words[1], 1...Int(UInt32.max)), let size = known[UInt32(id)],
+                  let width = Self.number(words[4], 1...size.width), let height = Self.number(words[5], 1...size.height),
+                  let x = Self.number(words[2], 0...(size.width - width)), let y = Self.number(words[3], 0...(size.height - height)),
+                  width * height <= Self.maxPiecePixels, let bytes = Self.number(words[6], 4...(width * height * 4)) else { return broken() }
+            piece = GuestPixels(window: UInt32(id), x: x, y: y, width: width, height: height, data: Data())
+            pieceLeft = bytes
+            pieceData = Data(capacity: bytes)
+            return nil
         case "copied":
             guard display != nil, expected == nil, words.count == 2, let count = Self.number(words[1], 0...Self.maxCopyBytes)
             else { return broken() }
@@ -302,12 +335,6 @@ struct GuestWindowReader {
             }
             return true
         }
-    }
-
-    /// A shape is all of its window's rows, or it is none.
-    private static func shapeHolds(_ window: GuestWindow?) -> Bool {
-        guard let window, !window.shape.isEmpty else { return true }
-        return window.shape.reduce(0) { $0 + $1.height } == window.innerHeight
     }
 
     private func window(_ words: [Substring]) -> GuestWindow? {

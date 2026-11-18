@@ -2,7 +2,7 @@
  * fuzz_wm.c — fuzz target for Monad's window manager (GuestWM/mwm_server).
  *
  * The input is a script for up to three programs connected to one server
- * with a small display: raw bytes on a socket, requests built from the
+ * with a small sheet: raw bytes on a socket, requests built from the
  * input (any object, any opcode, numbers small, large and negative,
  * strings, descriptors of a file that may be shorter than said), the whole
  * exchange that opens a window with sizes from the input and takes the
@@ -13,7 +13,7 @@
  * key, any table of keys) and of its clipboard (text, bytes that are none,
  * more than a pipe holds), what MonadHost says on its channel (lines well
  * formed or not, and bytes), and programs leaving. After every step: every
- * window is inside the display and has a size, no two windows share a
+ * window is inside the sheet and has a size, no two windows share a
  * pixel, there are no more windows, programs or pipes than there may be, a
  * pixel outside every window is black, and what MonadHost was told is
  * lines of plain printable ASCII no longer than they may be, whatever the
@@ -89,14 +89,15 @@ static void check(const mwm_server *s) {
         if (w->width <= 0 || w->height <= 0) fail("a window without a size");
         if (w->x < 0 || w->y < 0 || w->x + w->width > W || w->y + w->height > H) fail("a window outside the display");
         if (!w->title || !w->app_id || strlen(w->title) >= 128 || strlen(w->app_id) >= 128) fail("a title longer than it may be");
-        /* A shape is a popup's, and all of its inner part's rows, each inside it. */
-        if (w->band_count < 0 || w->band_count > MWM_MAX_BANDS || (w->band_count > 0 && w->parent == 0)) fail("a shape there may not be");
-        int rows = 0;
-        for (int k = 0; k < w->band_count; k++) {
-            if (w->bands[k].height == 0 || w->bands[k].x + w->bands[k].width > w->inner_width) fail("a row of a shape outside its window");
-            rows += w->bands[k].height;
+        /* What was drawn of it, taken now and then (in pieces, or all): inside the window, its pixels on the sheet. */
+        mwm_drawn d;
+        static unsigned looks;
+        if (looks++ % 3 == 0 && mwm_server_take_drawn((mwm_server *)s, w->id, 1 + (int)(looks * 7919u % (W * H)), &d)) {
+            if (d.width <= 0 || d.height <= 0 || d.x < 0 || d.y < 0 || d.x + d.width > w->width || d.y + d.height > w->height) {
+                fail("what was drawn lies outside its window");
+            }
+            if (d.stride != W || d.pixels != &pixels[(w->y + d.y) * W + w->x + d.x]) fail("what was drawn is not where the window is");
         }
-        if (w->band_count > 0 && rows != w->inner_height) fail("a shape that is not all of its window");
         for (int y = w->y; y < w->y + w->height; y++)
             for (int x = w->x; x < w->x + w->width; x++) {
                 if (covered[y * W + x]) fail("two windows on one pixel");
@@ -146,9 +147,10 @@ static void drain(program *p) {
 }
 
 /* What MonadHost's end is in the middle of: a line (how far into it, and
- * how it began), or the bytes of a copy (how many are still to come). */
-static size_t said, copy_left;
-static char said_line[24];
+ * how it began), or the bytes of a copy or of a window's pixels (how many
+ * are still to come). */
+static size_t said, copy_left, pixels_left;
+static char said_line[64];
 
 /* What MonadHost was sent: read, and looked at as MonadHost may rely on it. */
 static void check_said(int host) {
@@ -156,7 +158,9 @@ static void check_said(int host) {
     ssize_t n;
     while (host >= 0 && (n = read(host, text, sizeof text)) > 0) {
         for (ssize_t i = 0; i < n; i++) {
-            if (copy_left > 0) {
+            if (pixels_left > 0) {
+                pixels_left--; /* any bytes at all */
+            } else if (copy_left > 0) {
                 if (text[i] == 0) fail("MonadHost was sent a copy that is no text");
                 copy_left--;
             } else if (text[i] == '\n') {
@@ -166,6 +170,15 @@ static void check_said(int host) {
                 if (strncmp(said_line, "copied ", 7) == 0) {
                     if (sscanf(said_line + 7, "%lu%c", &bytes, &after) != 1 || bytes > MWM_MAX_COPY) fail("a copy larger than MonadHost takes");
                     copy_left = bytes;
+                }
+                if (strncmp(said_line, "pixels ", 7) == 0) {
+                    unsigned id;
+                    int x, y, w, h;
+                    if (sscanf(said_line + 7, "%u %d %d %d %d %lu%c", &id, &x, &y, &w, &h, &bytes, &after) != 6 || id == 0 || x < 0 || y < 0
+                        || w < 1 || h < 1 || x + w > W || y + h > H || bytes < 4 || bytes > (unsigned long)w * (unsigned long)h * 4) {
+                        fail("pixels that are of no window on the sheet");
+                    }
+                    pixels_left = bytes;
                 }
                 said = 0;
             } else if (text[i] < 0x20 || text[i] > 0x7e || said + 1 >= MWM_CTL_LINE) {
@@ -397,7 +410,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             if (host >= 0) close(host);
             if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0) fail("no socket pair");
             host = sv[0];
-            said = copy_left = 0;
+            said = copy_left = pixels_left = 0;
             mwm_ctl_attach(ctl, sv[1]);
         }
         switch (byte(&in) % 13) {

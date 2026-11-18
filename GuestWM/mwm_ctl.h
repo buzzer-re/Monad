@@ -5,7 +5,7 @@
  *
  * To MonadHost, whenever a window comes, goes, moves or is renamed:
  *
- *   monad-wm 1 <display width> <display height>      once, first
+ *   monad-wm 1 <sheet width> <sheet height>      once, first
  *   windows <generation> <count>
  *   window <id> <x> <y> <width> <height> <scale> <inner x> <inner y>
  *          <inner width> <inner height> <parent> <offset x> <offset y>
@@ -16,6 +16,21 @@
  *                                     arrow (which goes without saying), or
  *                                     another of wp_cursor_shape_device_v1's
  *                                     shapes, up to MWM_CURSOR_LAST
+ *   pixels <window> <x> <y> <width> <height> <bytes>
+ *                                     then that many bytes: what the window
+ *                                     shows there. width × height × 4 of
+ *                                     them are the pixels as they are, row
+ *                                     by row from the top, a pixel as four
+ *                                     bytes (blue, green, red, how much of
+ *                                     the pixel is there; the colours with
+ *                                     that share taken already); fewer are
+ *                                     those pixels packed (mwm_pack.h).
+ *                                     (x, y) is from the window's top left,
+ *                                     in its pixels. Only of a window in the
+ *                                     list last told, and inside it; all of
+ *                                     a window first, then what its program
+ *                                     drew again, MWM_CTL_PIXELS at most in
+ *                                     one piece
  *   move <window>                     the program asks for its window to be
  *                                     moved: the user drags the bar it drew
  *   zoom <window> <0|1>               ... to be as large as it gets, or back
@@ -27,7 +42,7 @@
  * from the window the pointer is over or the one in front, the last one
  * when MonadHost was slow to read; MonadHost does them or not.
  *
- * A window's place is in the display's pixels; `scale` is how many of them
+ * A window's place is in the sheet's pixels; `scale` is how many of them
  * the program draws to one of its units (the Mac's window is that many
  * times smaller in points); `inner` is the part that is the window proper,
  * when the program draws a shadow around it. A popup (a menu, a tooltip)
@@ -80,8 +95,11 @@ enum {
     MWM_CTL_VERSION = 1,
     /* The longest line either way, its newline included. */
     MWM_CTL_LINE = 1024,
-    /* Bytes waiting for a MonadHost that does not read: beyond, it is dropped. */
+    /* Bytes of lines waiting for a MonadHost that does not read: beyond, it is dropped. */
     MWM_CTL_OUT = 256 << 10,
+    /* The most pixels of a window sent in one piece (32 MiB of them): a
+     * larger window's come in several, from its top down. */
+    MWM_CTL_PIXELS = 8 << 20,
 };
 
 typedef struct mwm_ctl mwm_ctl;

@@ -32,7 +32,7 @@ if [ -x "$lib/monad-wm" ] && [ "$(cat "$lib/monad-wm.built" 2>/dev/null)" = "$su
 fi
 tmp="$lib/monad-wm.new"
 rm -f "$tmp"
-cc -std=gnu11 -O2 -pthread -o "$tmp" "$src"/*.c
+cc -std=gnu11 -O2 -o "$tmp" "$src"/*.c
 status=$?
 if [ "$status" -ne 0 ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"

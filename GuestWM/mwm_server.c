@@ -563,7 +563,6 @@ int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
                                   .inner_height = inner.y2 - inner.y1, .parent = on ? on->id : 0,
                                   .offset_x = on ? x->px * on->scale : 0, .offset_y = on ? x->py * on->scale : 0,
                                   .own_bar = own_bar, .bar_color = own_bar ? w->bar_color : 0,
-                                  .bands = w->bands, .band_count = w->band_count,
                                   .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
         }
         n++;

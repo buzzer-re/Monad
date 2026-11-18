@@ -1,16 +1,19 @@
 /*
- * mwm_main.c — monad-wm, Monad's window manager for a Linux VM's display:
- * takes the display (mwm_kms.c), listens where programs look for a Wayland
- * server ($XDG_RUNTIME_DIR/wayland-0) and serves them (mwm_server.c), and
- * listens for MonadHost, which shows the windows on the Mac and has the
- * pointer and the keyboard (mwm_ctl.c).
+ * mwm_main.c — monad-wm, Monad's window manager for a Linux VM's
+ * programs: listens where programs look for a Wayland server
+ * ($XDG_RUNTIME_DIR/wayland-0) and serves them (mwm_server.c), and
+ * listens for MonadHost, which shows the windows on the Mac from the
+ * pixels it is sent and has the pointer and the keyboard (mwm_ctl.c).
+ * It takes no display: the windows are drawn on a sheet of memory.
  *
- *   monad-wm [--size WIDTHxHEIGHT] [--card /dev/dri/card0] [--owner UID]
- *            [--control vsock:PORT | unix:PATH]
+ *   monad-wm [--size WIDTHxHEIGHT] [--owner UID] [--control vsock:PORT | unix:PATH]
  *
- * --owner: started as root (to take the display), it gives the socket to
- * that user, whose programs then connect, and goes on as that user: what
- * programs send it is not read as root.
+ * --size: the sheet, which every window has a place of its own on: the
+ * room there is for windows (8192x8192 unless said; memory is only taken
+ * where a window stands).
+ * --owner: started as root, it gives the socket to that user, whose
+ * programs then connect, and goes on as that user: what programs send it
+ * is not read as root.
  * --control: where MonadHost connects. vsock:PORT is a port only the Mac
  * can dial (a connection from inside the VM is refused); unix:PATH is for
  * trying it by hand. Without it, nothing moves the pointer.
@@ -18,7 +21,6 @@
  */
 #define _GNU_SOURCE /* accept4 */
 #include "mwm_ctl.h"
-#include "mwm_kms.h"
 #include "mwm_server.h"
 
 #include <errno.h>
@@ -32,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -53,8 +56,6 @@ static void on_bus(int sig) {
     mwm_server_bus_error();
     _exit(70); /* not while copying a program's pixels: a fault of our own */
 }
-
-static void present(void *ctx, int x, int y, int width, int height) { mwm_kms_present(ctx, x, y, width, height); }
 
 static uint32_t now_ms(void) {
     struct timespec t;
@@ -157,21 +158,18 @@ static bool become(long owner) {
 }
 
 int main(int argc, char **argv) {
-    int width = 3840, height = 2160;
+    int width = MWM_MAX_SIDE, height = MWM_MAX_SIDE;
     long owner = -1;
-    const char *card = "/dev/dri/card0", *control = NULL;
+    const char *control = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--size") == 0 && i + 1 < argc && sscanf(argv[i + 1], "%dx%d", &width, &height) == 2) {
             i++;
-        } else if (strcmp(argv[i], "--card") == 0 && i + 1 < argc) {
-            card = argv[++i];
         } else if (strcmp(argv[i], "--owner") == 0 && i + 1 < argc) {
             owner = strtol(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--control") == 0 && i + 1 < argc) {
             control = argv[++i];
         } else {
-            fprintf(stderr, "usage: monad-wm [--size WIDTHxHEIGHT] [--card /dev/dri/card0] [--owner UID]"
-                            " [--control vsock:PORT | unix:/PATH]\n");
+            fprintf(stderr, "usage: monad-wm [--size WIDTHxHEIGHT] [--owner UID] [--control vsock:PORT | unix:/PATH]\n");
             return 64;
         }
     }
@@ -181,13 +179,18 @@ int main(int argc, char **argv) {
         return 78;
     }
 
-    /* What needs root first: the display, and the places to listen. */
-    char err[200];
-    mwm_kms *kms = mwm_kms_open(card, width, height, err, sizeof err);
-    if (!kms) {
-        fprintf(stderr, "monad-wm: %s\n", err);
-        return 69;
+    if (width < 64 || height < 64 || width > MWM_MAX_SIDE || height > MWM_MAX_SIDE) {
+        fprintf(stderr, "monad-wm: the sheet is from 64x64 to %dx%d\n", MWM_MAX_SIDE, MWM_MAX_SIDE);
+        return 64;
     }
+    /* The sheet: all zero, and no memory taken for a part until a window is drawn there. */
+    size_t bytes = (size_t)width * (size_t)height * 4;
+    uint32_t *sheet = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (sheet == MAP_FAILED) {
+        fprintf(stderr, "monad-wm: no memory for a sheet of %dx%d: %s\n", width, height, strerror(errno));
+        return 71;
+    }
+    /* What may need root first: the places to listen. */
     char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     int listener = listen_at(dir, owner, path, sizeof path);
     if (listener < 0) return 69;
@@ -196,8 +199,7 @@ int main(int argc, char **argv) {
     if (control && host_listener < 0) return 69;
     if (owner >= 0 && !become(owner)) return 77;
 
-    mwm_screen screen = {.pixels = mwm_kms_pixels(kms), .width = width, .height = height, .stride = mwm_kms_stride(kms),
-                         .present = present, .ctx = kms};
+    mwm_screen screen = {.pixels = sheet, .width = width, .height = height, .stride = width};
     mwm_server *server = mwm_server_new(&screen);
     mwm_ctl *ctl = server ? mwm_ctl_new(server) : NULL;
     if (!ctl) return 70;
@@ -256,6 +258,6 @@ int main(int argc, char **argv) {
     mwm_ctl_free(ctl);
     mwm_server_free(server);
     unlink(path);
-    mwm_kms_close(kms);
+    munmap(sheet, bytes);
     return 0;
 }

@@ -1,11 +1,11 @@
 /*
- * mwm_surface.c — surfaces, and the windows made of them on the display.
+ * mwm_surface.c — surfaces, and the windows made of them on the sheet.
  *
  * A window is one surface with the role of a window (mwm_shell.c) and the
  * subsurfaces on it, drawn in their order at the window's place. A place
  * is the size of the window's own surface; no two overlap, with a gap
  * between them, so the Mac can show each as a window of its own. What a
- * program drew stays in its buffers: the display is drawn from them
+ * program drew stays in its buffers: the sheet is drawn from them
  * whenever something changes, and only where it changed.
  *
  * Memory a program handed over can go away under us (it can shrink the
@@ -44,6 +44,39 @@ static box both(box a, box b) {
 
 static box common(box a, box b) {
     return (box){a.x1 > b.x1 ? a.x1 : b.x1, a.y1 > b.y1 ? a.y1 : b.y1, a.x2 < b.x2 ? a.x2 : b.x2, a.y2 < b.y2 ? a.y2 : b.y2};
+}
+
+static int64_t area(box b) { return empty(b) ? 0 : (int64_t)(b.x2 - b.x1) * (b.y2 - b.y1); }
+
+/* Adds a rectangle to a region (mwm_internal.h). */
+static void region_add(region *g, box b) {
+    if (empty(b)) return;
+    for (int i = 0; i < g->count;) {
+        box o = g->boxes[i];
+        if (o.x1 <= b.x2 && b.x1 <= o.x2 && o.y1 <= b.y2 && b.y1 <= o.y2) { /* they meet: one, which may now meet others */
+            b = both(b, o);
+            g->boxes[i] = g->boxes[--g->count];
+            i = 0;
+        } else {
+            i++;
+        }
+    }
+    if (g->count < MWM_REGION) {
+        g->boxes[g->count++] = b;
+        return;
+    }
+    int with = 0;
+    int64_t least = INT64_MAX;
+    for (int i = 0; i < g->count; i++) {
+        int64_t more = area(both(g->boxes[i], b)) - area(g->boxes[i]);
+        if (more < least) {
+            least = more;
+            with = i;
+        }
+    }
+    b = both(b, g->boxes[with]);
+    g->boxes[with] = g->boxes[--g->count];
+    region_add(g, b); /* one fewer than before: it ends */
 }
 
 static int32_t near(int64_t v) { return v < -FAR ? -FAR : v > FAR ? FAR : (int32_t)v; }
@@ -98,38 +131,23 @@ static void unstack(surface *parent, const surface *f) {
 /* ------------------------------------------------------------------------ */
 /* Drawing                                                                   */
 
-static void present(mwm_server *s, int x, int y, int w, int h) {
-    if (w > 0 && h > 0 && s->screen.present) s->screen.present(s->screen.ctx, x, y, w, h);
-}
-
 static void clear(mwm_server *s, int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
     for (int row = y; row < y + h; row++) memset(s->screen.pixels + (size_t)row * (size_t)s->screen.stride + x, 0, (size_t)w * 4);
-    present(s, x, y, w, h);
 }
 
 /* One color over another, both with their own share already taken
- * (premultiplied). A program can give a color more than its share: no
- * part of the result is let past full. */
+ * (premultiplied); the result has the share the two have together. A
+ * program can give a color more than its share: no part of the result
+ * is let past full. */
 static uint32_t over(uint32_t src, uint32_t dst) {
     uint32_t rest = 255 - (src >> 24);
+    uint32_t a = (src >> 24) + ((dst >> 24) * rest + 127) / 255;
     uint32_t r = ((src >> 16) & 0xff) + (((dst >> 16) & 0xff) * rest + 127) / 255;
     uint32_t g = ((src >> 8) & 0xff) + (((dst >> 8) & 0xff) * rest + 127) / 255;
     uint32_t b = (src & 0xff) + ((dst & 0xff) * rest + 127) / 255;
-    return 0xff000000u | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
+    return (a > 255 ? 255 : a) << 24 | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
 }
-
-/* What shows where the window's own surface is see-through. */
-typedef enum {
-    /* Black: the window is all there on the display. */
-    OPEN_BLACK,
-    /* The colour of the program's own bar, which the Mac's window has behind it. */
-    OPEN_BAR,
-    /* Nothing: a popup, which the Mac shows in its shape (shape()). Its
-     * edges, half there, are shown in their own colour: mixed with black
-     * they would be a dark line around it. */
-    OPEN_CUT,
-} opening;
 
 typedef struct {
     mwm_server *s;
@@ -138,22 +156,11 @@ typedef struct {
     box area;
     /* The window's own surface is at the bottom: it can be copied as it is. */
     bool plain;
-    opening open;
-    /* What is under the window, for OPEN_BAR. */
-    uint32_t under;
 } painter;
 
-/* Half and more of a pixel is of a popup's shape. */
-enum { THERE = 128 };
-
-/* A color with its share taken (premultiplied), whole. */
-static uint32_t whole(uint32_t v) {
-    uint32_t a = v >> 24;
-    uint32_t r = (((v >> 16) & 0xff) * 255 + a / 2) / a, g = (((v >> 8) & 0xff) * 255 + a / 2) / a, b = ((v & 0xff) * 255 + a / 2) / a;
-    return 0xff000000u | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
-}
-
-/* One surface's buffer, its top left at (ox, oy) of the window. */
+/* One surface's buffer, its top left at (ox, oy) of the window. What the
+ * program left see-through stays so: the Mac shows what is behind the
+ * window there (its round corners, around a menu). */
 static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom) {
     const buffer *b = f->current;
     if (!b) return;
@@ -162,28 +169,24 @@ static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom
     box r = common(p->area, (box){near(ox), near(oy), near(ox + width), near(oy + height)});
     if (empty(r)) return;
     const uint8_t *pixels = b->pool->map + b->offset;
-    bool mix = b->alpha && !bottom;
-    opening open = b->alpha ? p->open : OPEN_BLACK;
+    bool same = f->scale == scale;
     for (int y = r.y1; y < r.y2; y++) {
         uint32_t *dst = p->s->screen.pixels + (size_t)(p->w->y + y) * (size_t)p->s->screen.stride + p->w->x + r.x1;
         int sy = (int)((int64_t)(y - oy) * f->scale / scale);
         if (sy >= b->height) sy = b->height - 1;
         const uint8_t *row = pixels + (size_t)sy * (size_t)b->stride;
+        if (same && bottom && b->alpha) { /* a row as it is: most of what is ever drawn */
+            memcpy(dst, row + (size_t)(r.x1 - ox) * 4, (size_t)(r.x2 - r.x1) * 4);
+            continue;
+        }
         for (int x = r.x1; x < r.x2; x++, dst++) {
-            int sx = f->scale == scale ? x - ox : (int)((int64_t)(x - ox) * f->scale / scale);
+            int sx = same ? x - ox : (int)((int64_t)(x - ox) * f->scale / scale);
             if (sx >= b->width) sx = b->width - 1;
             uint32_t v;
             memcpy(&v, row + (size_t)sx * 4, 4);
-            if (mix) {
-                if (v >> 24 == 0xff) *dst = v;
-                else if (v >> 24 != 0) *dst = over(v, *dst);
-            } else if (v >> 24 == 0xff || open == OPEN_BLACK) {
-                *dst = v | 0xff000000u; /* a window is all there on the display */
-            } else if (open == OPEN_BAR) {
-                *dst = over(v, p->under);
-            } else {
-                *dst = v >> 24 >= THERE ? whole(v) : 0xff000000u;
-            }
+            if (!b->alpha) *dst = v | 0xff000000u; /* the program says all of it is there */
+            else if (bottom || v >> 24 == 0xff) *dst = v;
+            else if (v >> 24 != 0) *dst = over(v, *dst);
         }
     }
 }
@@ -201,72 +204,52 @@ static void draw_tree(const painter *p, const surface *f, int ox, int oy, int de
     }
 }
 
-/* A popup's shape: of each row of its inner part, from where to where
- * the program drew something (half there and more). The Mac's window is
- * cut to it, so a menu's round corners and its arrow show what is behind
- * the menu. A whole rectangle, or a shape of more rows than are told,
- * is none. Reads the program's memory: inside paint()'s guard. */
-static void shape(mwm_server *s, window *w) {
-    mwm_band found[MWM_MAX_BANDS];
-    int count = 0;
-    const buffer *b = w->surface->current;
-    if (b && b->alpha && w->surface->scale == w->scale && mwm_shell_parent(w)) {
-        box inner = mwm_shell_inner(w);
-        const uint8_t *pixels = b->pool->map + b->offset;
-        for (int y = inner.y1; y < inner.y2; y++) {
-            const uint8_t *row = pixels + (size_t)y * (size_t)b->stride;
-            int x1 = inner.x1, x2 = inner.x2;
-            uint32_t v;
-            for (; x1 < x2; x1++) {
-                memcpy(&v, row + (size_t)x1 * 4, 4);
-                if (v >> 24 >= THERE) break;
-            }
-            for (; x2 > x1; x2--) {
-                memcpy(&v, row + (size_t)(x2 - 1) * 4, 4);
-                if (v >> 24 >= THERE) break;
-            }
-            mwm_band band = {1, (uint16_t)(x2 > x1 ? x1 - inner.x1 : 0), (uint16_t)(x2 - x1)};
-            if (count > 0 && found[count - 1].x == band.x && found[count - 1].width == band.width) {
-                found[count - 1].height++;
-            } else if (count < MWM_MAX_BANDS) {
-                found[count++] = band;
-            } else {
-                count = 0;
-                break;
-            }
-        }
-        if (count == 1 && found[0].width == inner.x2 - inner.x1) count = 0;
-    }
-    if (count == w->band_count && memcmp(found, w->bands, (size_t)count * sizeof found[0]) == 0) return;
-    memcpy(w->bands, found, (size_t)count * sizeof found[0]);
-    w->band_count = count;
-    s->generation++;
-}
-
 /* Draws that part of the window again. False when the program's memory was gone. */
 static bool paint(mwm_server *s, window *w, box area) {
     area = common(area, (box){0, 0, w->width, w->height});
     if (empty(area)) return true;
-    painter p = {.s = s, .w = w, .area = area, .plain = w->surface->stack[0] == w->surface,
-                 .open = mwm_shell_own_bar(w) ? OPEN_BAR : mwm_shell_parent(w) ? OPEN_CUT : OPEN_BLACK};
-    p.under = p.open == OPEN_BAR ? 0xff000000u | w->bar_color : 0xff000000u;
+    painter p = {.s = s, .w = w, .area = area, .plain = w->surface->stack[0] == w->surface};
     volatile bool ok = true;
     bus_guarded = 1;
     if (sigsetjmp(bus_jump, 1) == 0) {
-        if (!p.plain) { /* something is under the window's own surface: start from what is under them all */
-            for (int y = area.y1; y < area.y2; y++) {
-                uint32_t *dst = s->screen.pixels + (size_t)(w->y + y) * (size_t)s->screen.stride + w->x + area.x1;
-                for (int x = area.x1; x < area.x2; x++) *dst++ = p.under;
-            }
-        }
+        /* Something is under the window's own surface: start from nothing. */
+        if (!p.plain) clear(s, w->x + area.x1, w->y + area.y1, area.x2 - area.x1, area.y2 - area.y1);
         draw_tree(&p, w->surface, 0, 0, 0);
-        shape(s, w);
     } else {
         ok = false;
     }
     bus_guarded = 0;
-    present(s, w->x + area.x1, w->y + area.y1, area.x2 - area.x1, area.y2 - area.y1);
+    region_add(&w->drawn, area);
     return ok;
+}
+
+bool mwm_server_take_drawn(mwm_server *s, uint32_t id, int max_pixels, mwm_drawn *out) {
+    window *w = mwm_window_by_id(s, id);
+    if (!w) return false;
+    box d = {0, 0, 0, 0};
+    while (w->drawn.count > 0 && empty(d)) { /* a window that shrank may have left a part outside it */
+        d = common(w->drawn.boxes[0], (box){0, 0, w->width, w->height});
+        if (empty(d)) w->drawn.boxes[0] = w->drawn.boxes[--w->drawn.count];
+    }
+    if (empty(d)) return false;
+    int rows = max_pixels / (d.x2 - d.x1);
+    if (rows < 1) rows = 1;
+    if (rows < d.y2 - d.y1) {
+        w->drawn.boxes[0] = (box){d.x1, d.y1 + rows, d.x2, d.y2};
+        d.y2 = d.y1 + rows;
+    } else {
+        w->drawn.boxes[0] = w->drawn.boxes[--w->drawn.count];
+    }
+    *out = (mwm_drawn){.x = d.x1, .y = d.y1, .width = d.x2 - d.x1, .height = d.y2 - d.y1, .stride = s->screen.stride,
+                       .pixels = s->screen.pixels + (size_t)(w->y + d.y1) * (size_t)s->screen.stride + w->x + d.x1};
+    return true;
+}
+
+void mwm_server_drawn_again(mwm_server *s) {
+    for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
+        window *w = &s->windows[i];
+        if (w->used) w->drawn = (region){.count = 1, .boxes = {{0, 0, w->width, w->height}}};
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -278,7 +261,7 @@ window *mwm_window_by_id(mwm_server *s, uint32_t id) {
     return NULL;
 }
 
-/* Whether a window of that size can stand there: on the display, and a gap away from every other. */
+/* Whether a window of that size can stand there: on the sheet, and a gap away from every other. */
 static bool is_free(const mwm_server *s, const window *self, int x, int y, int width, int height) {
     if (x < 0 || y < 0 || x + width > s->screen.width || y + height > s->screen.height) return false;
     for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
@@ -411,9 +394,11 @@ static void apply(mwm_server *s, client *c, surface *f, state *st, bool *all, in
         if (new) new->shown++;
         mwm_buffer_unshown(old);
     }
-    box units = st->surface_damage;
-    if (!empty(units)) units = (box){units.x1 * f->scale, units.y1 * f->scale, units.x2 * f->scale, units.y2 * f->scale};
-    f->dirty = both(f->dirty, both(st->damage, units));
+    for (int i = 0; i < st->damage.count; i++) region_add(&f->dirty, st->damage.boxes[i]);
+    for (int i = 0; i < st->surface_damage.count; i++) {
+        box units = st->surface_damage.boxes[i];
+        region_add(&f->dirty, (box){units.x1 * f->scale, units.y1 * f->scale, units.x2 * f->scale, units.y2 * f->scale});
+    }
     memset(st, 0, sizeof *st);
     if (depth >= MAX_DEPTH) return;
     for (int i = 0; i < f->stack_count; i++) {
@@ -431,27 +416,23 @@ static void apply(mwm_server *s, client *c, surface *f, state *st, bool *all, in
     }
 }
 
-/* What changed in the tree and is not on the display yet, in the window's
- * pixels; the surfaces are then up to date. */
-static box take_dirty(const window *w, surface *f, int ox, int oy, int depth) {
-    box all = {0, 0, 0, 0};
-    if (f->current && !empty(f->dirty)) {
-        box d = common(f->dirty, (box){0, 0, f->current->width, f->current->height});
-        if (!empty(d)) {
-            /* Outward, when the window is drawn at another scale than this part. */
-            all = (box){ox + (int32_t)((int64_t)d.x1 * w->scale / f->scale), oy + (int32_t)((int64_t)d.y1 * w->scale / f->scale),
-                        ox + (int32_t)(((int64_t)d.x2 * w->scale + f->scale - 1) / f->scale),
-                        oy + (int32_t)(((int64_t)d.y2 * w->scale + f->scale - 1) / f->scale)};
-        }
+/* What changed in the tree and is not drawn yet is added to `all`, in the
+ * window's pixels; the surfaces are then up to date. */
+static void take_dirty(const window *w, surface *f, int ox, int oy, int depth, region *all) {
+    for (int i = 0; f->current && i < f->dirty.count; i++) {
+        box d = common(f->dirty.boxes[i], (box){0, 0, f->current->width, f->current->height});
+        if (empty(d)) continue;
+        /* Outward, when the window is drawn at another scale than this part. */
+        region_add(all, (box){ox + (int32_t)((int64_t)d.x1 * w->scale / f->scale), oy + (int32_t)((int64_t)d.y1 * w->scale / f->scale),
+                              ox + (int32_t)(((int64_t)d.x2 * w->scale + f->scale - 1) / f->scale),
+                              oy + (int32_t)(((int64_t)d.y2 * w->scale + f->scale - 1) / f->scale)});
     }
-    f->dirty = (box){0, 0, 0, 0};
+    f->dirty.count = 0;
     for (int i = 0; depth < MAX_DEPTH && i < f->stack_count; i++) {
         surface *e = f->stack[i];
         if (e == f || !e->sub) continue;
-        all = both(all, take_dirty(w, e, near((int64_t)ox + (int64_t)e->sub->x * w->scale), near((int64_t)oy + (int64_t)e->sub->y * w->scale),
-                                   depth + 1));
+        take_dirty(w, e, near((int64_t)ox + (int64_t)e->sub->x * w->scale), near((int64_t)oy + (int64_t)e->sub->y * w->scale), depth + 1, all);
     }
-    return all;
 }
 
 /* The tree `f` is in changed: its window follows, and what changed is drawn. */
@@ -460,12 +441,15 @@ static void changed(mwm_server *s, surface *f, bool all) {
     if (window_follows(s, root)) all = true;
     window *w = root->window;
     if (!w) return;
-    box area = take_dirty(w, root, 0, 0, 0);
-    if (all) area = (box){0, 0, w->width, w->height};
-    bool ok = paint(s, w, area);
-    /* Its bar changed colour: what it leaves open shows the new one (once; the colour is next looked at when it next draws). */
-    if (ok && mwm_shell_painted(s, w) && root->current && root->current->alpha) ok = paint(s, w, (box){0, 0, w->width, w->height});
-    if (!ok) mwm_fail(root->owner, root->id, E_IMPLEMENTATION, "the buffer's memory is gone");
+    region parts = {0};
+    take_dirty(w, root, 0, 0, 0, &parts);
+    if (all) parts = (region){.count = 1, .boxes = {{0, 0, w->width, w->height}}};
+    for (int i = 0; i < parts.count; i++) {
+        if (paint(s, w, parts.boxes[i])) continue;
+        mwm_fail(root->owner, root->id, E_IMPLEMENTATION, "the buffer's memory is gone");
+        return;
+    }
+    mwm_shell_painted(s, w);
 }
 
 /* A part's commit waits for its parent's: what it holds is added to what waits already. */
@@ -475,8 +459,8 @@ static void keep(mwm_server *s, client *c, surface *f) {
         to->buffer = from->buffer;
         to->attached = true;
     }
-    to->damage = both(to->damage, from->damage);
-    to->surface_damage = both(to->surface_damage, from->surface_damage);
+    for (int i = 0; i < from->damage.count; i++) region_add(&to->damage, from->damage.boxes[i]);
+    for (int i = 0; i < from->surface_damage.count; i++) region_add(&to->surface_damage, from->surface_damage.boxes[i]);
     if (from->scale != 0) to->scale = from->scale;
     for (int i = 0; i < from->frame_count; i++) {
         if (to->frame_count < MAX_FRAMES) {
@@ -575,8 +559,8 @@ static void surface_request(mwm_server *s, client *c, surface *f, mwm_msg *m) {
     case 2: case 9: { /* damage (in the program's units), damage_buffer (in pixels) */
         int32_t x = mwm_get_int(m), y = mwm_get_int(m), width = mwm_get_int(m), height = mwm_get_int(m);
         if (m->bad) return;
-        box *damage = m->opcode == 2 ? &f->pending.surface_damage : &f->pending.damage;
-        if (width > 0 && height > 0) *damage = both(*damage, given(x, y, width, height));
+        region *damage = m->opcode == 2 ? &f->pending.surface_damage : &f->pending.damage;
+        if (width > 0 && height > 0) region_add(damage, given(x, y, width, height));
         break;
     }
     case 3: { /* frame */
@@ -670,7 +654,7 @@ static void subsurface_request(mwm_server *s, client *c, subsurface *sub, mwm_ms
         memmove(&parent->stack[at + 1], &parent->stack[at], (size_t)(parent->stack_count - at) * sizeof parent->stack[0]);
         parent->stack[at] = f;
         parent->stack_count++;
-        parent->dirty = both(parent->dirty, (box){0, 0, FAR, FAR}); /* drawn again at the parent's next commit */
+        region_add(&parent->dirty, (box){0, 0, FAR, FAR}); /* drawn again at the parent's next commit */
         break;
     }
     case 4: /* set_sync */

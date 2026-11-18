@@ -141,47 +141,70 @@ final class GuestWindowProtocolTests: XCTestCase {
         XCTAssertTrue(reader.isBroken)
     }
 
-    /// A popup the program drew round, or with an arrow, is told with its
-    /// shape: after its line, the rows of its inner part from the top
-    /// down and the part of each that is there (GuestWM/mwm_ctl.h).
-    func testAPopupsShapeIsRead() {
+    /// What a window shows comes as its pixels: a line saying whose and
+    /// where in the window, then the bytes as they are, in as many pieces
+    /// as the connection brings them (GuestWM/mwm_ctl.h).
+    func testAWindowsPixelsAreRead() {
         var reader = GuestWindowReader()
-        _ = read("monad-wm 1 1920 1200\n", into: &reader)
-        let window = "window 1 0 0 400 300 2 0 0 400 300 0 0 0 - app Window\n"
-        let menu = "window 2 416 0 28 12 2 2 2 24 8 1 20 88 - - -\n"
-        let events = read("windows 4 3\n" + window + menu +
-                          "band 2 1 4 16\nband 2 6 0 24\nband 2 1 0 0\n" +
-                          "window 3 460 0 10 10 1 0 0 10 10 2 0 0 - - -\nend\n", into: &reader)
-        guard case .windows(let windows)? = events.first, windows.count == 3 else { return XCTFail("no list: \(events), broken \(reader.isBroken)") }
-        XCTAssertEqual(windows[1].shape, [GuestWindowBand(height: 1, x: 4, width: 16), GuestWindowBand(height: 6, x: 0, width: 24),
-                                          GuestWindowBand(height: 1, x: 0, width: 0)])
-        XCTAssertEqual(windows[0].shape, [])
-        XCTAssertEqual(windows[2].shape, [], "a popup told with no rows is all there")
+        _ = read("monad-wm 1 1920 1200\nwindows 4 2\nwindow 1 0 0 4 2 1 0 0 4 2 0 0 0 - app Window\n" +
+                 "window 2 20 0 3 3 2 0 0 3 3 1 0 0 - - -\nend\n", into: &reader)
+        let bytes = Data((0..<16).map { UInt8($0 * 16 + 10) }) // a newline's byte among them: no line ends inside pixels
+        XCTAssertEqual(bytes[0], 0x0A)
+        var events = reader.feed(Data("pixels 1 2 0 2 2 16\n".utf8) + bytes + Data("cursor 9\n".utf8))
+        XCTAssertEqual(events, [.pixels(GuestPixels(window: 1, x: 2, y: 0, width: 2, height: 2, data: bytes)), .cursor(9)])
+        // Byte by byte, the same.
+        events = []
+        for byte in Data("pixels 2 0 1 3 1 12\n".utf8) + bytes.prefix(12) + Data("windows 5 0\nend\n".utf8) { events += reader.feed(Data([byte])) }
+        XCTAssertEqual(events, [.pixels(GuestPixels(window: 2, x: 0, y: 1, width: 3, height: 1, data: bytes.prefix(12))), .windows([])])
+        // Fewer bytes than the pixels are: packed (GuestPicture unpacks them). The reader takes as many as were said.
+        var packed = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\nwindows 4 1\nwindow 1 0 0 400 200 1 0 0 400 200 0 0 0 - app Window\nend\n", into: &packed)
+        XCTAssertEqual(packed.feed(Data("pixels 1 0 0 400 200 8\n".utf8) + bytes.prefix(8) + Data("cursor 4\n".utf8)),
+                       [.pixels(GuestPixels(window: 1, x: 0, y: 0, width: 400, height: 200, data: bytes.prefix(8))), .cursor(4)])
+        XCTAssertFalse(reader.isBroken)
+        // The windows are gone: so is what pixels could be of.
+        XCTAssertEqual(reader.feed(Data("pixels 1 0 0 1 1 4\n".utf8) + bytes.prefix(4)), [])
+        XCTAssertTrue(reader.isBroken)
+    }
 
+    /// Pixels are only ever of a window the guest told, inside it, and no
+    /// more at once than the window manager sends: anything else ends the
+    /// connection before a byte of them is kept.
+    func testPixelsThatFitNoWindowBreakTheConnection() {
+        let list = "windows 4 2\nwindow 1 0 0 4 2 1 0 0 4 2 0 0 0 - app Window\nwindow 2 20 0 3000 3000 1 0 0 3000 3000 0 0 0 - app Large\nend\n"
         let hostile: [(String, String)] = [
-            ("band 1 300 0 400\n", "a window with a frame has no shape"),
-            (menu + "band 1 300 0 400\n", "rows of another window than the one just told"),
-            (menu + "band 2 9 0 24\n", "more rows than it has"),
-            (menu + "band 2 4 0 24\n", "fewer rows than it has"),
-            (menu + "band 2 8 20 5\n", "a row past its right edge"),
-            (menu + "band 2 8 25 0\n", "a row that starts past its right edge"),
-            (menu + "band 2 0 0 24\nband 2 8 0 24\n", "no rows at all in a line"),
-            (menu + "band 2 8 0 24 1\n", "a word too many"),
-            (menu + "band 2 8 -1 24\n", "a number that is none"),
-            ("window 2 416 0 28 300 2 0 0 28 300 1 20 88 - - -\n" + (0..<129).map { "band 2 1 \($0 % 2) 20\n" }.joined() + "band 2 171 0 28\n",
-             "more rows than are ever told"),
+            ("pixels 3 0 0 1 1 4\n", "a window that was not told"),
+            ("pixels 0 0 0 1 1 4\n", "no window"),
+            ("pixels 1 3 0 2 1 8\n", "past its right edge"),
+            ("pixels 1 0 1 1 2 8\n", "past its bottom edge"),
+            ("pixels 1 0 0 0 1 4\n", "no pixels at all"),
+            ("pixels 1 -1 0 1 1 4\n", "a number that is none"),
+            ("pixels 1 0 0 1 1\n", "a word too few"),
+            ("pixels 1 0 0 1 1 4 4\n", "a word too many"),
+            ("pixels 1 0 0 2 1 9\n", "more bytes than the pixels are"),
+            ("pixels 1 0 0 2 1 3\n", "fewer bytes than anything packed is"),
+            ("pixels 1 0 0 2 1 0\n", "no bytes"),
+            ("pixels 2 0 0 3000 2797 8\n", "more than is sent in one piece"),
         ]
-        for (lines, what) in hostile {
+        for (line, what) in hostile {
             var reader = GuestWindowReader()
-            _ = read("monad-wm 1 1920 1200\n", into: &reader)
-            let count = 1 + lines.components(separatedBy: "window ").count - 1
-            XCTAssertEqual(read("windows 4 \(count)\n" + window + lines + "end\n", into: &reader), [], what)
+            _ = read("monad-wm 1 3840 3840\n" + list, into: &reader)
+            XCTAssertFalse(reader.isBroken, what)
+            XCTAssertEqual(read(line + "aaaa", into: &reader), [], what)
             XCTAssertTrue(reader.isBroken, what)
         }
-        var outside = GuestWindowReader()
-        _ = read("monad-wm 1 1920 1200\n", into: &outside)
-        XCTAssertEqual(read("band 2 8 0 24\n", into: &outside), [])
-        XCTAssertTrue(outside.isBroken, "rows with no list being told")
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 3840 3840\n" + list, into: &reader)
+        XCTAssertEqual(read("pixels 2 0 0 3000 2796 33552000\n", into: &reader), [], "as much as one piece may be")
+        XCTAssertFalse(reader.isBroken)
+        // Inside a list being told the windows are not known yet.
+        var telling = GuestWindowReader()
+        _ = read("monad-wm 1 3840 3840\n" + list + "windows 5 1\n", into: &telling)
+        XCTAssertEqual(read("pixels 1 0 0 1 1 4\naaaa", into: &telling), [])
+        XCTAssertTrue(telling.isBroken, "in the middle of a list")
+        var early = GuestWindowReader()
+        XCTAssertEqual(read("pixels 1 0 0 1 1 4\naaaa", into: &early), [])
+        XCTAssertTrue(early.isBroken, "before anything was said")
     }
 
     /// A program that draws its own title bar (GTK's header bars) is told

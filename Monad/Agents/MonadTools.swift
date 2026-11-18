@@ -770,9 +770,9 @@ final class MonadTools {
                 return result
             },
             MCPTool(name: "read_windows",
-                    description: "The Mac windows of a Linux VM's programs: each one's id, title, frame and where the VM's display "
-                        + "lies behind it; with `window`, also what that window's view of the display holds, cut to what the "
-                        + "window shows (the framebuffer, not the screen).",
+                    description: "The Mac windows of a Linux VM's programs: each one's id, title, frame and the picture it has; "
+                        + "with `window`, also what that window's picture holds, cut to what the window shows (the picture's "
+                        + "memory, not the screen).",
                     schema: Self.schema(["name": Self.vmName, "window": Self.integer("A window's id, for its picture."),
                                          "frame": Self.boolean("With `window`: also the Mac window's own frame (title bar, buttons) as a second picture.")],
                                         required: ["name"]), risk: .read) { [unowned self] call in

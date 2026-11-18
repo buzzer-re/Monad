@@ -8,6 +8,7 @@
 #include "mnd_disk.h"
 #include "mnd_diskcheck.h"
 #include "mnd_iso9660.h"
+#include "mnd_pixels.h"
 #include "mnd_pty.h"
 #include "mnd_qcow2.h"
 #include "mnd_tar.h"

@@ -4,14 +4,12 @@
 //  (GuestWindowProtocol.swift), shown by the process that runs the VM
 //  (MonadHost), like the VM's desktop (MacDesktop.swift).
 //
-//  The VM has one display, on which every window has a place of its own.
-//  Each Mac window holds a view of that display, as large as the display
-//  and moved behind the window so that only the window's place is inside
-//  it (GuestWindowLayout.swift): the pixels go from the VM to the screen
-//  as they do for the desktop, with no copy made here. That view takes no
-//  keys and no clicks, and never resizes the display: the pointer and the
-//  keys go to the window manager over Monad's channel, as the window they
-//  are for.
+//  Each Mac window shows a picture of its own: the pixels the program
+//  drew, which the window manager sends over Monad's channel where they
+//  changed (GuestPicture.swift). No display of the VM is involved: what
+//  the program left see-through shows what is behind the window (the
+//  window's own colour, or the screen behind a menu). The pointer and the
+//  keys go back over the same channel, as the window they are for.
 //
 //  The guest decides which windows there are and what they are called, so:
 //  a title always ends with the VM's name; a new window comes in front and
@@ -23,7 +21,6 @@
 
 import AppKit
 import Carbon.HIToolbox
-import Virtualization
 
 /// What shows a Linux VM's program windows, and says what the Mac's
 /// pointer and keys do in them. The tests put a recorder in its place.
@@ -41,6 +38,8 @@ protocol GuestWindowPresenting: AnyObject {
     func cursor(_ shape: Int)
     /// The program of a window asks something of it (to be moved, zoomed, put away).
     func asked(window: UInt32, _ ask: GuestWindowAsk)
+    /// What a window shows, where its program drew.
+    func pixels(_ pixels: GuestPixels)
     /// The window manager is gone: so are its windows.
     func disconnected()
 }
@@ -82,29 +81,11 @@ struct MacClipboard {
     }
 }
 
-/// The VM's display behind the window of one of its programs: to look at,
-/// and nothing else. Apple's view takes the pointer for the guest's own
-/// pointing device and hides the Mac's pointer while it is over the view
-/// (-[VZVirtualMachineView mouseEntered:] ends in +[NSCursor hide] when
-/// the guest shows no cursor of its own, and Monad's window manager shows
-/// none). Here the pointer and the keys are Monad's to pass on, as the
-/// window they are for, and the pointer stays the Mac's: this view watches
-/// no pointer and takes no keys.
-final class GuestDisplayView: VZVirtualMachineView {
-    override var acceptsFirstResponder: Bool { false }
-    override func addTrackingArea(_ trackingArea: NSTrackingArea) {}
-    override func mouseEntered(with event: NSEvent) {}
-    override func mouseExited(with event: NSEvent) {}
-    override func mouseMoved(with event: NSEvent) {}
-}
-
 @MainActor
 final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     var onCommand: ((GuestWindowCommand) -> Void)?
 
-    private let machine: VZVirtualMachine
     private let vmName: String
-    private var display = GuestDisplaySize(width: 1, height: 1)
     private var windows: [GuestWindow] = []
     private var shown: [UInt32: Shown] = [:]
     private var keyMonitor: Any?
@@ -131,13 +112,36 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private struct Shown {
         let window: NSWindow
         let content: Content
-        let display: NSView
+        let view: PictureView
         /// A menu or another popup: a window of no frame, on the window it belongs to.
         var isPopup = false
         /// The size it is being given here, not by the user: not to be said back.
         var applying = false
-        /// A popup's shape as its window is cut now.
-        var shape: [GuestWindowBand] = []
+        /// The picture of the size the window now has, while its pixels are
+        /// still coming: the one before stays in the window until this one is whole.
+        var coming: GuestPicture?
+        /// On the screen: a window is first shown when its picture is whole, not empty.
+        var revealed = false
+    }
+
+    /// The program's picture in a window: a layer that shows the picture's
+    /// memory as it is. To look at only: the pointer is the content's.
+    private final class PictureView: NSView {
+        var picture: GuestPicture? {
+            didSet { changed() }
+        }
+
+        init() {
+            super.init(frame: .zero)
+            wantsLayer = true
+            layer?.contentsGravity = .resize
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+        /// The picture changed: the screen is to show the memory it is in now.
+        func changed() { layer?.contents = picture?.surface }
     }
 
     /// A popup's window: it never takes the keys from the window it is on.
@@ -146,15 +150,13 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         override var canBecomeMain: Bool { false }
     }
 
-    init(machine: VZVirtualMachine, vmName: String) {
-        self.machine = machine
+    init(vmName: String) {
         self.vmName = vmName
     }
 
     // MARK: From the window manager
 
     func connected(display: GuestDisplaySize) {
-        self.display = display
         saidScale = 0
         saidModifiers = MacKeys.Modifiers(held: 0, locked: 0)
         saidFocus = 0
@@ -272,10 +274,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         guard #available(macOS 27, *), shown[guest.id] == nil else { return }
         if guest.isPopup { return openPopup(guest) }
         NSApplication.shared.setActivationPolicy(.accessory)
-        let view = GuestDisplayView()
-        view.adaptor = VZVirtualMachineViewAdaptor(virtualMachine: machine)
-        view.automaticallyReconfiguresDisplay = false // the display is the window manager's to size
-        view.capturesSystemKeys = false
+        let view = PictureView()
         let content = Content(id: guest.id, owner: self)
         content.addSubview(view)
         let size = GuestWindowLayout.contentSize(guest)
@@ -289,78 +288,79 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         applyBar(guest, to: window)
         if cascade == .zero, let visible = NSScreen.main?.visibleFrame { cascade = NSPoint(x: visible.minX + 40, y: visible.maxY - 40) }
         cascade = window.cascadeTopLeft(from: cascade)
-        shown[guest.id] = Shown(window: window, content: content, display: view)
-        view.frame = GuestWindowLayout.displayFrame(guest, display: display)
+        // On the screen once its picture came (pixels(_:)): never an empty window first.
+        shown[guest.id] = Shown(window: window, content: content, view: view, coming: GuestPicture(width: guest.width, height: guest.height))
         startKeys()
+        sayScale()
+    }
+
+    /// A window's picture is whole for the first time: the window is shown.
+    private func reveal(_ id: UInt32) {
+        guard var entry = shown[id], !entry.revealed, let guest = guest(id) else { return }
+        entry.revealed = true
+        shown[id] = entry
+        if entry.isPopup {
+            placePopup(guest)
+            return
+        }
         // In front and with the keys only when the user is in Monad already: a
         // program in a VM does not get to take the keys from another app.
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         if NSApplication.shared.isActive || frontmost == Flavor.current.appIdentifier {
             NSApplication.shared.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
+            entry.window.makeKeyAndOrderFront(nil)
         } else {
-            window.orderFront(nil)
+            entry.window.orderFront(nil)
         }
-        sayScale()
+        placePopups(on: id)
+    }
+
+    /// What a window shows, where its program drew. A window that is new,
+    /// or of a new size, gets a picture of that size, which takes the old
+    /// one's place when all of it came.
+    func pixels(_ pixels: GuestPixels) {
+        guard var entry = shown[pixels.window], let guest = guest(pixels.window) else { return }
+        if let coming = entry.coming {
+            guard coming.put(pixels), coming.isWhole else { return }
+            entry.coming = nil
+            entry.view.picture = coming
+            entry.view.frame = GuestWindowLayout.pictureFrame(guest)
+            shown[pixels.window] = entry
+            if entry.isPopup { entry.window.invalidateShadow() } // the shadow is of what the program drew
+            reveal(pixels.window)
+        } else if entry.view.picture?.put(pixels) == true {
+            entry.view.changed()
+        }
     }
 
     /// A menu, a tooltip, a list that drops down: a window with no frame,
     /// where the program put it on the window it belongs to, moving with it.
     private func openPopup(_ guest: GuestWindow) {
         guard #available(macOS 27, *), shown[guest.parent] != nil else { return }
-        let view = GuestDisplayView()
-        view.adaptor = VZVirtualMachineViewAdaptor(virtualMachine: machine)
-        view.automaticallyReconfiguresDisplay = false
-        view.capturesSystemKeys = false
+        let view = PictureView()
         let content = Content(id: guest.id, owner: self, popup: true)
         content.addSubview(view)
         let window = PopupWindow(contentRect: NSRect(origin: .zero, size: GuestWindowLayout.contentSize(guest)),
                                  styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        // What the program left open (a menu's round corners, around its
-        // arrow) shows what is behind the menu: the window is see-through
-        // there, and its shadow follows what is left. The content is in a
-        // view counted from the bottom left, as the layer that cuts it is.
-        let holder = NSView(frame: NSRect(origin: .zero, size: GuestWindowLayout.contentSize(guest)))
-        holder.wantsLayer = true
-        content.frame = holder.bounds
-        content.autoresizingMask = [.width, .height]
-        holder.addSubview(content)
-        window.contentView = holder
+        window.contentView = content
+        // What the program left see-through (a menu's round corners, around
+        // its arrow) shows what is behind the menu, and the window's shadow
+        // is of what the program drew.
         window.isOpaque = false
         window.backgroundColor = .clear
         window.acceptsMouseMovedEvents = true
         window.hasShadow = true
-        shown[guest.id] = Shown(window: window, content: content, display: view, isPopup: true)
-        view.frame = GuestWindowLayout.displayFrame(guest, display: display)
-        placePopup(guest)
-        cut(guest)
-    }
-
-    /// Cuts a popup's window to the shape the program drew.
-    private func cut(_ guest: GuestWindow) {
-        guard var entry = shown[guest.id], entry.isPopup, let layer = entry.content.superview?.layer else { return }
-        guard entry.shape != guest.shape || (layer.mask == nil) != guest.shape.isEmpty else { return }
-        if let rects = GuestWindowLayout.shape(guest) {
-            let height = GuestWindowLayout.contentSize(guest).height
-            let path = CGMutablePath()
-            for rect in rects { path.addRect(CGRect(x: rect.minX, y: height - rect.maxY, width: rect.width, height: rect.height)) }
-            let mask = CAShapeLayer()
-            mask.path = path
-            layer.mask = mask
-        } else {
-            layer.mask = nil
-        }
-        entry.shape = guest.shape
-        shown[guest.id] = entry
-        entry.window.invalidateShadow()
+        shown[guest.id] = Shown(window: window, content: content, view: view, isPopup: true,
+                                coming: GuestPicture(width: guest.width, height: guest.height))
     }
 
     /// Puts a popup where the program said, from the top left of the window
     /// it is on; one that would not touch that window is not shown (it has
     /// no title to say whose it is).
     private func placePopup(_ guest: GuestWindow) {
-        guard let entry = shown[guest.id], entry.isPopup, let parent = shown[guest.parent], let on = self.guest(guest.parent) else { return }
+        guard let entry = shown[guest.id], entry.isPopup, entry.revealed, let parent = shown[guest.parent], parent.revealed,
+              let on = self.guest(guest.parent) else { return }
         let offset = GuestWindowLayout.popupOffset(guest, on: on), size = GuestWindowLayout.contentSize(guest)
         guard GuestWindowLayout.popupTouches(offset: offset, size: size, window: parent.content.bounds.size) else {
             entry.window.parent?.removeChildWindow(entry.window)
@@ -383,10 +383,16 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
 
     private func update(_ guest: GuestWindow) {
         guard var entry = shown[guest.id] else { return }
-        entry.display.frame = GuestWindowLayout.displayFrame(guest, display: display)
+        // Of another size than its picture: a new picture, shown when all of it came.
+        let has = entry.coming ?? entry.view.picture
+        if has?.width != guest.width || has?.height != guest.height {
+            entry.coming = GuestPicture(width: guest.width, height: guest.height)
+            shown[guest.id] = entry
+        } else if entry.coming == nil {
+            entry.view.frame = GuestWindowLayout.pictureFrame(guest) // the same pixels, another part of them the window proper
+        }
         if entry.isPopup {
             placePopup(guest)
-            cut(guest)
         } else {
             entry.window.title = GuestWindowLayout.title(guest, vm: vmName)
             applyBar(guest, to: entry.window)
@@ -633,8 +639,8 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         onCommand?(.scroll(dx: delta.dx, dy: delta.dy))
     }
 
-    /// A window's content: the display behind it, and the pointer over it.
-    /// Counted from its top left, as the display is.
+    /// A window's content: the program's picture, and the pointer over it.
+    /// Counted from its top left, as the picture is.
     private final class Content: NSView {
         private let id: UInt32
         private let popup: Bool
@@ -648,7 +654,6 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
             super.init(frame: .zero)
             wantsLayer = true
             layer?.masksToBounds = true
-            layer?.backgroundColor = NSColor.black.cgColor
         }
 
         @available(*, unavailable)
@@ -658,7 +663,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         override var acceptsFirstResponder: Bool { true }
         /// A menu's first click is a choice, not a way to bring its window forward.
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { popup }
-        /// The display's view is to look at: the pointer is this view's.
+        /// The picture is to look at: the pointer is this view's.
         override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
 
         override func updateTrackingAreas() {
@@ -704,18 +709,18 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
 /// the windows are and hold, and what a click or a key in one of them
 /// becomes, without the screen being looked at or the user's keys taken.
 extension LinuxAppWindows {
-    /// Each window: its id, title, frame, and where the display lies behind it.
+    /// Each window: its id, title, frame, and the picture it has.
     var debugText: String {
         guard !shown.isEmpty else { return "No windows." }
         return shown.keys.sorted().compactMap { id -> String? in
             guard let entry = shown[id] else { return nil }
-            let frame = entry.window.frame, content = entry.content.frame.size, display = entry.display.frame
-            let surfaces = MacScreenReader.surfaces(in: entry.display).map { "\(IOSurfaceGetWidth($0))×\(IOSurfaceGetHeight($0))" }
+            let frame = entry.window.frame, content = entry.content.frame.size, at = entry.view.frame
+            let picture = entry.view.picture.map { "\($0.width)×\($0.height) pixels at \(at.minX),\(at.minY) \(at.width)×\(at.height)" } ?? "none yet"
             let bar = guest(id)?.ownBar.map { String(format: "the program's, #%06x", $0) } ?? "the Mac's"
             return "window \(id) “\(entry.window.title)” at \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))×\(Int(frame.height))"
-                + ", content \(content.width)×\(content.height), display behind it at \(display.minX),\(display.minY) \(display.width)×\(display.height)"
+                + ", content \(content.width)×\(content.height), picture \(picture)\(entry.coming == nil ? "" : " (one of another size is coming)")"
                 + ", visible \(entry.window.isVisible), drawn \(entry.window.occlusionState.contains(.visible)), key \(entry.window.isKeyWindow)"
-                + ", scale \(entry.window.backingScaleFactor), framebuffers \(surfaces.isEmpty ? "none" : surfaces.joined(separator: ", "))"
+                + ", scale \(entry.window.backingScaleFactor)"
                 + (entry.isPopup ? "" : ", title bar \(bar), zoomed \(entry.window.isZoomed), put away \(entry.window.isMiniaturized)")
         }.joined(separator: "\n") + "\npointer: \(pointerCursor)"
             + (board.standsIn ? "\nclipboard (a stand-in for the Mac's): “\(board.text() ?? "")”" : "")
@@ -725,43 +730,20 @@ extension LinuxAppWindows {
     /// the content left as its background: what the Mac adds around the
     /// program's picture, without the screen being looked at.
     func debugFramePicture(window id: UInt32) -> Data? {
-        guard let entry = shown[id] else { return nil }
-        if entry.isPopup { return debugCutPicture(entry) }
-        guard let frame = entry.window.contentView?.superview,
+        guard let entry = shown[id], !entry.isPopup, let frame = entry.window.contentView?.superview,
               let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return nil }
         frame.cacheDisplay(in: frame.bounds, to: rep)
         return rep.representation(using: .png, properties: [:])
     }
 
-    /// A popup's window as it is cut: black where the display shows, clear where the window is open.
-    private func debugCutPicture(_ entry: Shown) -> Data? {
-        guard let holder = entry.content.superview, let layer = holder.layer else { return nil }
-        let scale = entry.window.backingScaleFactor
-        let width = Int(holder.bounds.width * scale), height = Int(holder.bounds.height * scale)
-        guard width > 0, height > 0,
-              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.scaleBy(x: scale, y: scale)
-        layer.render(in: context)
-        return context.makeImage().flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .png, properties: [:]) }
-    }
-
-    /// What a window's view of the display holds, cut to what the window
-    /// shows of it: the framebuffer its layer has now, not the screen.
+    /// What a window's picture holds, cut to what the window shows of it
+    /// (see-through where the program drew nothing): the picture's memory,
+    /// not the screen.
     func debugPicture(window id: UInt32) -> Data? {
-        guard let entry = shown[id],
-              let surface = MacScreenReader.surfaces(in: entry.display)
-                .max(by: { IOSurfaceGetWidth($0) * IOSurfaceGetHeight($0) < IOSurfaceGetWidth($1) * IOSurfaceGetHeight($1) })
-        else { return nil }
-        let display = entry.display.frame, content = entry.content.bounds
-        guard display.width > 0, display.height > 0 else { return nil }
-        var image = CIImage(ioSurface: surface)
-        let sx = image.extent.width / display.width, sy = image.extent.height / display.height
-        // The content's rectangle in the framebuffer, whose rows Core Image counts from the bottom.
-        let left = (content.minX - display.minX) * sx, top = (content.minY - display.minY) * sy
-        let crop = CGRect(x: left, y: image.extent.height - top - content.height * sy, width: content.width * sx, height: content.height * sy)
-        image = image.settingAlphaOne(in: image.extent).cropped(to: crop.intersection(image.extent))
+        guard let entry = shown[id], let picture = entry.view.picture, let guest = guest(id) else { return nil }
+        // The window proper in the picture, whose rows Core Image counts from the bottom.
+        let crop = CGRect(x: guest.innerX, y: picture.height - guest.innerY - guest.innerHeight, width: guest.innerWidth, height: guest.innerHeight)
+        let image = CIImage(ioSurface: unsafeBitCast(picture.surface, to: IOSurfaceRef.self)).cropped(to: crop)
         guard !image.extent.isEmpty, let cg = CIContext().createCGImage(image, from: image.extent.integral) else { return nil }
         return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
     }

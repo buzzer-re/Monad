@@ -3,6 +3,8 @@
  */
 #include "mwm_ctl.h"
 
+#include "mwm_pack.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -17,8 +19,13 @@ struct mwm_ctl {
     int fd;
     char in[MWM_CTL_LINE];
     size_t in_len;
+    /* What waits to be sent: `out_len` bytes, of which `out_sent` went.
+     * A window's pixels, when they wait, are the first of it, up to
+     * `out_pixels`; lines may wait behind them. */
     char *out;
-    size_t out_len, out_cap;
+    size_t out_len, out_cap, out_sent, out_pixels;
+    /* The window whose pixels were sent last: the others' come before its next. */
+    uint32_t pixels_last;
     /* The windows as MonadHost was last told them. */
     uint32_t told;
     bool told_any;
@@ -59,7 +66,7 @@ static void drop(mwm_ctl *c) {
     if (c->fd >= 0) close(c->fd);
     c->fd = -1;
     c->in_len = 0;
-    c->out_len = 0;
+    c->out_len = c->out_sent = c->out_pixels = 0;
     c->keys_expected = 0;
     c->ask_what = 0;
     free(c->paste);
@@ -94,6 +101,14 @@ static bool room(mwm_ctl *c, size_t n) {
     return true;
 }
 
+/* The bytes of lines that wait for MonadHost to read. Pixels that wait
+ * are not counted: there is one piece of them at most, bounded itself,
+ * and a MonadHost that is slow to take it is not one that left. */
+static size_t waiting(const mwm_ctl *c) {
+    size_t from = c->out_sent > c->out_pixels ? c->out_sent : c->out_pixels;
+    return c->out_len - from;
+}
+
 static void say(mwm_ctl *c, const char *format, ...) {
     if (c->fd < 0) return;
     char line[MWM_CTL_LINE];
@@ -102,7 +117,7 @@ static void say(mwm_ctl *c, const char *format, ...) {
     int n = vsnprintf(line, sizeof line, format, ap);
     va_end(ap);
     /* A line that cannot be said, or a MonadHost that does not read. */
-    if (n < 0 || (size_t)n >= sizeof line || c->out_len + (size_t)n > MWM_CTL_OUT || !room(c, (size_t)n)) {
+    if (n < 0 || (size_t)n >= sizeof line || waiting(c) + (size_t)n > MWM_CTL_OUT || !room(c, (size_t)n)) {
         drop(c);
         return;
     }
@@ -116,7 +131,7 @@ static void say(mwm_ctl *c, const char *format, ...) {
 static void copied(void *ctx, const char *text, size_t len) {
     mwm_ctl *c = ctx;
     if (c->fd < 0) return;
-    if (len > MWM_MAX_COPY || c->out_len + len + 32 > MWM_CTL_OUT || !room(c, len + 32)) len = 0;
+    if (len > MWM_MAX_COPY || waiting(c) + len + 32 > MWM_CTL_OUT || !room(c, len + 32)) len = 0;
     say(c, "copied %zu\n", len);
     if (c->fd < 0 || len == 0) return;
     memcpy(c->out + c->out_len, text, len);
@@ -124,17 +139,17 @@ static void copied(void *ctx, const char *text, size_t len) {
 }
 
 static void flush(mwm_ctl *c) {
-    while (c->fd >= 0 && c->out_len > 0) {
-        ssize_t n = send(c->fd, c->out, c->out_len, 0);
+    while (c->fd >= 0 && c->out_sent < c->out_len) {
+        ssize_t n = send(c->fd, c->out + c->out_sent, c->out_len - c->out_sent, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
         if (n <= 0) {
             drop(c);
             return;
         }
-        memmove(c->out, c->out + n, c->out_len - (size_t)n);
-        c->out_len -= (size_t)n;
+        c->out_sent += (size_t)n;
     }
+    if (c->fd >= 0) c->out_len = c->out_sent = c->out_pixels = 0; /* all of it went */
 }
 
 /* A program's text as one word: every byte but plain printable ASCII as
@@ -175,10 +190,6 @@ static void tell_windows(mwm_ctl *c) {
         say(c, "window %u %d %d %d %d %d %d %d %d %d %u %d %d %s %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width,
             list[i].height, list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height,
             list[i].parent, list[i].offset_x, list[i].offset_y, bar, app, title);
-        for (int k = 0; k < list[i].band_count; k++) {
-            say(c, "band %u %u %u %u\n", list[i].id, (unsigned)list[i].bands[k].height, (unsigned)list[i].bands[k].x,
-                (unsigned)list[i].bands[k].width);
-        }
     }
     say(c, "end\n");
     c->told = generation;
@@ -206,6 +217,48 @@ static void tell_ask(mwm_ctl *c) {
     c->ask_what = 0;
 }
 
+/* What a window shows: the part of it that was drawn since it was last
+ * sent, as `pixels <window> <x> <y> <width> <height> <bytes>` and then
+ * the pixels. One piece at a time, when MonadHost has read all that was
+ * said and knows the windows as they are, so that the pixels are always
+ * of a window it was told, as large as it was told; and what a program
+ * draws while a piece is on its way waits as one, the newest. The
+ * windows take turns. True when a piece was put to be sent. */
+static bool tell_pixels(mwm_ctl *c) {
+    if (c->fd < 0 || c->out_len > 0 || !c->told_any || c->told != mwm_server_generation(c->server)) return false;
+    mwm_window list[MWM_MAX_WINDOWS];
+    int n = mwm_server_windows(c->server, list, MWM_MAX_WINDOWS), first = 0;
+    for (int i = 0; i < n; i++)
+        if (list[i].id == c->pixels_last) first = i + 1;
+    for (int i = 0; i < n; i++) {
+        const mwm_window *w = &list[(first + i) % n];
+        mwm_drawn d;
+        if (!mwm_server_take_drawn(c->server, w->id, MWM_CTL_PIXELS, &d)) continue;
+        /* Packed when that halves them at least (mwm_pack.h); as they are otherwise. The line
+         * before them says how many bytes they are, so it is written last, right before them. */
+        enum { HEAD = 96 };
+        size_t row = (size_t)d.width * 4, raw = row * (size_t)d.height;
+        if (!room(c, HEAD + raw)) {
+            drop(c);
+            return false;
+        }
+        uint8_t *body = (uint8_t *)c->out + HEAD;
+        size_t bytes = mwm_pack(d.pixels, d.stride, d.width, d.height, body, raw / 2);
+        if (bytes == 0) {
+            for (int y = 0; y < d.height; y++) memcpy(body + (size_t)y * row, d.pixels + (size_t)y * (size_t)d.stride, row);
+            bytes = raw;
+        }
+        char head[HEAD];
+        int said = snprintf(head, sizeof head, "pixels %u %d %d %d %d %zu\n", w->id, d.x, d.y, d.width, d.height, bytes);
+        memcpy(c->out + HEAD - said, head, (size_t)said);
+        c->out_sent = (size_t)(HEAD - said);
+        c->out_len = c->out_pixels = HEAD + bytes;
+        c->pixels_last = w->id;
+        return true;
+    }
+    return false;
+}
+
 void mwm_ctl_update(mwm_ctl *c) {
     tell_windows(c);
     flush(c);
@@ -213,6 +266,7 @@ void mwm_ctl_update(mwm_ctl *c) {
     flush(c);
     tell_ask(c);
     flush(c);
+    while (tell_pixels(c)) flush(c);
 }
 
 void mwm_ctl_attach(mwm_ctl *c, int fd) {
@@ -228,6 +282,7 @@ void mwm_ctl_attach(mwm_ctl *c, int fd) {
 #endif
     c->fd = fd;
     c->told_any = false;
+    mwm_server_drawn_again(c->server); /* it has no pixel of any window yet */
     c->told_cursor = MWM_CURSOR_DEFAULT; /* what MonadHost takes it to be until told */
     int width, height;
     mwm_server_size(c->server, &width, &height);

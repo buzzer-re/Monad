@@ -1,6 +1,6 @@
 /*
- * wm_test_client.h — what the window manager's tests share: a display of
- * plain memory, a server on it, and a client that speaks the wire format by
+ * wm_test_client.h — what the window manager's tests share: a sheet of
+ * plain memory for the windows' pixels, a server on it, and a client that speaks the wire format by
  * hand (connects, binds what the registry offers, opens a window).
  */
 #ifndef WM_TEST_CLIENT_H
@@ -27,21 +27,10 @@ static int checks;
 
 enum { W = 400, H = 200 };
 static uint32_t pixels[W * H];
-static int presented, last_x, last_y, last_w, last_h;
-
-static void present(void *ctx, int x, int y, int w, int h) {
-    (void)ctx;
-    presented++;
-    last_x = x;
-    last_y = y;
-    last_w = w;
-    last_h = h;
-}
 
 static mwm_server *server(void) {
     memset(pixels, 0, sizeof pixels);
-    presented = 0;
-    mwm_screen screen = {.pixels = pixels, .width = W, .height = H, .stride = W, .present = present};
+    mwm_screen screen = {.pixels = pixels, .width = W, .height = H, .stride = W};
     mwm_server *s = mwm_server_new(&screen);
     CHECK(s);
     return s;
@@ -175,7 +164,7 @@ static int pixel_file(uint32_t color, int words) {
 
 typedef struct {
     uint32_t surface, xdg, toplevel, pool, buffer;
-    /* Its id on the display, once it is there. */
+    /* Its id on the sheet, once it is there. */
     uint32_t id;
 } window;
 
@@ -251,6 +240,18 @@ static window open_window(mwm_server *s, client *k, const char *title, const cha
 }
 
 static uint32_t at(int x, int y) { return pixels[y * W + x]; }
+
+/* What of a window was drawn since this was last asked: all of it at once; nothing is all zero. */
+static mwm_drawn drawn(mwm_server *s, uint32_t id) {
+    mwm_drawn d = {0};
+    if (!mwm_server_take_drawn(s, id, W * H, &d)) d = (mwm_drawn){0};
+    return d;
+}
+
+static bool drew(mwm_server *s, uint32_t id, int x, int y, int w, int h) {
+    mwm_drawn d = drawn(s, id);
+    return d.x == x && d.y == y && d.width == w && d.height == h;
+}
 
 /* The error the server sent before dropping the client: its code. */
 static int dropped_with(mwm_server *s, client *k, uint32_t *object) {

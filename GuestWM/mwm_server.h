@@ -1,22 +1,23 @@
 /*
- * mwm_server.h — Monad's window manager for a Linux VM's display: the
- * Wayland server programs connect to. It gives each program's window its
- * own place on the display, in rows and never overlapping (the Mac shows
- * each place as a window of its own), and draws there what the program
- * drew.
+ * mwm_server.h — Monad's window manager for a Linux VM's programs: the
+ * Wayland server they connect to. It gives each program's window its own
+ * place on a sheet of pixels in memory, in rows and never overlapping,
+ * draws there what the program drew, and hands out what changed: the Mac
+ * shows each window as a window of its own, from those pixels (mwm_ctl.h).
+ * The VM needs no display for it.
  *
- * This part knows nothing of the display's hardware or of sockets being
- * listened on: it is handed a block of pixels (mwm_screen) and connected
- * clients, so it runs in tests on the Mac and on Linux
- * (CTests/test_wm_*.c). mwm_kms.c and mwm_main.c are the Linux side.
+ * This part knows nothing of sockets being listened on: it is handed a
+ * block of pixels (mwm_screen) and connected clients, so it runs in tests
+ * on the Mac and on Linux (CTests/test_wm_*.c). mwm_main.c is the Linux
+ * side.
  *
- * What it speaks so far: wl_display, wl_registry, wl_compositor,
- * wl_surface, wl_region, wl_subcompositor, wl_shm (ARGB8888 and XRGB8888),
- * wl_output, xdg_wm_base with top-level windows, wl_seat with a pointer
- * and a keyboard, and wl_data_device_manager as far as programs need it to
- * start (nothing is copied anywhere). No popups, no clipboard yet. A
- * window's own surface takes the pointer wherever it is over the window:
- * its subsurfaces are drawn, and not told of the pointer.
+ * What it speaks: wl_display, wl_registry, wl_compositor, wl_surface,
+ * wl_region, wl_subcompositor, wl_shm (ARGB8888 and XRGB8888), wl_output,
+ * xdg_wm_base with top-level windows and popups, wl_seat with a pointer
+ * and a keyboard, wl_data_device_manager (the clipboard), xdg-decoration
+ * and KDE's decoration protocol, wp_cursor_shape. A window's own surface
+ * takes the pointer wherever it is over the window: its subsurfaces are
+ * drawn, and not told of the pointer.
  */
 #ifndef MWM_SERVER_H
 #define MWM_SERVER_H
@@ -25,24 +26,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The display's pixels (XRGB, one word each) and how to show a change. */
+/* The sheet the windows are drawn on, each at a place of its own: one
+ * word a pixel (ARGB, each colour with its share of the pixel taken
+ * already, as Wayland has them), all zero where no window is. */
 typedef struct {
     uint32_t *pixels;
     int width, height;
     /* Words from one row to the next. */
     int stride;
-    /* The rectangle changed: put it on the display. */
-    void (*present)(void *ctx, int x, int y, int width, int height);
-    void *ctx;
 } mwm_screen;
 
-/* Some rows of a popup, and the part of each that is there: `height`
- * rows, `width` pixels from `x` of the popup's inner part (none when 0). */
+/* A part of a window that was drawn: where it is in the window, in the
+ * window's pixels, and its pixels on the sheet (`stride` words from a row
+ * to the next; the server's own, good until it is next called). */
 typedef struct {
-    uint16_t height, x, width;
-} mwm_band;
+    int x, y, width, height;
+    const uint32_t *pixels;
+    int stride;
+} mwm_drawn;
 
-/* A window as it is on the display, in the display's pixels. */
+/* A window as it is on the sheet, in the sheet's pixels. */
 typedef struct {
     uint32_t id;
     int x, y, width, height;
@@ -63,12 +66,6 @@ typedef struct {
      * made to continue it. False: the frame is all the Mac's. */
     bool own_bar;
     uint32_t bar_color;
-    /* A popup the program did not draw as a whole rectangle (round
-     * corners, an arrow): its inner part from the top down, row by row.
-     * None (0) when all of it is there, or its shape takes more rows
-     * than are told. The server's own, until it is next called. */
-    const mwm_band *bands;
-    int band_count;
     /* Plain text of the program's choosing; never NULL. */
     const char *title;
     const char *app_id;
@@ -79,14 +76,12 @@ enum {
     MWM_MAX_WINDOWS = 64,
     /* Objects one client may have alive. */
     MWM_MAX_OBJECTS = 16384,
-    /* Room left between two windows on the display. */
+    /* Room left between two windows on the sheet. */
     MWM_GAP = 16,
-    /* The rows of a popup's shape that are told at most. */
-    MWM_MAX_BANDS = 128,
     /* A key's code is the Linux kernel's; X has no place for one beyond. */
     MWM_MAX_KEYCODE = 247,
     MWM_MAX_KEYS = MWM_MAX_KEYCODE,
-    /* The widest and the tallest a window can be asked to be: the largest display there is. */
+    /* The widest and the tallest a window can be asked to be: the largest sheet there is. */
     MWM_MAX_SIDE = 8192,
     /* Texts on their way through pipes at once (the clipboard's), and with
      * the programs' sockets, all there is to poll. */
@@ -133,17 +128,25 @@ void mwm_server_frame(mwm_server *s, uint32_t time_ms);
  * wake up for. */
 bool mwm_server_wants_frame(const mwm_server *s);
 
-/* The display's size. */
+/* The sheet's size. */
 void mwm_server_size(const mwm_server *s, int *width, int *height);
 /* The scale of the Mac's screen (1, or 2 on a Retina screen): programs are
  * told, and draw their windows with that many pixels to a unit. */
 void mwm_server_scale(mwm_server *s, int scale);
 
-/* The windows on the display, oldest first: how many were written. */
+/* The windows on the sheet, oldest first: how many were written. */
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max);
 /* Counts up whenever a window comes, goes, moves, is renamed, or changes
  * who draws its title bar or what colour that has. */
 uint32_t mwm_server_generation(const mwm_server *s);
+
+/* What of a window was drawn since this was last asked, for whoever shows
+ * the windows: at most `max_pixels` of it, whole rows from its top (one
+ * row at least), the rest the next time. False when nothing was. */
+bool mwm_server_take_drawn(mwm_server *s, uint32_t window, int max_pixels, mwm_drawn *out);
+/* Whoever shows the windows is new and has nothing: all of every window
+ * is handed out again. */
+void mwm_server_drawn_again(mwm_server *s);
 
 /* The Mac's window was resized: the program is asked to draw at that size
  * (it answers with a buffer of the size it then chooses). Sizes that no

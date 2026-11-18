@@ -20,14 +20,14 @@ enum GuestWindowLayout {
         CGSize(width: CGFloat(window.innerWidth) / CGFloat(window.scale), height: CGFloat(window.innerHeight) / CGFloat(window.scale))
     }
 
-    /// Where the view of the whole display lies in the window's content
-    /// for the window's own part to be what shows, counted from the
-    /// content's top left as the display's pixels are (the content view is
-    /// flipped): the content can change size without this changing.
-    static func displayFrame(_ window: GuestWindow, display: GuestDisplaySize) -> CGRect {
+    /// Where the program's picture (all it drew: the window, and any
+    /// shadow around it) lies in the Mac window's content for the window
+    /// proper to be what shows, counted from the content's top left in
+    /// points: the content can change size without this changing.
+    static func pictureFrame(_ window: GuestWindow) -> CGRect {
         let scale = CGFloat(window.scale)
-        return CGRect(x: -CGFloat(window.x + window.innerX) / scale, y: -CGFloat(window.y + window.innerY) / scale,
-                      width: CGFloat(display.width) / scale, height: CGFloat(display.height) / scale)
+        return CGRect(x: -CGFloat(window.innerX) / scale, y: -CGFloat(window.innerY) / scale,
+                      width: CGFloat(window.width) / scale, height: CGFloat(window.height) / scale)
     }
 
     /// A point of the content (from its top left, in points) as the
@@ -56,25 +56,6 @@ enum GuestWindowLayout {
     /// manager says it in that window's pixels.
     static func popupOffset(_ popup: GuestWindow, on parent: GuestWindow) -> CGPoint {
         CGPoint(x: CGFloat(popup.offsetX) / CGFloat(parent.scale), y: CGFloat(popup.offsetY) / CGFloat(parent.scale))
-    }
-
-    /// The parts of a popup that are there, in points from its content's
-    /// top left, down: the Mac's window is cut to them, so a menu's round
-    /// corners and its arrow show what is behind the menu. nil when the
-    /// popup is all there.
-    static func shape(_ popup: GuestWindow) -> [CGRect]? {
-        guard !popup.shape.isEmpty else { return nil }
-        let scale = CGFloat(popup.scale)
-        var y = 0
-        var rects: [CGRect] = []
-        for band in popup.shape {
-            if band.width > 0 {
-                rects.append(CGRect(x: CGFloat(band.x) / scale, y: CGFloat(y) / scale,
-                                    width: CGFloat(band.width) / scale, height: CGFloat(band.height) / scale))
-            }
-            y += band.height
-        }
-        return rects
     }
 
     /// Whether a popup at `offset` (from its window's content's top left)

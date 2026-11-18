@@ -117,6 +117,46 @@ final class GuestWindowsClientTests: XCTestCase {
     }
 
     /// What the user copied in the VM arrives as text.
+    /// What the windows show arrives as it was sent, however much of it
+    /// and however fast: reading waits for the main thread when it is
+    /// behind, and goes on; what is said after the pixels is heard.
+    func testPixelsArriveWholeHoweverManyThereAre() async {
+        let channel = SocketPairChannel()
+        let client = GuestWindowsClient(channel: channel)
+        var pieces = 0, bytes = 0, wrong = 0, cursors: [Int] = []
+        client.onPixels = { pixels in
+            pieces += 1
+            bytes += pixels.data.count
+            if pixels.window != 1 || pixels.width != 1024 || pixels.height != 1024 || pixels.data.first != UInt8(pixels.y) || pixels.data.last != 7 {
+                wrong += 1
+            }
+        }
+        client.onCursor = { cursors.append($0) }
+        client.start()
+        channel.agentSays("monad-wm 1 8192 8192\nwindows 1 1\nwindow 1 0 0 1024 2048 1 0 0 1024 2048 0 0 0 - app Window\nend\n")
+        // 4 MiB a piece, 40 of them: more than may wait for the main thread at once.
+        let fd = channel.peer
+        let sent = Task.detached {
+            var piece = [UInt8](repeating: 7, count: 1024 * 1024 * 4)
+            for i in 0..<40 {
+                piece[0] = UInt8(i)
+                var all = Array("pixels 1 0 \(i) 1024 1024 \(piece.count)\n".utf8) + piece
+                while !all.isEmpty {
+                    let n = all.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+                    if n > 0 { all.removeFirst(n) } else if n < 0 && errno != EAGAIN && errno != EINTR { return false } else { usleep(500) }
+                }
+            }
+            return true
+        }
+        let ok = await sent.value
+        XCTAssertTrue(ok)
+        channel.agentSays("cursor 9\n")
+        await assertEventually(timeout: 20) { cursors == [9] }
+        XCTAssertEqual([pieces, bytes, wrong], [40, 40 * 1024 * 1024 * 4, 0])
+        client.stop()
+        await assertEventually { channel.closed }
+    }
+
     func testACopyArrives() async {
         let channel = SocketPairChannel()
         let client = GuestWindowsClient(channel: channel)

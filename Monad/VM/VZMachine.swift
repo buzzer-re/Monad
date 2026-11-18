@@ -137,12 +137,12 @@ final class VZMachine: NSObject, VirtualMachineControlling, MacRecoveryInput, Di
 
     var onDesktopScale: (@MainActor (Int) -> Void)?
 
-    /// This machine's programs as windows of their own (a Linux VM with a display).
+    /// This machine's programs as windows of their own (a Linux VM with
+    /// Monad's window manager; it needs no display for them).
     private var appWindows: LinuxAppWindows?
 
     func guestWindowPresenter(title: String) -> GuestWindowPresenting? {
-        guard vm.config.virtioDisplay, vm.config.displayWidth > 0 else { return nil }
-        if appWindows == nil { appWindows = LinuxAppWindows(machine: vm.machine, vmName: title) }
+        if appWindows == nil { appWindows = LinuxAppWindows(vmName: title) }
         return appWindows
     }
 

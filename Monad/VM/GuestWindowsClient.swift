@@ -11,6 +11,13 @@
 //  ends rather than MonadHost growing or its main thread stopping. The
 //  Mac's text for a paste may wait beyond that bound, one paste at a time.
 //
+//  The guest also sends what its windows show, as pixels, as fast as it
+//  likes. They are read off the main thread and handed to it; when more
+//  wait there than a few windows' worth, reading stops until the main
+//  thread has caught up, so the guest's sending slows down instead of
+//  MonadHost's memory growing (the window manager then sends the newest
+//  of what its programs drew, not each).
+//
 
 import Foundation
 
@@ -18,6 +25,8 @@ import Foundation
 final class GuestWindowsClient {
     /// Bytes that may wait for a guest that does not read.
     nonisolated static let maxPending = 256 * 1024
+    /// Bytes of pixels that may wait for the main thread before reading stops.
+    nonisolated static let maxPixelsWaiting = 64 << 20
 
     var onDisplay: ((GuestDisplaySize) -> Void)?
     var onWindows: (([GuestWindow]) -> Void)?
@@ -27,13 +36,15 @@ final class GuestWindowsClient {
     var onCursor: ((Int) -> Void)?
     /// What a program asks of its window (who shows the windows decides whether it is done).
     var onAsked: ((UInt32, GuestWindowAsk) -> Void)?
+    /// What a window shows, where its program drew.
+    var onPixels: ((GuestPixels) -> Void)?
     /// The guest hung up, said nonsense or stopped reading. Not called for `stop()`.
     var onDisconnect: (() -> Void)?
 
     private let channel: ByteChannel
     private let queue = DispatchQueue(label: "dev.monad.guest-windows", qos: .userInteractive)
     private let writer: Writer
-    private var source: DispatchSourceRead?
+    private var reading: Reading?
     private var finished = false
 
     init(channel: ByteChannel) {
@@ -42,7 +53,7 @@ final class GuestWindowsClient {
     }
 
     func start() {
-        guard source == nil, !finished else { return }
+        guard reading == nil, !finished else { return }
         let fd = channel.fileDescriptor
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         var on: Int32 = 1 // a guest that hung up is an error from write, not a signal
@@ -50,31 +61,44 @@ final class GuestWindowsClient {
         var reader = GuestWindowReader()
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         let channel = self.channel, writer = self.writer
-        src.setEventHandler { [weak self, unowned src] in
-            var buf = [UInt8](repeating: 0, count: 16 * 1024)
-            let n = Darwin.read(fd, &buf, buf.count)
+        // Pixels come by the megabyte: read as much at once, into memory taken once.
+        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 1 << 20, alignment: 16)
+        let queue = self.queue
+        let reading = Reading(src)
+        src.setEventHandler { [weak self] in
+            let n = Darwin.read(fd, buffer.baseAddress, buffer.count)
             if n < 0 && (errno == EAGAIN || errno == EINTR) { return }
-            let events = n > 0 ? reader.feed(Data(buf[0..<n])) : []
+            let events = n > 0 ? reader.feed(Data(bytesNoCopy: buffer.baseAddress!, count: n, deallocator: .none)) : []
             if n <= 0 || reader.isBroken {
                 // Stop reading here and now: a source at EOF stays readable
                 // and would fire in a loop until the main thread gets to it.
-                src.cancel()
+                reading.cancel()
                 DispatchQueue.main.async { self?.finish() }
                 return
             }
-            if !events.isEmpty { DispatchQueue.main.async { self?.handle(events) } }
+            guard !events.isEmpty else { return }
+            let bytes = events.reduce(0) { sum, event in
+                if case .pixels(let pixels) = event { return sum + pixels.data.count }
+                return sum
+            }
+            reading.handed(bytes)
+            DispatchQueue.main.async {
+                self?.handle(events)
+                if bytes > 0 { queue.async { reading.shown(bytes) } }
+            }
         }
         src.setCancelHandler {
             writer.close()
             channel.close()
+            buffer.deallocate()
         }
-        source = src
+        self.reading = reading
         src.resume()
     }
 
     /// Says it to the window manager; never waits for it.
     func send(_ command: GuestWindowCommand) {
-        guard !finished, source != nil else { return }
+        guard !finished, reading != nil else { return }
         let bytes = Array(command.text.utf8)
         guard !bytes.isEmpty else { return }
         var kind = Writer.Kind.line
@@ -88,12 +112,12 @@ final class GuestWindowsClient {
     func stop() {
         guard !finished else { return }
         finished = true
-        if let source {
-            source.cancel()
+        if let reading {
+            queue.async { reading.cancel() }
         } else {
             channel.close()
         }
-        source = nil
+        reading = nil
     }
 
     private func finish() {
@@ -111,7 +135,40 @@ final class GuestWindowsClient {
             case .copied(let text): onCopied?(text)
             case .cursor(let shape): onCursor?(shape)
             case .asked(let window, let ask): onAsked?(window, ask)
+            case .pixels(let pixels): onPixels?(pixels)
             }
+        }
+    }
+
+    /// The reading of what the guest sends, and how far it is ahead of the
+    /// main thread in pixels; only ever touched on the client's queue.
+    private final class Reading: @unchecked Sendable {
+        private let source: DispatchSourceRead
+        private var waiting = 0
+        private var paused = false
+
+        init(_ source: DispatchSourceRead) { self.source = source }
+
+        /// Pixels were handed to the main thread: with too many waiting there, reading stops.
+        func handed(_ bytes: Int) {
+            waiting += bytes
+            guard waiting > GuestWindowsClient.maxPixelsWaiting, !paused else { return }
+            paused = true
+            source.suspend()
+        }
+
+        /// The main thread took that many: reading goes on once it has caught up.
+        func shown(_ bytes: Int) {
+            waiting -= bytes
+            guard paused, waiting <= GuestWindowsClient.maxPixelsWaiting / 2 else { return }
+            paused = false
+            source.resume()
+        }
+
+        func cancel() {
+            if paused { source.resume() } // a source that is stopped cannot be cancelled
+            paused = false
+            source.cancel()
         }
     }
 

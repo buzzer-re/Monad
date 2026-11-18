@@ -1,6 +1,6 @@
 /*
  * mwm_wire.h — the Wayland wire format for Monad's window manager (the
- * program that puts a Linux VM's windows on its display, GuestWM/): one
+ * program that hands a Linux VM's windows to the Mac, GuestWM/): one
  * client's socket, the messages read from it and written to it, and the
  * file descriptors that travel beside them.
  *

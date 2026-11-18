@@ -77,15 +77,12 @@ enum CloudInit {
 
         """
 
-    /// The window manager's service. It takes the display as root and goes
-    /// on as the VM's user, whose programs connect to it; MonadHost reaches
-    /// it on a vsock port. Not on while the Desktop profile's session has
-    /// the display. Off until the Windows profile turns it on.
-    ///
-    /// Every window has a place of its own on the display, so the display
-    /// is as large as the VM's memory affords: at a Retina screen's scale
-    /// two ordinary windows fill 3840×2160, and one that finds no room is
-    /// not shown.
+    /// The window manager's service. It starts as root, for the user's
+    /// session to be there, and goes on as the VM's user, whose programs
+    /// connect to it; MonadHost reaches it on a vsock port, where it is
+    /// sent the windows and their pixels. It takes no display, so it runs
+    /// in a VM without one and beside the Desktop profile's session. Off
+    /// until the App windows profile turns it on.
     static func windowManagerUnit(user: String) throws -> String {
         guard InstanceConfig.isValidUser(user) else {
             throw MonadError("“\(user)” is no user name to start the window manager as.")
@@ -93,14 +90,12 @@ enum CloudInit {
         return """
             [Unit]
             Description=Monad: the VM's programs as windows on the Mac
-            ConditionPathExists=/dev/dri/card0
-            Conflicts=monad-display.service
             After=systemd-user-sessions.service
 
             [Service]
             ExecStartPre=/bin/sh \(windowManagerDirectory)/wm-session start \(user)
             # $$ is systemd's way to write a $ meant for the shell.
-            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --size "$$(/bin/sh \(windowManagerDirectory)/wm-session size)" --owner "$$uid" --control vsock:\(windowsVsockPort)'
+            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --owner "$$uid" --control vsock:\(windowsVsockPort)'
             ExecStopPost=-/bin/sh \(windowManagerDirectory)/wm-session stop \(user)
             Restart=on-failure
             RestartSec=2

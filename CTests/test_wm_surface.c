@@ -2,7 +2,7 @@
  * test_wm_surface.c — what a window is made of (GuestWM/mwm_surface):
  * a surface and the subsurfaces on it, drawn where they stand and in their
  * order; only what the program says changed is copied; a program that
- * draws at twice the size says so; and where windows go on the display.
+ * draws at twice the size says so; and where windows go on the sheet.
  */
 #include "wm_test_client.h"
 
@@ -61,13 +61,14 @@ static void test_a_subsurface_is_drawn_on_its_parent(void) {
     show(&a, p.surface, p.buffer, 8, 4);
     pump(s, &a);
     CHECK(at(10, 5) == pattern(0x00101000, 10, 5, 64)); /* its commit waits for its parent's */
-    presented = 0;
+    (void)drawn(s, v.id);
+    CHECK(drew(s, v.id, 0, 0, 0, 0));
     request(&a, v.surface, 6, 0);
     pump(s, &a);
     CHECK(at(10, 5) == 0xffff0000 && at(17, 8) == 0xffff0000);
     CHECK(at(9, 5) == pattern(0x00101000, 9, 5, 64) && at(18, 5) == pattern(0x00101000, 18, 5, 64));
     CHECK(at(10, 4) == pattern(0x00101000, 10, 4, 64) && at(10, 9) == pattern(0x00101000, 10, 9, 64));
-    CHECK(presented >= 1);
+    CHECK(drawn(s, v.id).width >= 8);
     mwm_window list[2];
     CHECK(mwm_server_windows(s, list, 2) == 1 && list[0].width == 64 && list[0].height == 32); /* still one window, its size */
 
@@ -175,7 +176,91 @@ static void test_parts_are_drawn_in_their_order(void) {
     mwm_server_free(s);
 }
 
-/* Only what the program says changed is copied to the display. */
+/* A window's pixels are the program's as it drew them: where it drew
+ * nothing there is nothing (the Mac shows what is behind the window), and
+ * what is half there stays half there. */
+static void test_what_a_program_leaves_open_stays_open(void) {
+    enum { WIDE = 16, HIGH = 8 };
+    mwm_server *s = server();
+    client a = connect_client(s);
+    uint32_t sub = bind_global(&a, "wl_subcompositor", 1);
+    window v = open_window(s, &a, "W", "app", 0x00112233, WIDE, HIGH);
+    uint32_t drawing[WIDE * HIGH];
+    for (int i = 0; i < WIDE * HIGH; i++) drawing[i] = 0xff204060u;
+    drawing[0] = 0x00000000u; /* a round corner: nothing of the window there */
+    drawing[1] = 0x80102030u; /* its edge: half there */
+    uint32_t pool = a.next++, buffer = a.next++;
+    make_drawn(&a, pool, buffer, drawing, WIDE, HIGH);
+    show_buffer(s, &a, v.surface, buffer, WIDE, HIGH);
+    CHECK(at(0, 0) == 0x00000000u && at(1, 0) == 0x80102030u && at(2, 0) == 0xff204060u);
+
+    /* A part of it over those: over nothing it is itself, over what is half there the two add up. */
+    part p = add_part(&a, sub, v.surface, 0, 0);
+    uint32_t over_them[4] = {0x80400000u, 0x80400000u, 0x80400000u, 0x00000000u};
+    uint32_t pool2 = a.next++;
+    p.buffer = a.next++;
+    make_drawn(&a, pool2, p.buffer, over_them, 4, 1);
+    show(&a, p.surface, p.buffer, 4, 1);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(at(0, 0) == 0x80400000u);
+    CHECK(at(1, 0) == 0xc0481018u); /* half of it, and half of the half under it */
+    CHECK(at(2, 0) == 0xff502030u && at(3, 0) == 0xff204060u);
+
+    /* A program that says its pixels are all there (XRGB) is taken at its word, whatever it wrote in their place. */
+    uint32_t solid_buffer;
+    close(solid(&a, &solid_buffer, 0x00a0b0c0, WIDE, HIGH, XRGB));
+    show(&a, v.surface, solid_buffer, WIDE, HIGH);
+    pump(s, &a);
+    CHECK(at(5, 5) == 0xffa0b0c0u);
+    mwm_msg m;
+    while (mwm_conn_next(a.c, &m)) CHECK(m.object != 1 || m.opcode != DISPLAY_ERROR);
+    mwm_conn_free(a.c);
+    mwm_server_free(s);
+}
+
+/* What was drawn of a window is handed out once, for whoever shows the
+ * windows: the part that changed, with where its pixels are; in pieces
+ * when it is more than can be taken at once. */
+static void test_what_was_drawn_is_handed_out_once(void) {
+    mwm_server *s = server();
+    client a = connect_client(s), b = connect_client(s);
+    window one = open_window(s, &a, "One", "app", 0x00110000, 64, 32);
+    window two = open_window(s, &b, "Two", "app", 0x00220000, 40, 20);
+    mwm_window list[2];
+    CHECK(mwm_server_windows(s, list, 2) == 2);
+    mwm_drawn d;
+    CHECK(mwm_server_take_drawn(s, two.id, W * H, &d) && d.x == 0 && d.y == 0 && d.width == 40 && d.height == 20);
+    /* Its pixels, where the window stands: `stride` words from a row to the next. */
+    CHECK(d.pixels == &pixels[list[1].y * W + list[1].x] && d.stride == W);
+    CHECK(d.pixels[0] == 0xff220000u && d.pixels[(size_t)d.stride * 19 + 39] == (0xff220000u | ((19 * 40 + 39) & 0xff)));
+    CHECK(!mwm_server_take_drawn(s, two.id, W * H, &d)); /* once */
+    CHECK(!mwm_server_take_drawn(s, 9999, W * H, &d));   /* no window */
+
+    /* No more than can be taken: whole rows from the top, the rest next time. */
+    CHECK(mwm_server_take_drawn(s, one.id, 64 * 10 + 5, &d) && d.x == 0 && d.y == 0 && d.width == 64 && d.height == 10);
+    CHECK(mwm_server_take_drawn(s, one.id, 1, &d) && d.y == 10 && d.width == 64 && d.height == 1); /* a row at least */
+    CHECK(d.pixels[0] == (0xff110000u | ((11 * 64 - 64) & 0xff)));
+    /* What it draws meanwhile comes after what is left. */
+    uint32_t pool = a.next++, buffer = a.next++;
+    make_buffer(&a, pool, buffer, 0x00330000, 64, 32);
+    request(&a, one.surface, 1, 3, buffer, 0, 0);
+    request(&a, one.surface, 9, 4, 2, 3, 4, 1); /* damage_buffer */
+    request(&a, one.surface, 6, 0);
+    pump(s, &a);
+    CHECK(mwm_server_take_drawn(s, one.id, W * H, &d) && d.x == 0 && d.y == 11 && d.width == 64 && d.height == 21);
+    CHECK(mwm_server_take_drawn(s, one.id, W * H, &d) && d.x == 2 && d.y == 3 && d.width == 4 && d.height == 1);
+    CHECK(!mwm_server_take_drawn(s, one.id, W * H, &d));
+
+    /* Whoever shows the windows is new: all of every window is to be handed out again. */
+    mwm_server_drawn_again(s);
+    CHECK(drew(s, one.id, 0, 0, 64, 32) && drew(s, two.id, 0, 0, 40, 20));
+    mwm_conn_free(a.c);
+    mwm_conn_free(b.c);
+    mwm_server_free(s);
+}
+
+/* Only what the program says changed is copied to the sheet. */
 static void test_only_what_changed_is_copied(void) {
     mwm_server *s = server();
     client a = connect_client(s);
@@ -188,42 +273,63 @@ static void test_only_what_changed_is_copied(void) {
     show(&a, v.surface, v.buffer, 64, 32);
     pump(s, &a);
     CHECK(at(0, 0) == 0xff111111 && at(63, 31) == 0xff111111);
-    CHECK(last_x == 0 && last_y == 0 && last_w == 64 && last_h == 32);
+    mwm_window it;
+    CHECK(mwm_server_windows(s, &it, 1) == 1);
+    uint32_t id = it.id;
+    CHECK(drew(s, id, 0, 0, 64, 32));
 
     /* The program paints its whole buffer anew and says a small part changed. */
     uint32_t white = 0x00ffffff;
     for (int i = 0; i < 64 * 32; i++) CHECK(pwrite(fd, &white, 4, i * 4) == 4);
-    presented = 0;
     request(&a, v.surface, 1, 3, v.buffer, 0, 0);
     request(&a, v.surface, 9, 4, 4, 6, 8, 2); /* damage_buffer */
     request(&a, v.surface, 6, 0);
     pump(s, &a);
     CHECK(at(4, 6) == 0xffffffff && at(11, 7) == 0xffffffff);
     CHECK(at(3, 6) == 0xff111111 && at(12, 6) == 0xff111111 && at(4, 5) == 0xff111111 && at(4, 8) == 0xff111111);
-    CHECK(presented == 1 && last_x == 4 && last_y == 6 && last_w == 8 && last_h == 2);
+    CHECK(drew(s, id, 4, 6, 8, 2));
 
-    /* Several parts in one commit: what holds them all. */
+    /* Several parts in one commit, apart from each other: each of them, and not what lies between
+     * (a spinner in one corner and a clock in another are not the whole window). */
     request(&a, v.surface, 9, 4, 0, 0, 2, 2);
     request(&a, v.surface, 2, 4, 20, 10, 2, 2); /* damage, in the program's units: the same as pixels here */
     request(&a, v.surface, 6, 0);
     pump(s, &a);
-    CHECK(last_x == 0 && last_y == 0 && last_w == 22 && last_h == 12);
-    CHECK(at(21, 11) == 0xffffffff && at(22, 11) == 0xff111111);
-
-    /* A commit that says nothing changed copies nothing; one that says more than there is copies what there is. */
-    presented = 0;
+    CHECK(drew(s, id, 0, 0, 2, 2) && drew(s, id, 20, 10, 2, 2) && drew(s, id, 0, 0, 0, 0));
+    CHECK(at(21, 11) == 0xffffffff && at(22, 11) == 0xff111111 && at(10, 5) == 0xff111111);
+    /* Parts that touch are one. */
+    request(&a, v.surface, 9, 4, 30, 20, 2, 2);
+    request(&a, v.surface, 9, 4, 32, 20, 2, 2);
+    request(&a, v.surface, 9, 4, 31, 21, 4, 3);
     request(&a, v.surface, 6, 0);
     pump(s, &a);
-    CHECK(presented == 0 && at(40, 20) == 0xff111111);
+    CHECK(drew(s, id, 30, 20, 5, 4) && drew(s, id, 0, 0, 0, 0));
+    /* More parts than are kept apart (a program may name thousands): some go together, and none is lost. */
+    for (int i = 0; i < 16; i++) request(&a, v.surface, 9, 4, (uint32_t)(i * 4 + 1), (uint32_t)(i * 2), 1, 1);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    bool covered[16] = {false};
+    int parts = 0;
+    for (mwm_drawn d = drawn(s, id); d.width > 0; d = drawn(s, id), parts++) {
+        for (int i = 0; i < 16; i++)
+            if (i * 4 + 1 >= d.x && i * 4 + 1 < d.x + d.width && i * 2 >= d.y && i * 2 < d.y + d.height) covered[i] = true;
+    }
+    CHECK(parts >= 2 && parts <= 8);
+    for (int i = 0; i < 16; i++) CHECK(covered[i] && at(i * 4 + 1, i * 2) == 0xffffffff);
+
+    /* A commit that says nothing changed copies nothing; one that says more than there is copies what there is. */
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(drew(s, id, 0, 0, 0, 0) && at(60, 2) == 0xff111111);
     request(&a, v.surface, 9, 4, (uint32_t)-50, (uint32_t)-50, 0x7fffffff, 0x7fffffff);
     request(&a, v.surface, 6, 0);
     pump(s, &a);
-    CHECK(presented == 1 && last_x == 0 && last_y == 0 && last_w == 64 && last_h == 32 && at(40, 20) == 0xffffffff);
+    CHECK(drew(s, id, 0, 0, 64, 32) && at(60, 2) == 0xffffffff);
     request(&a, v.surface, 9, 4, 1000, 1000, 5, 5); /* outside it altogether */
     request(&a, v.surface, 2, 4, 5, 5, (uint32_t)-3, 0);
     request(&a, v.surface, 6, 0);
     pump(s, &a);
-    CHECK(presented == 1);
+    CHECK(drew(s, id, 0, 0, 0, 0));
     mwm_msg m;
     while (mwm_conn_next(a.c, &m)) CHECK(m.object != 1 || m.opcode != DISPLAY_ERROR);
     close(fd);
@@ -255,10 +361,11 @@ static void test_a_program_draws_at_the_screens_scale(void) {
     pump(s, &a);
     CHECK(mwm_server_windows(s, list, 2) == 1 && list[0].scale == 2 && list[0].width == 64 && list[0].height == 32);
     CHECK(mwm_server_generation(s) != generation);
+    (void)drawn(s, v.id);
     request(&a, v.surface, 2, 4, 2, 3, 4, 1);
     request(&a, v.surface, 6, 0);
     pump(s, &a);
-    CHECK(last_x == 4 && last_y == 6 && last_w == 8 && last_h == 2);
+    CHECK(drew(s, v.id, 4, 6, 8, 2));
 
     /* A part drawn at 1 on a window drawn at 2 is shown twice as large, where its units put it. */
     part p = add_part(&a, sub, v.surface, 5, 3);
@@ -393,7 +500,7 @@ static void test_the_window_inside_its_shadow_is_told(void) {
     mwm_server_free(s);
 }
 
-/* Windows fill the display row by row; one that grows into its neighbour
+/* Windows fill the sheet row by row; one that grows into its neighbour
  * moves to where there is room; one with no room at all is not shown. */
 static void test_windows_are_placed_in_rows(void) {
     mwm_server *s = server();
@@ -435,6 +542,8 @@ static void test_windows_are_placed_in_rows(void) {
 int main(void) {
     test_a_subsurface_is_drawn_on_its_parent();
     test_parts_are_drawn_in_their_order();
+    test_what_a_program_leaves_open_stays_open();
+    test_what_was_drawn_is_handed_out_once();
     test_only_what_changed_is_copied();
     test_a_program_draws_at_the_screens_scale();
     test_surfaces_misused_drop_the_program();

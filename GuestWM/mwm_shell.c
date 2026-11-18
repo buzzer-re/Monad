@@ -5,7 +5,7 @@
  * and who draws a window's frame (xdg-decoration: the Mac).
  *
  * A surface with such a role is told its size at its first commit, and is
- * a window on the display once it has a buffer (mwm_surface.c gives it a
+ * a window on the sheet once it has a buffer (mwm_surface.c gives it a
  * place and draws it). A popup has a place of its own like any window: it
  * is told to the Mac with the window it is on and where it stands on it,
  * and the Mac shows it there. Where it stands is the program's choice (its
@@ -60,7 +60,7 @@ static void configure(mwm_server *s, client *c, xdg *x) {
     mwm_event_uint(c, x->id, 0, ++s->serial);
 }
 
-/* The role of a window on the display; NULL when it has none left. */
+/* The role of a window on the sheet; NULL when it has none left. */
 static xdg *role_of(const window *w) { return w && w->used && w->surface ? w->surface->xdg : NULL; }
 
 /* The window's role, when it is a top-level one whose program can still be told things. */
@@ -494,17 +494,15 @@ box mwm_shell_inner(const window *w) {
 /* The colour of the program's own bar: what it drew at the middle of the
  * window's top edge, a little down (its corners may be round). The Mac's
  * title bar above takes it, so the two read as one. */
-bool mwm_shell_painted(mwm_server *s, window *w) {
+void mwm_shell_painted(mwm_server *s, window *w) {
     box inner = mwm_shell_inner(w);
     int x = w->x + (inner.x1 + inner.x2) / 2, y = w->y + inner.y1 + 2 * w->scale;
     if (y >= w->y + inner.y2) y = w->y + inner.y2 - 1;
-    if (x < 0 || y < 0 || x >= s->screen.width || y >= s->screen.height) return false;
-    uint32_t color = s->screen.pixels[(size_t)y * (size_t)s->screen.stride + (size_t)x] & 0x00ffffff;
-    if (color == w->bar_color) return false;
+    if (x < 0 || y < 0 || x >= s->screen.width || y >= s->screen.height) return;
+    uint32_t pixel = s->screen.pixels[(size_t)y * (size_t)s->screen.stride + (size_t)x], color = pixel & 0x00ffffff;
+    if (pixel >> 24 != 0xff || color == w->bar_color) return; /* a see-through pixel is no colour: the one last seen stays */
     w->bar_color = color;
-    if (!mwm_shell_own_bar(w)) return false;
-    s->generation++;
-    return true;
+    if (mwm_shell_own_bar(w)) s->generation++;
 }
 
 /* The program's word on its frame changed: the Mac is told when its window is there. */

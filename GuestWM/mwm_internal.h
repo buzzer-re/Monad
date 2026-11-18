@@ -1,11 +1,11 @@
 /*
  * mwm_internal.h — what the parts of the window manager's server share:
  * a program's objects, its surfaces and buffers, the windows on the
- * display.
+ * sheet.
  *
  *   mwm_server.c   clients, the registry, shared memory, the output
  *   mwm_surface.c  surfaces and their subsurfaces, the windows' places on
- *                  the display, and drawing them there
+ *                  the sheet, and drawing them there
  *   mwm_shell.c    windows as programs ask for them (xdg_wm_base)
  *   mwm_seat.c     the pointer and the keyboard
  *   mwm_data.c     the clipboard's interface
@@ -88,6 +88,16 @@ typedef struct {
     int32_t x1, y1, x2, y2;
 } box;
 
+/* A few rectangles: what changed of a surface or a window, without what
+ * lies between the parts that did (a spinner in one corner and a clock in
+ * another are not the whole window). Parts that meet are kept as one; with
+ * no room for another, the two that make the least of it together are. */
+enum { MWM_REGION = 8 };
+typedef struct {
+    int count;
+    box boxes[MWM_REGION];
+} region;
+
 /* Shared memory a program handed over; kept while any of its buffers is. */
 typedef struct {
     int refs;
@@ -108,10 +118,10 @@ typedef struct {
     int shown;
 } buffer;
 
-/* A window's place on the display, in the display's pixels. */
+/* A window's place on the sheet, in the sheet's pixels. */
 typedef struct {
     bool used;
-    /* It is being taken off the display: nothing is to come back to it. */
+    /* It is being taken off the sheet: nothing is to come back to it. */
     bool going;
     uint32_t id;
     int x, y, width, height;
@@ -119,9 +129,8 @@ typedef struct {
     int scale;
     /* The colour at the top of what the program drew (0x00RRGGBB), as it was last seen. */
     uint32_t bar_color;
-    /* A popup's shape, when it is no whole rectangle (mwm_server.h). */
-    int band_count;
-    mwm_band bands[MWM_MAX_BANDS];
+    /* What was drawn of it and not handed out yet (mwm_server_take_drawn), in its pixels. */
+    region drawn;
     surface *surface;
 } window;
 
@@ -168,7 +177,7 @@ typedef struct {
     buffer *buffer;
     bool attached; /* `buffer` is to be shown (NULL: nothing is) */
     /* What changed since the last commit: in the buffer's pixels, and in the program's units. */
-    box damage, surface_damage;
+    region damage, surface_damage;
     int32_t scale; /* 0: as it was */
     uint32_t frames[MAX_FRAMES];
     int frame_count;
@@ -193,8 +202,8 @@ struct surface {
     state pending;
     buffer *current;
     int32_t scale;
-    /* What of it changed and is not on the display yet, in its buffer's pixels. */
-    box dirty;
+    /* What of it changed and is not on the sheet yet, in its buffer's pixels. */
+    region dirty;
     uint32_t frames_waiting[MAX_FRAMES];
     int waiting_count;
     xdg *xdg;
@@ -308,7 +317,7 @@ void mwm_flush(mwm_server *s);
 /* A surface no longer shows the buffer: the program gets it back, or it is freed. */
 void mwm_buffer_unshown(buffer *b);
 
-/* Surfaces, windows and the display (mwm_surface.c). */
+/* Surfaces, windows and the sheet (mwm_surface.c). */
 
 /* A request to wl_compositor, wl_surface, wl_region, wl_subcompositor or wl_subsurface. */
 void mwm_surface_request(mwm_server *s, client *c, object *o, mwm_msg *m);
@@ -316,7 +325,7 @@ void mwm_surface_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 void mwm_surface_destroy(mwm_server *s, client *c, surface *f, bool tell);
 /* The buffer is being destroyed: no commit that waits may show it. */
 void mwm_surface_forget_buffer(client *c, const buffer *b);
-/* The window leaves the display, and its place is cleared. */
+/* The window leaves the sheet, and its place is cleared. */
 void mwm_window_gone(mwm_server *s, window *w);
 /* The window with that id; NULL when there is none. */
 window *mwm_window_by_id(mwm_server *s, uint32_t id);
@@ -329,9 +338,9 @@ void mwm_shell_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 void mwm_shell_commit(mwm_server *s, client *c, surface *f);
 /* The window is told it is the one in front, or that it no longer is. */
 void mwm_shell_activate(mwm_server *s, window *w, bool active);
-/* A window came on the display: a menu that asked for the keyboard takes it. */
+/* A window came on the sheet: a menu that asked for the keyboard takes it. */
 void mwm_shell_window_new(mwm_server *s, window *w);
-/* A window is leaving the display: its popups go first. */
+/* A window is leaving the sheet: its popups go first. */
 void mwm_shell_window_going(mwm_server *s, window *w);
 /* The window a popup is on; NULL for a top-level window. */
 window *mwm_shell_parent(const window *w);
@@ -344,9 +353,8 @@ void mwm_shell_role_gone(client *c, xdg *x);
 bool mwm_shell_own_bar(const window *w);
 /* The part of the window that is the window proper, in its pixels; all of it unless the program said less. */
 box mwm_shell_inner(const window *w);
-/* The window was drawn: the colour at the top of it is looked at again.
- * True when it changed and is what the window's open parts show. */
-bool mwm_shell_painted(mwm_server *s, window *w);
+/* The window was drawn: the colour at the top of it is looked at again. */
+void mwm_shell_painted(mwm_server *s, window *w);
 
 /* The pointer and the keyboard (mwm_seat.c). */
 
@@ -357,7 +365,7 @@ void mwm_seat_free(mwm_server *s);
 void mwm_seat_bound(client *c, uint32_t id);
 /* A request to wl_seat, wl_pointer or wl_keyboard. */
 void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m);
-/* The window leaves the display: its program is told the pointer and the
+/* The window leaves the sheet: its program is told the pointer and the
  * keyboard left it, and neither is anybody's until the Mac says. */
 void mwm_seat_window_gone(mwm_server *s, window *w);
 /* The keys go to that window (a menu that took them, or what had them before it); NULL: to none. */
