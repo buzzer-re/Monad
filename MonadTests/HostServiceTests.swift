@@ -621,12 +621,26 @@ final class HostServiceTests: XCTestCase {
     /// "open -b" let Launch Services pick any copy with the bundle id (an
     /// older Debug build elsewhere), which replaced MonadHost and shut its
     /// VMs down on every MCP approval (seen 2026-11-02).
+    ///
+    /// And as a copy of its own: MonadHost runs from inside the app, so to
+    /// Launch Services the app is running whenever MonadHost is, and a
+    /// plain "open" (or a click on Monad in the Dock) after the app quit
+    /// reached MonadHost and opened nothing (seen 2026-11-18). A copy that
+    /// is running is brought forward instead: a second one would ask it
+    /// to quit (OtherCopies), with the user's tabs.
     func testTheAppOpenedToAskIsTheOneAroundThisMonadHost() {
-        let host = URL(fileURLWithPath: "/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app/Contents/MacOS/MonadHost")
-        XCTAssertEqual(HostService.openAppArguments(executable: host),
-                       ["/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app"])
-        XCTAssertNil(HostService.openAppArguments(executable: URL(fileURLWithPath: "/usr/local/bin/MonadHost")),
+        let app = "/Users/dev/Library/Developer/Xcode/DerivedData/Monad-x/Build/Products/Debug/Monad Debug.app"
+        let host = URL(fileURLWithPath: app + "/Contents/MacOS/MonadHost")
+        XCTAssertEqual(HostService.appOpening(executable: host, running: []), .launch(["-n", app]))
+        XCTAssertNil(HostService.appOpening(executable: URL(fileURLWithPath: "/usr/local/bin/MonadHost"), running: []),
                      "not inside an app: nothing is opened")
+        // The app is running: that one comes forward, and no second copy is started.
+        XCTAssertEqual(HostService.appOpening(executable: host, running: [(pid: 41, bundle: URL(fileURLWithPath: app, isDirectory: true))]),
+                       .bringForward(41))
+        // A copy elsewhere is not this MonadHost's app: ours is started (and asks that one to quit).
+        XCTAssertEqual(HostService.appOpening(executable: host, running: [(pid: 7, bundle: URL(fileURLWithPath: "/Applications/Monad Debug.app")),
+                                                                       (pid: 8, bundle: nil)]),
+                       .launch(["-n", app]))
     }
 
     func testRestartAppliesSavedSettings() async throws {

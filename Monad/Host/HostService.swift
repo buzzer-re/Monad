@@ -8,6 +8,7 @@
 //  ephemeral VMs it used are discarded. Persistent VMs keep running.
 //
 
+import AppKit
 import Combine
 import Foundation
 import os
@@ -55,20 +56,51 @@ final class HostService {
     /// path: "open -b" let Launch Services pick any copy with the bundle id,
     /// such as an older Debug build elsewhere, which replaced MonadHost and
     /// shut its VMs down whenever an agent's call asked the user.
+    ///
+    /// MonadHost runs from inside that app, so to Launch Services the app
+    /// is running whenever MonadHost is: a plain "open", like a click on
+    /// Monad in the Dock, reaches MonadHost when the app has quit, and
+    /// opens nothing. So the app is started as a copy of its own, or, when
+    /// it runs, brought forward and told what a click in the Dock tells it.
+    /// The Dock's click itself arrives here too (MonadHost/main.swift).
     static func openMonad() {
-        guard let executable = Bundle.main.executableURL, let arguments = openAppArguments(executable: executable) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = arguments
-        try? p.run()
+        guard let executable = Bundle.main.executableURL else { return }
+        let copies = NSRunningApplication.runningApplications(withBundleIdentifier: Flavor.current.appIdentifier)
+        switch appOpening(executable: executable, running: copies.map { (pid: $0.processIdentifier, bundle: $0.bundleURL) }) {
+        case .launch(let arguments)?:
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = arguments
+            try? p.run()
+        case .bringForward(let pid)?:
+            copies.first { $0.processIdentifier == pid }?.activate()
+            // "Reopen": the app opens a window when it has none (one of the events any app may send another).
+            let event = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEReopenApplication),
+                                               targetDescriptor: NSAppleEventDescriptor(processIdentifier: pid),
+                                               returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+            _ = try? event.sendEvent(options: [.noReply, .neverInteract], timeout: 2)
+        case nil:
+            break
+        }
     }
 
-    /// `open`'s arguments for the app around MonadHost's `executable`
-    /// (…/X.app/Contents/MacOS/MonadHost); nil when it is not in an app.
-    nonisolated static func openAppArguments(executable: URL) -> [String]? {
+    enum OpenApp: Equatable {
+        /// `open`'s arguments.
+        case launch([String])
+        /// The copy running already, by its process.
+        case bringForward(pid_t)
+    }
+
+    /// How the app around MonadHost's `executable`
+    /// (…/X.app/Contents/MacOS/MonadHost) is opened, given the copies of
+    /// the app that run; nil when MonadHost is not in an app.
+    nonisolated static func appOpening(executable: URL, running: [(pid: pid_t, bundle: URL?)]) -> OpenApp? {
         let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         guard app.pathExtension == "app", executable.deletingLastPathComponent().lastPathComponent == "MacOS" else { return nil }
-        return [app.path]
+        if let copy = running.first(where: { $0.bundle?.standardizedFileURL.path == app.standardizedFileURL.path }) {
+            return .bringForward(copy.pid)
+        }
+        return .launch(["-n", app.path])
     }
     /// Monad's version. MonadHost lives in Monad.app/Contents/MacOS, but its
     /// Bundle.main carries the tool's own embedded plist (no version), and

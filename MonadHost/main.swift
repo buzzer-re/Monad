@@ -10,6 +10,17 @@ import AppKit
 import Foundation
 import os
 
+/// A click on Monad in the Dock, or the app opened in the Finder, while
+/// only MonadHost runs: Launch Services takes MonadHost for the app (it
+/// runs from inside it) and tells it to open again. The app it is.
+final class ReopenDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Log.host.notice("asked to open again (the Dock, the Finder): opening Monad")
+        HostService.openMonad()
+        return false
+    }
+}
+
 // monad-netd: this same binary, started by MonadHost with the control channel
 // as descriptor 3 (mnd_netd_spawn). It goes straight into the C network
 // process, which sandboxes itself before reading a command.
@@ -131,7 +142,9 @@ MainActor.assumeIsolated {
     // window here (MacDesktop). Nothing shows until one is opened.
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
-    withExtendedLifetime((listener, lifetime, term, wake)) {
+    let reopen = ReopenDelegate()
+    app.delegate = reopen
+    withExtendedLifetime((listener, lifetime, term, wake, reopen)) {
         app.run()
     }
 }
