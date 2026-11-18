@@ -1,19 +1,22 @@
 /*
  * mwm_server.h — Monad's window manager for a Linux VM's display: the
  * Wayland server programs connect to. It gives each program's window its
- * own place on the display, side by side and never overlapping (the Mac
- * shows each place as a window of its own), and copies what the program
- * drew there.
+ * own place on the display, in rows and never overlapping (the Mac shows
+ * each place as a window of its own), and draws there what the program
+ * drew.
  *
  * This part knows nothing of the display's hardware or of sockets being
  * listened on: it is handed a block of pixels (mwm_screen) and connected
  * clients, so it runs in tests on the Mac and on Linux
- * (CTests/test_wm_server.c). mwm_kms.c and mwm_main.c are the Linux side.
+ * (CTests/test_wm_*.c). mwm_kms.c and mwm_main.c are the Linux side.
  *
  * What it speaks so far: wl_display, wl_registry, wl_compositor,
- * wl_surface, wl_region, wl_shm (ARGB8888 and XRGB8888), wl_output,
- * xdg_wm_base with top-level windows, and wl_seat with a pointer and a
- * keyboard. No popups, no clipboard yet.
+ * wl_surface, wl_region, wl_subcompositor, wl_shm (ARGB8888 and XRGB8888),
+ * wl_output, xdg_wm_base with top-level windows, wl_seat with a pointer
+ * and a keyboard, and wl_data_device_manager as far as programs need it to
+ * start (nothing is copied anywhere). No popups, no clipboard yet. A
+ * window's own surface takes the pointer wherever it is over the window:
+ * its subsurfaces are drawn, and not told of the pointer.
  */
 #ifndef MWM_SERVER_H
 #define MWM_SERVER_H
@@ -32,10 +35,17 @@ typedef struct {
     void *ctx;
 } mwm_screen;
 
-/* A window as it is on the display. */
+/* A window as it is on the display, in the display's pixels. */
 typedef struct {
     uint32_t id;
     int x, y, width, height;
+    /* Pixels to one of the program's units (1, or 2 when it draws for a
+     * Retina screen): the Mac's window is that many times smaller in points. */
+    int scale;
+    /* The part of it that is the window proper, from the window's top
+     * left: all of it, unless the program draws a shadow around its window
+     * and said where the window is inside. */
+    int inner_x, inner_y, inner_width, inner_height;
     /* Plain text of the program's choosing; never NULL. */
     const char *title;
     const char *app_id;
@@ -89,6 +99,9 @@ bool mwm_server_wants_frame(const mwm_server *s);
 
 /* The display's size. */
 void mwm_server_size(const mwm_server *s, int *width, int *height);
+/* The scale of the Mac's screen (1, or 2 on a Retina screen): programs are
+ * told, and draw their windows with that many pixels to a unit. */
+void mwm_server_scale(mwm_server *s, int scale);
 
 /* The windows on the display, oldest first: how many were written. */
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max);
@@ -109,13 +122,14 @@ void mwm_server_close(mwm_server *s, uint32_t window);
  * the keyboard, and the program owning it is told. A window that does not
  * exist is no window (0).
  *
- * Positions are in the window, from its top left, in 1/256 of a pixel;
+ * Positions are in the window, from its top left, in 1/256 of one of the
+ * program's units (a pixel, or two when it draws for a Retina screen);
  * buttons and keys are the Linux kernel's codes (BTN_LEFT, KEY_A);
  * modifiers are X's bits (Shift 1, Lock 2, Control 4, Mod1 8, ...).
  */
 void mwm_server_pointer(mwm_server *s, uint32_t window, int32_t x, int32_t y, uint32_t time_ms);
 void mwm_server_button(mwm_server *s, uint32_t button, bool pressed, uint32_t time_ms);
-/* Scrolling by so much, in 1/256 of a pixel: right and down are positive. */
+/* Scrolling by so much, in 1/256 of a unit: right and down are positive. */
 void mwm_server_scroll(mwm_server *s, int32_t dx, int32_t dy, uint32_t time_ms);
 /* The window in front, which gets the keys; 0 when none is. */
 void mwm_server_focus(mwm_server *s, uint32_t window);

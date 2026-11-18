@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { XDG_ROLE = 0 };
+enum { XDG_ROLE = 0, XDG_INVALID_SIZE = 5 };
 
 static void copy_text(char *dst, const char *src) {
     snprintf(dst, TEXT, "%s", src ? src : "");
@@ -54,7 +54,15 @@ void mwm_server_close(mwm_server *s, uint32_t window_id) {
 
 void mwm_shell_commit(mwm_server *s, client *c, surface *f) {
     xdg *x = f->xdg;
-    if (!x || !x->toplevel || x->configured) return;
+    if (!x) return;
+    if (x->geometry_waits) {
+        x->geometry_waits = false;
+        if (memcmp(&x->geometry, &x->next_geometry, sizeof x->geometry) != 0) {
+            x->geometry = x->next_geometry;
+            if (f->window) s->generation++;
+        }
+    }
+    if (!x->toplevel || x->configured) return;
     configure(s, c, x); /* its first commit */
     x->configured = true;
 }
@@ -80,7 +88,7 @@ static void wm_base_request(client *c, mwm_msg *m) {
             mwm_fail(c, m->object, E_INVALID_OBJECT, "not a surface");
             return;
         }
-        if (f->xdg || f->current) {
+        if (f->xdg || f->sub || f->current) {
             mwm_fail(c, m->object, XDG_ROLE, "the surface has a role or a buffer already");
             return;
         }
@@ -122,7 +130,23 @@ static void xdg_surface_request(mwm_server *s, client *c, xdg *x, mwm_msg *m) {
         if (mwm_add(c, id, T_TOPLEVEL, x)) x->toplevel = id;
     } else if (m->opcode == 2) { /* get_popup */
         mwm_fail(c, m->object, E_IMPLEMENTATION, "Monad's window manager has no popups yet");
-    } else if (m->opcode == 3 || m->opcode == 4) { /* set_window_geometry, ack_configure */
+    } else if (m->opcode == 3) { /* set_window_geometry: at the surface's next commit */
+        int32_t gx = mwm_get_int(m), gy = mwm_get_int(m), width = mwm_get_int(m), height = mwm_get_int(m);
+        if (m->bad) return;
+        if (width <= 0 || height <= 0) {
+            mwm_fail(c, m->object, XDG_INVALID_SIZE, "a window has a width and a height");
+            return;
+        }
+        /* Kept within what a surface can be: they are multiplied by its scale later. */
+        if (gx < -MWM_MAX_SIDE) gx = -MWM_MAX_SIDE;
+        if (gy < -MWM_MAX_SIDE) gy = -MWM_MAX_SIDE;
+        if (gx > MWM_MAX_SIDE) gx = MWM_MAX_SIDE;
+        if (gy > MWM_MAX_SIDE) gy = MWM_MAX_SIDE;
+        if (width > MWM_MAX_SIDE) width = MWM_MAX_SIDE;
+        if (height > MWM_MAX_SIDE) height = MWM_MAX_SIDE;
+        x->next_geometry = (box){gx, gy, gx + width, gy + height};
+        x->geometry_waits = true;
+    } else if (m->opcode == 4) { /* ack_configure */
         mwm_skip_arguments(m);
     } else {
         mwm_fail(c, m->object, E_INVALID_METHOD, "xdg_surface has no such request");

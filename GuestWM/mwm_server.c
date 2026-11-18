@@ -1,5 +1,6 @@
 /*
- * mwm_server.c — see mwm_server.h.
+ * mwm_server.c — see mwm_server.h. This part: the programs connected, the
+ * objects each has, the registry, shared memory and the output.
  *
  * A program's objects are kept by the ids it gave them (small numbers it
  * reuses), each with what it is. A request names an object and an opcode;
@@ -10,8 +11,6 @@
 #include "mwm_internal.h"
 
 #include <fcntl.h>
-#include <setjmp.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +20,7 @@
 
 enum { SHM_INVALID_FORMAT = 0, SHM_INVALID_STRIDE = 1, SHM_INVALID_FD = 2 };
 enum { FORMAT_ARGB8888 = 0, FORMAT_XRGB8888 = 1 };
+enum { OUTPUT_GEOMETRY = 0, OUTPUT_MODE = 1, OUTPUT_DONE = 2, OUTPUT_SCALE = 3 };
 
 /* The globals a program may bind, by their name in the registry. */
 static const struct {
@@ -33,21 +33,10 @@ static const struct {
     {"xdg_wm_base", 2, T_WM_BASE},
     {"wl_output", 2, T_OUTPUT},
     {"wl_seat", 5, T_SEAT},
+    {"wl_subcompositor", 1, T_SUBCOMPOSITOR},
+    {"wl_data_device_manager", 3, T_DATA_MANAGER},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
-
-/* ------------------------------------------------------------------------ */
-/* Memory that can go away under us                                          */
-
-/* A program can shrink the file behind its pool after handing it over;
- * reading past its end then raises SIGBUS. The copy runs between
- * sigsetjmp and here: mwm_main.c's handler calls mwm_server_bus_error. */
-static sigjmp_buf bus_jump;
-static volatile sig_atomic_t bus_guarded;
-
-void mwm_server_bus_error(void) {
-    if (bus_guarded) siglongjmp(bus_jump, 1);
-}
 
 /* ------------------------------------------------------------------------ */
 /* Objects and errors                                                        */
@@ -73,6 +62,11 @@ void *mwm_find_as(client *c, uint32_t id, obj_type type) {
     return o && o->type == type ? o->data : NULL;
 }
 
+bool mwm_is(client *c, uint32_t id, obj_type type) {
+    object *o = find(c, id);
+    return o && o->type == type;
+}
+
 bool mwm_add(client *c, uint32_t id, obj_type type, void *data) {
     if (c->dead) return false;
     if (id == 0 || id >= MWM_MAX_OBJECTS) {
@@ -95,15 +89,13 @@ bool mwm_add(client *c, uint32_t id, obj_type type, void *data) {
         mwm_fail(c, id, E_INVALID_OBJECT, "an object has that id already");
         return false;
     }
-    c->objects[id].type = (uint8_t)type;
-    c->objects[id].data = data;
+    c->objects[id] = (object){.type = (uint8_t)type, .data = data};
     return true;
 }
 
 void mwm_del(client *c, uint32_t id) {
     if (id == 0 || id >= c->object_cap) return;
-    c->objects[id].type = T_NONE;
-    c->objects[id].data = NULL;
+    c->objects[id] = (object){.type = T_NONE};
     if (c->dead) return;
     mwm_put_begin(c->conn, 1, 1);
     mwm_put_uint(c->conn, id);
@@ -116,141 +108,7 @@ void mwm_event_uint(client *c, uint32_t id, uint16_t opcode, uint32_t v) {
     mwm_put_end(c->conn);
 }
 
-/* ------------------------------------------------------------------------ */
-/* The display                                                               */
-
-static void present(mwm_server *s, int x, int y, int w, int h) {
-    if (w > 0 && h > 0 && s->screen.present) s->screen.present(s->screen.ctx, x, y, w, h);
-}
-
-static void clear(mwm_server *s, int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) return;
-    for (int row = y; row < y + h; row++) memset(s->screen.pixels + (size_t)row * (size_t)s->screen.stride + x, 0, (size_t)w * 4);
-    present(s, x, y, w, h);
-}
-
-/* The leftmost place `width` wide that no window but `self` is on, or -1. */
-static int place(const mwm_server *s, const window *self, int width) {
-    int x = 0;
-    for (;;) {
-        const window *hit = NULL;
-        for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
-            const window *w = &s->windows[i];
-            if (!w->used || w == self) continue;
-            if (x < w->x + w->width + MWM_GAP && w->x < x + width + MWM_GAP) {
-                if (!hit || w->x + w->width > hit->x + hit->width) hit = w;
-            }
-        }
-        if (!hit) return x + width <= s->screen.width || x == 0 ? x : -1;
-        x = hit->x + hit->width + MWM_GAP;
-        if (x >= s->screen.width) return -1;
-    }
-}
-
-/* How wide a window at `x` may be before it meets the next one or the
- * display's edge. */
-static int room_at(const mwm_server *s, const window *self, int x) {
-    int room = s->screen.width - x;
-    for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
-        const window *w = &s->windows[i];
-        if (!w->used || w == self || w->x + w->width <= x) continue;
-        if (w->x - MWM_GAP - x < room) room = w->x - MWM_GAP - x;
-    }
-    return room > 0 ? room : 0;
-}
-
-window *mwm_window_by_id(mwm_server *s, uint32_t id) {
-    for (int i = 0; id != 0 && i < MWM_MAX_WINDOWS; i++)
-        if (s->windows[i].used && s->windows[i].id == id) return &s->windows[i];
-    return NULL;
-}
-
-void mwm_window_gone(mwm_server *s, window *w) {
-    if (!w || !w->used) return;
-    mwm_seat_window_gone(s, w);
-    clear(s, w->x, w->y, w->width, w->height);
-    int index = (int)(w - s->windows);
-    for (int i = 0; i < s->window_count; i++) {
-        if (s->order[i] != index) continue;
-        memmove(&s->order[i], &s->order[i + 1], (size_t)(s->window_count - i - 1) * sizeof(int));
-        s->window_count--;
-        break;
-    }
-    if (w->surface) w->surface->window = NULL;
-    memset(w, 0, sizeof *w);
-    s->generation++;
-}
-
-/* Copies the buffer to the window's place, cut at the display's edges. */
-static bool blit(mwm_server *s, const window *w, const buffer *b) {
-    volatile bool ok = true;
-    bus_guarded = 1;
-    if (sigsetjmp(bus_jump, 1) == 0) {
-        for (int row = 0; row < w->height; row++) {
-            const uint8_t *src = b->pool->map + b->offset + (size_t)row * (size_t)b->stride;
-            uint32_t *dst = s->screen.pixels + (size_t)(w->y + row) * (size_t)s->screen.stride + w->x;
-            for (int col = 0; col < w->width; col++) {
-                uint32_t v;
-                memcpy(&v, src + (size_t)col * 4, 4);
-                dst[col] = v | 0xff000000u; /* a window is opaque on the display */
-            }
-        }
-    } else {
-        ok = false; /* the memory behind the buffer went away */
-    }
-    bus_guarded = 0;
-    return ok;
-}
-
-/* The surface's buffer changed: its window comes, changes or goes. */
-static void show(mwm_server *s, surface *f) {
-    buffer *b = f->current;
-    if (!b || !f->xdg || !f->xdg->configured) {
-        mwm_window_gone(s, f->window);
-        return;
-    }
-    window *w = f->window;
-    int width = b->width < s->screen.width ? b->width : s->screen.width;
-    int height = b->height < s->screen.height ? b->height : s->screen.height;
-    window before = {0};
-    if (!w) {
-        for (int i = 0; i < MWM_MAX_WINDOWS && !w; i++)
-            if (!s->windows[i].used) w = &s->windows[i];
-        if (!w) return; /* as many windows as there may be: this one is not shown */
-        int x = place(s, NULL, width);
-        if (x < 0) return; /* no room on the display */
-        w->used = true;
-        w->id = ++s->next_window;
-        w->x = x;
-        w->y = 0;
-        w->surface = f;
-        f->window = w;
-        s->order[s->window_count++] = (int)(w - s->windows);
-        s->generation++;
-    } else {
-        before = *w;
-        if (width != w->width || height != w->height) {
-            /* Where it stands while it fits there, else a place of its own. */
-            if (width > room_at(s, w, w->x)) {
-                int x = place(s, w, width);
-                if (x >= 0) w->x = x;
-            }
-            s->generation++;
-        }
-    }
-    /* Never onto its neighbour: with no place wide enough, cut where it stands. */
-    int room = room_at(s, w, w->x);
-    w->width = width < room ? width : room;
-    w->height = height;
-    if (before.used && (before.x != w->x || before.width > w->width || before.height > w->height)) {
-        clear(s, before.x, before.y, before.width, before.height); /* what the old size left */
-    }
-    if (!blit(s, w, b)) {
-        mwm_fail(f->owner, f->id, E_IMPLEMENTATION, "the buffer's memory is gone");
-        return;
-    }
-    present(s, w->x, w->y, w->width, w->height);
-}
+void mwm_skip_arguments(mwm_msg *m) { m->pos = (uint32_t)m->size - MWM_HEADER; }
 
 /* ------------------------------------------------------------------------ */
 /* Buffers and pools                                                         */
@@ -262,7 +120,7 @@ static void pool_unref(pool *p) {
     free(p);
 }
 
-static void buffer_unshown(buffer *b) {
+void mwm_buffer_unshown(buffer *b) {
     if (!b || --b->shown > 0) return;
     client *c = b->owner;
     if (b->id == 0) { /* destroyed by the program meanwhile: nothing holds it now */
@@ -293,94 +151,6 @@ static bool map_pool(pool *p, int32_t size) {
     p->map = map;
     p->size = (size_t)size;
     return true;
-}
-
-/* ------------------------------------------------------------------------ */
-/* Surfaces                                                                  */
-
-static void surface_destroy(mwm_server *s, client *c, surface *f, bool tell) {
-    mwm_seat_surface_gone(s, f);
-    mwm_window_gone(s, f->window);
-    if (f->xdg) f->xdg->surface = NULL;
-    buffer_unshown(f->current);
-    for (int i = 0; i < f->pending_count; i++) mwm_del(c, f->frames_pending[i]);
-    for (int i = 0; i < f->waiting_count; i++) mwm_del(c, f->frames_waiting[i]);
-    s->frames_waiting -= f->waiting_count;
-    if (tell) mwm_del(c, f->id);
-    free(f);
-}
-
-static void surface_commit(mwm_server *s, client *c, surface *f) {
-    /* Callbacks asked for since the last commit wait for the next frame;
-     * more than can wait are answered at once rather than never. */
-    for (int i = 0; i < f->pending_count; i++) {
-        if (f->waiting_count < MAX_FRAMES) {
-            f->frames_waiting[f->waiting_count++] = f->frames_pending[i];
-            s->frames_waiting++;
-        } else {
-            mwm_event_uint(c, f->frames_pending[i], 0, s->frame_time);
-            mwm_del(c, f->frames_pending[i]);
-        }
-    }
-    f->pending_count = 0;
-    mwm_shell_commit(s, c, f);
-    if (!f->attached) return;
-    f->attached = false;
-    buffer *old = f->current;
-    f->current = f->pending;
-    f->pending = NULL;
-    if (f->current) f->current->shown++;
-    show(s, f);
-    buffer_unshown(old);
-}
-
-/* ------------------------------------------------------------------------ */
-/* Requests                                                                  */
-
-void mwm_skip_arguments(mwm_msg *m) { m->pos = (uint32_t)m->size - MWM_HEADER; }
-
-static void bind_global(client *c, mwm_msg *m) {
-    mwm_server *s = c->server;
-    uint32_t name = mwm_get_uint(m), len;
-    const char *interface = mwm_get_string(m, &len);
-    uint32_t version = mwm_get_uint(m), id = mwm_get_uint(m);
-    if (m->bad) return;
-    if (name == 0 || name > GLOBALS || !interface || strcmp(interface, globals[name - 1].interface) != 0 || version == 0
-        || version > globals[name - 1].version) {
-        mwm_fail(c, m->object, E_INVALID_OBJECT, "no such global");
-        return;
-    }
-    obj_type type = globals[name - 1].type;
-    if (!mwm_add(c, id, type, NULL)) return;
-    c->objects[id].version = (uint8_t)version;
-    if (type == T_SEAT) {
-        mwm_seat_bound(c, id);
-    } else if (type == T_SHM) {
-        mwm_event_uint(c, id, 0, FORMAT_ARGB8888);
-        mwm_event_uint(c, id, 0, FORMAT_XRGB8888);
-    } else if (type == T_OUTPUT) {
-        mwm_put_begin(c->conn, id, 0); /* geometry */
-        mwm_put_int(c->conn, 0);
-        mwm_put_int(c->conn, 0);
-        mwm_put_int(c->conn, 0);
-        mwm_put_int(c->conn, 0);
-        mwm_put_int(c->conn, 0);
-        mwm_put_string(c->conn, "Monad");
-        mwm_put_string(c->conn, "display");
-        mwm_put_int(c->conn, 0);
-        mwm_put_end(c->conn);
-        mwm_put_begin(c->conn, id, 1); /* mode: current */
-        mwm_put_uint(c->conn, 1);
-        mwm_put_int(c->conn, s->screen.width);
-        mwm_put_int(c->conn, s->screen.height);
-        mwm_put_int(c->conn, 60000);
-        mwm_put_end(c->conn);
-        if (version >= 2) {
-            mwm_event_uint(c, id, 3, 1); /* scale */
-            mwm_put_begin(c->conn, id, 2); /* done */
-            mwm_put_end(c->conn);
-        }
-    }
 }
 
 static void create_pool(client *c, mwm_msg *m) {
@@ -427,13 +197,8 @@ static void create_buffer(client *c, pool *p, mwm_msg *m) {
         mwm_fail(c, m->object, E_NO_MEMORY, "out of memory");
         return;
     }
-    b->owner = c;
-    b->id = id;
-    b->pool = p;
-    b->offset = offset;
-    b->width = width;
-    b->height = height;
-    b->stride = stride;
+    *b = (buffer){.owner = c, .id = id, .pool = p, .offset = offset, .width = width, .height = height, .stride = stride,
+                  .alpha = format == FORMAT_ARGB8888};
     if (!mwm_add(c, id, T_BUFFER, b)) {
         free(b);
         return;
@@ -441,45 +206,70 @@ static void create_buffer(client *c, pool *p, mwm_msg *m) {
     p->refs++;
 }
 
-static void surface_request(mwm_server *s, client *c, surface *f, mwm_msg *m) {
-    switch (m->opcode) {
-    case 0: /* destroy */
-        surface_destroy(s, c, f, true);
-        break;
-    case 1: { /* attach */
-        uint32_t id = mwm_get_uint(m);
-        (void)mwm_get_int(m);
-        (void)mwm_get_int(m);
-        if (m->bad) return;
-        buffer *b = NULL;
-        if (id != 0 && !(b = mwm_find_as(c, id, T_BUFFER))) {
-            mwm_fail(c, f->id, E_INVALID_OBJECT, "not a buffer");
-            return;
-        }
-        f->pending = b;
-        f->attached = true;
-        break;
+/* ------------------------------------------------------------------------ */
+/* The registry and the output                                               */
+
+static void output_scale(mwm_server *s, client *c, uint32_t id) {
+    if (c->objects[id].version < 2) return;
+    mwm_event_uint(c, id, OUTPUT_SCALE, (uint32_t)s->scale);
+    mwm_put_begin(c->conn, id, OUTPUT_DONE);
+    mwm_put_end(c->conn);
+}
+
+static void bind_global(client *c, mwm_msg *m) {
+    mwm_server *s = c->server;
+    uint32_t name = mwm_get_uint(m), len;
+    const char *interface = mwm_get_string(m, &len);
+    uint32_t version = mwm_get_uint(m), id = mwm_get_uint(m);
+    if (m->bad) return;
+    if (name == 0 || name > GLOBALS || !interface || strcmp(interface, globals[name - 1].interface) != 0 || version == 0
+        || version > globals[name - 1].version) {
+        mwm_fail(c, m->object, E_INVALID_OBJECT, "no such global");
+        return;
     }
-    case 3: { /* frame */
-        uint32_t id = mwm_get_uint(m);
-        if (m->bad) return;
-        if (f->pending_count == MAX_FRAMES) {
-            mwm_fail(c, f->id, E_NO_MEMORY, "too many frame callbacks");
-            return;
-        }
-        if (mwm_add(c, id, T_CALLBACK, NULL)) f->frames_pending[f->pending_count++] = id;
-        break;
-    }
-    case 6: /* commit */
-        surface_commit(s, c, f);
-        break;
-    case 2: case 4: case 5: case 7: case 8: case 9: /* damage, regions, transform, scale: all of it is copied anyway */
-        mwm_skip_arguments(m);
-        break;
-    default:
-        mwm_fail(c, f->id, E_INVALID_METHOD, "wl_surface has no such request");
+    obj_type type = globals[name - 1].type;
+    if (!mwm_add(c, id, type, NULL)) return;
+    c->objects[id].version = (uint8_t)version;
+    if (type == T_SEAT) {
+        mwm_seat_bound(c, id);
+    } else if (type == T_SHM) {
+        mwm_event_uint(c, id, 0, FORMAT_ARGB8888);
+        mwm_event_uint(c, id, 0, FORMAT_XRGB8888);
+    } else if (type == T_OUTPUT) {
+        mwm_put_begin(c->conn, id, OUTPUT_GEOMETRY);
+        mwm_put_int(c->conn, 0);
+        mwm_put_int(c->conn, 0);
+        mwm_put_int(c->conn, 0);
+        mwm_put_int(c->conn, 0);
+        mwm_put_int(c->conn, 0);
+        mwm_put_string(c->conn, "Monad");
+        mwm_put_string(c->conn, "display");
+        mwm_put_int(c->conn, 0);
+        mwm_put_end(c->conn);
+        mwm_put_begin(c->conn, id, OUTPUT_MODE);
+        mwm_put_uint(c->conn, 1); /* current */
+        mwm_put_int(c->conn, s->screen.width);
+        mwm_put_int(c->conn, s->screen.height);
+        mwm_put_int(c->conn, 60000);
+        mwm_put_end(c->conn);
+        output_scale(s, c, id);
     }
 }
+
+void mwm_server_scale(mwm_server *s, int scale) {
+    if (scale < 1 || scale > MAX_SCALE || scale == s->scale) return;
+    s->scale = scale;
+    for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
+        client *c = s->clients[i];
+        if (!c || c->dead) continue;
+        for (uint32_t id = 0; id < c->object_cap; id++)
+            if (c->objects[id].type == T_OUTPUT) output_scale(s, c, id);
+    }
+    mwm_flush(s);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Requests                                                                  */
 
 static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     object *o = find(c, m->object);
@@ -514,33 +304,14 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
         else mwm_fail(c, m->object, E_INVALID_METHOD, "wl_registry has no such request");
         break;
     case T_COMPOSITOR:
-        if (m->opcode == 0) { /* create_surface */
-            uint32_t id = mwm_get_uint(m);
-            if (m->bad) return;
-            surface *f = calloc(1, sizeof *f);
-            if (!f) {
-                mwm_fail(c, m->object, E_NO_MEMORY, "out of memory");
-                return;
-            }
-            f->owner = c;
-            f->id = id;
-            if (!mwm_add(c, id, T_SURFACE, f)) free(f);
-        } else if (m->opcode == 1) { /* create_region */
-            uint32_t id = mwm_get_uint(m);
-            if (!m->bad) (void)mwm_add(c, id, T_REGION, NULL);
-        } else {
-            mwm_fail(c, m->object, E_INVALID_METHOD, "wl_compositor has no such request");
-        }
-        break;
     case T_SURFACE:
-        surface_request(s, c, o->data, m);
+    case T_REGION:
+    case T_SUBCOMPOSITOR:
+    case T_SUBSURFACE:
+        mwm_surface_request(s, c, o, m);
         break;
     case T_CALLBACK: /* told once and gone: it takes no request */
         mwm_fail(c, m->object, E_INVALID_METHOD, "wl_callback has no requests");
-        break;
-    case T_REGION: /* nothing is cut by regions yet: only destroy means anything */
-        if (m->opcode == 0) mwm_del(c, m->object);
-        else mwm_skip_arguments(m);
         break;
     case T_SHM:
         if (m->opcode == 0) create_pool(c, m);
@@ -566,14 +337,8 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     }
     case T_BUFFER:
         if (m->opcode == 0) {
-            buffer *b = o->data;
-            /* An attach that was never committed no longer names it. */
-            for (uint32_t i = 0; i < c->object_cap; i++) {
-                if (c->objects[i].type == T_SURFACE && ((surface *)c->objects[i].data)->pending == b) {
-                    ((surface *)c->objects[i].data)->pending = NULL;
-                }
-            }
-            buffer_destroy(c, b, true);
+            mwm_surface_forget_buffer(c, o->data); /* an attach that was never committed no longer names it */
+            buffer_destroy(c, o->data, true);
         } else {
             mwm_fail(c, m->object, E_INVALID_METHOD, "wl_buffer has no such request");
         }
@@ -593,6 +358,11 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_TOPLEVEL:
         mwm_shell_request(s, c, o, m);
         break;
+    case T_DATA_MANAGER:
+    case T_DATA_SOURCE:
+    case T_DATA_DEVICE:
+        mwm_data_request(s, c, o, m);
+        break;
     case T_DISPLAY:
     case T_NONE:
         mwm_fail(c, m->object, E_INVALID_OBJECT, "no such object");
@@ -608,7 +378,7 @@ static void client_free(mwm_server *s, client *c) {
     /* Surfaces first (they hold buffers), then the rest. */
     for (uint32_t i = 0; i < c->object_cap; i++) {
         if (c->objects[i].type == T_SURFACE) {
-            surface_destroy(s, c, c->objects[i].data, false);
+            mwm_surface_destroy(s, c, c->objects[i].data, false);
             c->objects[i].type = T_NONE;
         }
     }
@@ -616,10 +386,10 @@ static void client_free(mwm_server *s, client *c) {
         object *o = &c->objects[i];
         switch ((obj_type)o->type) {
         case T_BUFFER: buffer_destroy(c, o->data, false); break;
-        case T_XDG_SURFACE: free(o->data); break;
-        default: break;
+        case T_XDG_SURFACE: case T_SUBSURFACE: free(o->data); break;
+        default: continue;
         }
-        if (o->type == T_BUFFER || o->type == T_XDG_SURFACE) o->type = T_NONE;
+        o->type = T_NONE;
     }
     for (uint32_t i = 0; i < c->object_cap; i++) {
         if (c->objects[i].type == T_POOL) pool_unref(c->objects[i].data);
@@ -634,6 +404,7 @@ mwm_server *mwm_server_new(const mwm_screen *screen) {
     mwm_server *s = calloc(1, sizeof *s);
     if (!s) return NULL;
     s->screen = *screen;
+    s->scale = 1;
     if (!mwm_seat_init(s)) {
         free(s);
         return NULL;
@@ -739,14 +510,26 @@ void mwm_server_size(const mwm_server *s, int *width, int *height) {
     *height = s->screen.height;
 }
 
+
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
     int n = 0;
     for (int i = 0; i < s->window_count; i++) {
         const window *w = &s->windows[s->order[i]];
         if (out && n < max) {
             const xdg *x = w->surface ? w->surface->xdg : NULL;
-            out[n] = (mwm_window){.id = w->id, .x = w->x, .y = w->y, .width = w->width, .height = w->height,
-                                  .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
+            /* The part that is the window, in its pixels; all of it unless the program said less. */
+            box inner = {0, 0, w->width, w->height};
+            if (x && x->geometry.x2 > x->geometry.x1 && x->geometry.y2 > x->geometry.y1) {
+                box g = {x->geometry.x1 * w->scale, x->geometry.y1 * w->scale, x->geometry.x2 * w->scale, x->geometry.y2 * w->scale};
+                if (g.x1 < 0) g.x1 = 0;
+                if (g.y1 < 0) g.y1 = 0;
+                if (g.x2 > w->width) g.x2 = w->width;
+                if (g.y2 > w->height) g.y2 = w->height;
+                if (g.x2 > g.x1 && g.y2 > g.y1) inner = g;
+            }
+            out[n] = (mwm_window){.id = w->id, .x = w->x, .y = w->y, .width = w->width, .height = w->height, .scale = w->scale,
+                                  .inner_x = inner.x1, .inner_y = inner.y1, .inner_width = inner.x2 - inner.x1,
+                                  .inner_height = inner.y2 - inner.y1, .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
         }
         n++;
     }

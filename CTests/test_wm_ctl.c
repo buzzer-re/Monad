@@ -72,7 +72,7 @@ static void test_the_windows_are_told(void) {
     CHECK(line_is(c, &h, "monad-wm 1 400 200"));
     snprintf(expected, sizeof expected, "windows %u 1", mwm_server_generation(s));
     CHECK(line_is(c, &h, expected));
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 app.one One", one.id);
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 app.one One", one.id);
     CHECK(line_is(c, &h, expected));
     CHECK(line_is(c, &h, "end"));
     CHECK(line(c, &h) == NULL);
@@ -85,10 +85,10 @@ static void test_the_windows_are_told(void) {
     mwm_ctl_update(c);
     snprintf(expected, sizeof expected, "windows %u 2", mwm_server_generation(s));
     CHECK(line_is(c, &h, expected));
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 app.one One", one.id);
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 app.one One", one.id);
     CHECK(line_is(c, &h, expected));
-    snprintf(expected, sizeof expected, "window %u %d 0 100 50 - 50%%25%%20of%%09two%%0Awindow%%209%%200%%200%%201%%201%%20x%%20y", two.id,
-             64 + MWM_GAP);
+    snprintf(expected, sizeof expected,
+             "window %u %d 0 100 50 1 0 0 100 50 - 50%%25%%20of%%09two%%0Awindow%%209%%200%%200%%201%%201%%20x%%20y", two.id, 64 + MWM_GAP);
     CHECK(line_is(c, &h, expected));
     CHECK(line_is(c, &h, "end"));
 
@@ -99,7 +99,7 @@ static void test_the_windows_are_told(void) {
     pump(s, &a);
     mwm_ctl_update(c);
     CHECK(line(c, &h) != NULL);
-    snprintf(expected, sizeof expected, "window %u 0 0 64 32 app.one caf%%C3%%A9%%20%%FF%%01", one.id);
+    snprintf(expected, sizeof expected, "window %u 0 0 64 32 1 0 0 64 32 app.one caf%%C3%%A9%%20%%FF%%01", one.id);
     CHECK(line_is(c, &h, expected));
     CHECK(line(c, &h) != NULL && line_is(c, &h, "end"));
     char longest[200];

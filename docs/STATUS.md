@@ -50,20 +50,21 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   Mac's screen (keys, clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
   none to a Linux guest: measured), a desktop with a panel (XFCE fails to start this way on Ubuntu
   26.04), Debian's and Kali's cloud kernels.
-- **Linux programs as Mac windows: begun, not usable yet.** `GuestWM/` holds the first parts of
-  Monad's own window manager for the guest (`monad-wm`): the Wayland wire format and a server with
-  top-level windows drawn through shared memory, each at a place of its own on the display, on
-  kernel mode setting asked directly; a pointer and a keyboard that are told from outside (the
-  Mac's, not the VM's devices), with the keys written as an XKB keymap from a table (libxkbcommon
-  in a VM reads it); and its end of a channel for MonadHost (lines of text: the windows one way;
-  pointer, keys, the keys' table, resize and close the other), on a vsock port only the Mac can
-  dial. Compiled in a Debug VM with its `cc` and run by hand: two `weston-simple-shm` side by
-  side, moving, read back on the Mac (the Debug tool `read_display`). Next: what real programs ask
-  for before they start (foot wants `wl_subcompositor` and the clipboard's interface), MonadHost's
-  end of the channel and the Mac's windows, popups, the clipboard, Xwayland, installing it with
-  the Desktop profile (`docs/DISPLAY.md`). Not tried: the pointer and keyboard with a real program
-  (only the tests' client so far), the channel over vsock (a unix socket so far), a program that
-  shrinks its shared memory under the window manager (the guard is written, not run).
+- **Linux programs as Mac windows: begun, not usable yet.** `GuestWM/` is Monad's own window
+  manager for the guest (`monad-wm`), as far as one real program: the Wayland wire format; a
+  server with top-level windows and their subsurfaces, drawn from shared memory where the program
+  says something changed, each window at a place of its own on the display, on kernel mode setting
+  asked directly; a pointer and a keyboard that are told from outside (the Mac's, not the VM's
+  devices), with the keys written as an XKB keymap from a table; and its end of a channel for
+  MonadHost (lines of text: the windows one way; the screen's scale, pointer, keys, the keys'
+  table, resize and close the other), on a vsock port only the Mac can dial. Compiled in a Debug
+  VM with its `cc` and run by hand: foot starts on it and ran a command typed through the channel,
+  read back on the Mac (the Debug tool `read_display`). Next: MonadHost's end of the channel and
+  the Mac's windows, window frames left to the Mac, popups, the clipboard, Xwayland, installing it
+  with the Desktop profile (`docs/DISPLAY.md`). Not tried: GTK and Qt programs, the pointer with a
+  real program, a Retina scale with a real program, the channel over vsock (a unix socket so
+  far), a program that shrinks its shared memory under the window manager (the guard is written,
+  not run).
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
   auto-forward of guest ports, stdio bridges, host commands, profiles (Agentic, Server, custom),

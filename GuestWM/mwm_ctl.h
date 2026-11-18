@@ -7,25 +7,31 @@
  *
  *   monad-wm 1 <display width> <display height>      once, first
  *   windows <generation> <count>
- *   window <id> <x> <y> <width> <height> <app id> <title>    count times
+ *   window <id> <x> <y> <width> <height> <scale> <inner x> <inner y>
+ *          <inner width> <inner height> <app id> <title>      count times
  *   end
  *
- * Text is the program's: every byte but plain printable ASCII is written
- * %XX, and an empty text is "-", so a line is always as many words as its
- * kind has. MonadHost reads all of it as hostile.
+ * A window's place is in the display's pixels; `scale` is how many of them
+ * the program draws to one of its units (the Mac's window is that many
+ * times smaller in points); `inner` is the part that is the window proper,
+ * when the program draws a shadow around it. Text is the program's: every
+ * byte but plain printable ASCII is written %XX, and an empty text is "-",
+ * so a line is always as many words as its kind has. MonadHost reads all
+ * of it as hostile.
  *
  * From MonadHost, what the Mac's pointer and keyboard do and what happens
  * to the Mac's windows (windows are named by id; 0 is no window):
  *
- *   pointer <window> <x> <y>          in the window, in 1/256 of a pixel
+ *   scale <n>                         the Mac's screen: 1, or 2 on a Retina screen
+ *   pointer <window> <x> <y>          in the window, in 1/256 of a unit
  *   button <code> <0|1>
- *   scroll <dx> <dy>                  in 1/256 of a pixel
+ *   scroll <dx> <dy>                  in 1/256 of a unit
  *   focus <window>
  *   key <code> <0|1>
  *   mods <held down> <locked>
  *   keys <count>                      then count times:
  *   k <code> <caps 0|1> <plain> <shift> <third> <shift third>
- *   size <window> <width> <height>
+ *   size <window> <width> <height>    in units
  *   close <window>
  *
  * A line it does not know is skipped (a newer Monad may say more); one

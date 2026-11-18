@@ -1,15 +1,22 @@
 /*
  * mwm_internal.h — what the parts of the window manager's server share:
  * a program's objects, its surfaces and buffers, the windows on the
- * display. mwm_server.c has the core (clients, the registry, surfaces,
- * shared memory, the display); mwm_shell.c has windows as programs ask for
- * them (xdg_wm_base).
+ * display.
+ *
+ *   mwm_server.c   clients, the registry, shared memory, the output
+ *   mwm_surface.c  surfaces and their subsurfaces, the windows' places on
+ *                  the display, and drawing them there
+ *   mwm_shell.c    windows as programs ask for them (xdg_wm_base)
+ *   mwm_seat.c     the pointer and the keyboard
+ *   mwm_data.c     the clipboard's interface
  */
 #ifndef MWM_INTERNAL_H
 #define MWM_INTERNAL_H
 
 #include "mwm_server.h"
 #include "mwm_wire.h"
+
+#include <stddef.h>
 
 typedef enum {
     T_NONE = 0,
@@ -30,11 +37,25 @@ typedef enum {
     T_SEAT,
     T_POINTER,
     T_KEYBOARD,
+    T_SUBCOMPOSITOR,
+    T_SUBSURFACE,
+    T_DATA_MANAGER,
+    T_DATA_SOURCE,
+    T_DATA_DEVICE,
 } obj_type;
 
 /* wl_display.error codes. */
 enum { E_INVALID_OBJECT = 0, E_INVALID_METHOD = 1, E_NO_MEMORY = 2, E_IMPLEMENTATION = 3 };
-enum { MAX_FRAMES = 16, TEXT = 128, MAX_HELD = 32 };
+enum {
+    MAX_FRAMES = 16,
+    TEXT = 128,
+    MAX_HELD = 32,
+    /* Subsurfaces one surface may have, and how deep they may nest. */
+    MAX_CHILDREN = 32,
+    MAX_DEPTH = 8,
+    /* A program draws at the screen's scale: 1, or 2 on a Retina screen; some ask for 3. */
+    MAX_SCALE = 4,
+};
 
 typedef struct client client;
 typedef struct surface surface;
@@ -45,6 +66,11 @@ typedef struct {
     uint8_t version;
     void *data;
 } object;
+
+/* A rectangle, from (x1, y1) up to but without (x2, y2); empty when it has no pixel. */
+typedef struct {
+    int32_t x1, y1, x2, y2;
+} box;
 
 /* Shared memory a program handed over; kept while any of its buffers is. */
 typedef struct {
@@ -60,14 +86,19 @@ typedef struct {
     uint32_t id;
     pool *pool;
     int32_t offset, width, height, stride;
+    /* ARGB8888: its pixels say how much of what is under them shows. */
+    bool alpha;
     /* The surfaces showing it. */
     int shown;
 } buffer;
 
+/* A window's place on the display, in the display's pixels. */
 typedef struct {
     bool used;
     uint32_t id;
     int x, y, width, height;
+    /* Pixels to one of the program's units: what its surface is drawn at. */
+    int scale;
     surface *surface;
 } window;
 
@@ -80,19 +111,55 @@ typedef struct {
     bool active;
     /* The size it was last asked to be; 0: any it likes. */
     int32_t width, height;
+    /* The part of the surface that is the window (the rest is its shadow),
+     * in the program's units; empty: all of it. */
+    box geometry;
+    /* What it will be at the surface's next commit. */
+    box next_geometry;
+    bool geometry_waits;
     char title[TEXT], app_id[TEXT];
 } xdg;
+
+/* What a commit makes take effect. */
+typedef struct {
+    buffer *buffer;
+    bool attached; /* `buffer` is to be shown (NULL: nothing is) */
+    /* What changed since the last commit: in the buffer's pixels, and in the program's units. */
+    box damage, surface_damage;
+    int32_t scale; /* 0: as it was */
+    uint32_t frames[MAX_FRAMES];
+    int frame_count;
+} state;
+
+/* A surface's role as a part of another (wl_subsurface). */
+typedef struct {
+    /* NULL once the surface, or its parent, was destroyed: it shows nowhere. */
+    surface *surface, *parent;
+    uint32_t id;
+    /* Where it is on its parent, in the program's units, and where it will be at the parent's next commit. */
+    int32_t x, y, next_x, next_y;
+    /* Its commits wait for its parent's (the default). */
+    bool sync;
+    bool has_cached;
+    state cached;
+} subsurface;
 
 struct surface {
     client *owner;
     uint32_t id;
-    buffer *pending;
-    bool attached; /* an attach waits for the commit */
+    state pending;
     buffer *current;
-    uint32_t frames_pending[MAX_FRAMES], frames_waiting[MAX_FRAMES];
-    int pending_count, waiting_count;
+    int32_t scale;
+    /* What of it changed and is not on the display yet, in its buffer's pixels. */
+    box dirty;
+    uint32_t frames_waiting[MAX_FRAMES];
+    int waiting_count;
     xdg *xdg;
+    subsurface *sub;
     window *window;
+    /* Itself and its subsurfaces, from the bottom up. */
+    surface *stack[MAX_CHILDREN + 1];
+    int stack_count;
 };
 
 struct client {
@@ -114,6 +181,8 @@ struct mwm_server {
     /* Callbacks waiting for the next frame, over all surfaces, and when the last frame was. */
     int frames_waiting;
     uint32_t frame_time;
+    /* What programs are told the screen's scale is. */
+    int scale;
     /* The pointer and the keyboard (mwm_seat.c). */
     struct {
         /* The window the pointer is over, and where in it. */
@@ -136,6 +205,8 @@ struct mwm_server {
 /* The program broke the protocol: it is told why, once, and dropped. */
 void mwm_fail(client *c, uint32_t id, uint32_t code, const char *why);
 void *mwm_find_as(client *c, uint32_t id, obj_type type);
+/* Whether the program has an object of that kind under that id. */
+bool mwm_is(client *c, uint32_t id, obj_type type);
 /* Registers an object under the id the program chose for it; false (and
  * the program failed) when it may not have that id. */
 bool mwm_add(client *c, uint32_t id, obj_type type, void *data);
@@ -146,9 +217,17 @@ void mwm_event_uint(client *c, uint32_t id, uint16_t opcode, uint32_t v);
 void mwm_skip_arguments(mwm_msg *m);
 /* Sends what waits for every program, and drops the ones that failed. */
 void mwm_flush(mwm_server *s);
+/* A surface no longer shows the buffer: the program gets it back, or it is freed. */
+void mwm_buffer_unshown(buffer *b);
 
-/* The display (mwm_server.c). */
+/* Surfaces, windows and the display (mwm_surface.c). */
 
+/* A request to wl_compositor, wl_surface, wl_region, wl_subcompositor or wl_subsurface. */
+void mwm_surface_request(mwm_server *s, client *c, object *o, mwm_msg *m);
+/* The surface goes, with what it shows; `tell`: its program is told the id is free. */
+void mwm_surface_destroy(mwm_server *s, client *c, surface *f, bool tell);
+/* The buffer is being destroyed: no commit that waits may show it. */
+void mwm_surface_forget_buffer(client *c, const buffer *b);
 /* The window leaves the display, and its place is cleared. */
 void mwm_window_gone(mwm_server *s, window *w);
 /* The window with that id; NULL when there is none. */
@@ -177,5 +256,10 @@ void mwm_seat_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 void mwm_seat_window_gone(mwm_server *s, window *w);
 /* The surface is being destroyed: nothing more is said about it. */
 void mwm_seat_surface_gone(mwm_server *s, surface *f);
+
+/* The clipboard's interface (mwm_data.c). */
+
+/* A request to wl_data_device_manager, wl_data_source or wl_data_device. */
+void mwm_data_request(mwm_server *s, client *c, object *o, mwm_msg *m);
 
 #endif

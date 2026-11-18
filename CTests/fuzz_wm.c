@@ -150,7 +150,8 @@ static void words(program *p, uint32_t object, uint16_t opcode, int count, const
     mwm_put_end(p->conn);
 }
 
-/* The exchange that opens a window, its sizes from the input. */
+/* The exchange that opens a window, its sizes from the input, with a part
+ * on it (a subsurface) somewhere, in some order, at some scale. */
 static void open_window(program *p, input *in) {
     uint32_t registry = p->next++, compositor = p->next++, shm = p->next++, wm = p->next++, surface = p->next++, xdg = p->next++,
              toplevel = p->next++, pool = p->next++, buffer = p->next++, seat = p->next++;
@@ -192,7 +193,28 @@ static void open_window(program *p, input *in) {
     mwm_put_end(p->conn);
     words(p, pool, 0, 6, (uint32_t[]){buffer, byte(in) % 8 ? 0 : number(in), width, height, stride, byte(in) % 2});
     words(p, surface, 1, 3, (uint32_t[]){buffer, 0, 0});
+    if (byte(in) % 4 == 0) words(p, surface, 8, 1, (uint32_t[]){byte(in) % 6}); /* set_buffer_scale, 0 and 5 being none */
     words(p, surface, 6, 0, NULL);
+    if (byte(in) % 2) {
+        uint32_t subcompositor = p->next++, part = p->next++, role = p->next++;
+        mwm_put_begin(p->conn, registry, 0);
+        mwm_put_uint(p->conn, 6);
+        mwm_put_string(p->conn, "wl_subcompositor");
+        mwm_put_uint(p->conn, 1);
+        mwm_put_uint(p->conn, subcompositor);
+        mwm_put_end(p->conn);
+        words(p, compositor, 0, 1, &part);
+        words(p, subcompositor, 1, 3, (uint32_t[]){role, part, surface});
+        words(p, role, 1, 2, (uint32_t[]){number(in) % 600 - 100, number(in) % 300 - 50}); /* set_position, also off the window */
+        if (byte(in) % 3 == 0) words(p, role, 5, 0, NULL);                                  /* set_desync */
+        if (byte(in) % 3 == 0) words(p, role, 3, 1, &surface);                              /* place_below its parent */
+        if (byte(in) % 4 == 0) words(p, part, 8, 1, (uint32_t[]){1 + byte(in) % 4});
+        words(p, part, 1, 3, (uint32_t[]){buffer, 0, 0});
+        words(p, part, 9, 4, (uint32_t[]){number(in), number(in), number(in), number(in)}); /* damage_buffer, anywhere */
+        words(p, part, 6, 0, NULL);
+        words(p, surface, 2, 4, (uint32_t[]){number(in), number(in), number(in), number(in)}); /* damage */
+        words(p, surface, 6, 0, NULL);
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
