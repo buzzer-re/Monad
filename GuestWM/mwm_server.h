@@ -139,6 +139,10 @@ void mwm_server_size(const mwm_server *s, int *width, int *height);
 /* The scale of the Mac's screen (1, or 2 on a Retina screen): programs are
  * told, and draw their windows with that many pixels to a unit. */
 void mwm_server_scale(mwm_server *s, int scale);
+/* The size of the Mac's screen in units: programs are told it as the
+ * screen they are on (a program may size its first window by it). Until
+ * said, an ordinary screen's, no larger than the sheet. */
+void mwm_server_screen(mwm_server *s, int width, int height);
 
 /* The windows on the sheet, oldest first: how many were written. */
 int mwm_server_windows(const mwm_server *s, mwm_window *out, int max);

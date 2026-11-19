@@ -20,6 +20,16 @@ enum GuestWindowLayout {
         CGSize(width: CGFloat(window.innerWidth) / CGFloat(window.scale), height: CGFloat(window.innerHeight) / CGFloat(window.scale))
     }
 
+    /// The size to ask a program for when its window is larger than the
+    /// room the screen has for one (in points); nil when it fits. A
+    /// program may keep the size it had on another screen (Firefox does),
+    /// and no one can reach an edge that is off the screen to make it
+    /// smaller.
+    static func sizeThatFits(_ content: CGSize, room: CGSize) -> CGSize? {
+        guard room.width >= 1, room.height >= 1, content.width > room.width || content.height > room.height else { return nil }
+        return CGSize(width: min(content.width, room.width).rounded(.down), height: min(content.height, room.height).rounded(.down))
+    }
+
     /// Where the program's picture (all it drew: the window, and any
     /// shadow around it) lies in the Mac window's content for the window
     /// proper to be what shows, counted from the content's top left in

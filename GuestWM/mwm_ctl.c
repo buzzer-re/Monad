@@ -344,6 +344,8 @@ static void command(mwm_ctl *c, char *text, uint32_t time_ms) {
         if (numbers(rest, 2, n) && is_uint(n[0]) && is_flag(n[1])) mwm_server_button(s, (uint32_t)n[0], n[1] == 1, time_ms);
     } else if (IS("scale")) {
         if (numbers(rest, 1, n) && is_int(n[0])) mwm_server_scale(s, (int)n[0]);
+    } else if (IS("screen")) {
+        if (numbers(rest, 2, n) && is_int(n[0]) && is_int(n[1])) mwm_server_screen(s, (int)n[0], (int)n[1]);
     } else if (IS("scroll")) {
         if (numbers(rest, 2, n) && is_int(n[0]) && is_int(n[1])) mwm_server_scroll(s, (int32_t)n[0], (int32_t)n[1], time_ms);
     } else if (IS("focus")) {

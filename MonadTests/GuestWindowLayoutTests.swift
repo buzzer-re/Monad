@@ -18,6 +18,17 @@ final class GuestWindowLayoutTests: XCTestCase {
                            innerX: i.0, innerY: i.1, innerWidth: i.2, innerHeight: i.3, appID: app, title: title)
     }
 
+    /// A program that opens larger than the Mac's screen has room for (Firefox
+    /// keeps the size it had, whatever the screen) is asked for a size that fits.
+    func testAWindowLargerThanTheScreenIsAskedToFit() {
+        let room = CGSize(width: 1728, height: 1050)
+        XCTAssertNil(GuestWindowLayout.sizeThatFits(CGSize(width: 800, height: 600), room: room))
+        XCTAssertNil(GuestWindowLayout.sizeThatFits(CGSize(width: 1728, height: 1050), room: room))
+        XCTAssertEqual(GuestWindowLayout.sizeThatFits(CGSize(width: 1884, height: 1000), room: room), CGSize(width: 1728, height: 1000))
+        XCTAssertEqual(GuestWindowLayout.sizeThatFits(CGSize(width: 1884.5, height: 4000), room: room), CGSize(width: 1728, height: 1050))
+        XCTAssertNil(GuestWindowLayout.sizeThatFits(CGSize(width: 800, height: 600), room: .zero)) // no screen known: as it is
+    }
+
     /// The Mac's window is the program's window in points: its pixels by the scale it drew at.
     func testAWindowIsItsPixelsByItsScale() {
         XCTAssertEqual(GuestWindowLayout.contentSize(window()), CGSize(width: 800, height: 600))

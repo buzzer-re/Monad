@@ -307,6 +307,34 @@ static void forget(client *k) {
     }
 }
 
+/* MonadHost says how large the Mac's screen is, and programs are told:
+ * the pixels of the mode are the units by the scale. A size that is none is not passed on. */
+static void test_the_macs_screen_is_passed_on(void) {
+    mwm_server *s = server();
+    mwm_ctl *c = mwm_ctl_new(s);
+    client a = connect_client(s);
+    uint32_t output = bind_global(&a, "wl_output", 2);
+    pump(s, &a);
+    forget(&a);
+    host h = attach(c);
+    say(c, &h, "scale 2\nscreen 1728 1079\nscreen 0 500\nscreen -4 -4\nscreen 99999999999 1\nscreen 12\n");
+    drain(s, &a);
+    int modes = 0, width = 0, height = 0;
+    mwm_msg m;
+    while (mwm_conn_next(a.c, &m)) {
+        CHECK(m.object != 1 || m.opcode != DISPLAY_ERROR);
+        if (m.object != output || m.opcode != 1) continue; /* wl_output.mode */
+        (void)mwm_get_uint(&m);
+        width = mwm_get_int(&m);
+        height = mwm_get_int(&m);
+        modes++;
+    }
+    CHECK(modes >= 1 && width == 1728 * 2 && height == 1079 * 2);
+    close(h.fd);
+    mwm_ctl_free(c);
+    mwm_server_free(s);
+}
+
 /* MonadHost's lines reach the program whose window they are about. */
 static void test_the_macs_pointer_and_keys_arrive(void) {
     mwm_server *s = server();
@@ -793,6 +821,7 @@ int main(void) {
     test_a_windows_pixels_are_sent();
     signal(SIGPIPE, SIG_IGN);
     test_the_windows_are_told();
+    test_the_macs_screen_is_passed_on();
     test_the_macs_pointer_and_keys_arrive();
     test_lines_that_make_no_sense_do_nothing();
     test_one_monadhost_at_a_time();

@@ -114,6 +114,8 @@ struct GuestKey: Equatable, Sendable {
 /// no window. Positions and scrolling are in 1/256 of a point.
 enum GuestWindowCommand: Equatable, Sendable {
     case scale(Int)
+    /// The Mac's screen in points: what programs are told the screen they are on is.
+    case screen(width: Int, height: Int)
     case pointer(window: UInt32, x: Int32, y: Int32)
     case button(code: UInt32, down: Bool)
     case scroll(dx: Int32, dy: Int32)
@@ -134,6 +136,7 @@ enum GuestWindowCommand: Equatable, Sendable {
     var text: String {
         switch self {
         case .scale(let scale): return "scale \(scale)\n"
+        case .screen(let width, let height): return "screen \(width) \(height)\n"
         case .pointer(let window, let x, let y): return "pointer \(window) \(x) \(y)\n"
         case .button(let code, let down): return "button \(code) \(down ? 1 : 0)\n"
         case .scroll(let dx, let dy): return "scroll \(dx) \(dy)\n"

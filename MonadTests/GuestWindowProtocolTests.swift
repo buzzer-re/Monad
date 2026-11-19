@@ -288,6 +288,7 @@ final class GuestWindowProtocolTests: XCTestCase {
     /// What MonadHost says, letter for letter what mwm_ctl.c reads.
     func testTheCommandsAreTheLinesTheWindowManagerReads() {
         XCTAssertEqual(GuestWindowCommand.scale(2).text, "scale 2\n")
+        XCTAssertEqual(GuestWindowCommand.screen(width: 1728, height: 1079).text, "screen 1728 1079\n")
         XCTAssertEqual(GuestWindowCommand.pointer(window: 3, x: 2560, y: -128).text, "pointer 3 2560 -128\n")
         XCTAssertEqual(GuestWindowCommand.pointer(window: 0, x: 0, y: 0).text, "pointer 0 0 0\n")
         XCTAssertEqual(GuestWindowCommand.button(code: 272, down: true).text, "button 272 1\n")

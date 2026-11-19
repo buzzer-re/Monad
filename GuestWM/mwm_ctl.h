@@ -62,6 +62,8 @@
  * to the Mac's windows (windows are named by id; 0 is no window):
  *
  *   scale <n>                         the Mac's screen: 1, or 2 on a Retina screen
+ *   screen <width> <height>           and its size in units, which programs are
+ *                                     told as the screen they are on
  *   pointer <window> <x> <y>          in the window, in 1/256 of a unit
  *   button <code> <0|1>
  *   scroll <dx> <dy>                  in 1/256 of a unit

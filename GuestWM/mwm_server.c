@@ -250,11 +250,28 @@ static void create_gl_buffer(client *c, mwm_msg *m) {
 /* ------------------------------------------------------------------------ */
 /* The registry and the output                                               */
 
-static void output_scale(mwm_server *s, client *c, uint32_t id) {
+/* The screen as programs are told it: the Mac's, in its own pixels, and how many of them make a unit. */
+static void output_says(mwm_server *s, client *c, uint32_t id) {
+    mwm_put_begin(c->conn, id, OUTPUT_MODE);
+    mwm_put_uint(c->conn, 1); /* current */
+    mwm_put_int(c->conn, s->screen_width * s->scale);
+    mwm_put_int(c->conn, s->screen_height * s->scale);
+    mwm_put_int(c->conn, 60000);
+    mwm_put_end(c->conn);
     if (c->objects[id].version < 2) return;
     mwm_event_uint(c, id, OUTPUT_SCALE, (uint32_t)s->scale);
     mwm_put_begin(c->conn, id, OUTPUT_DONE);
     mwm_put_end(c->conn);
+}
+
+static void outputs_say(mwm_server *s) {
+    for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
+        client *c = s->clients[i];
+        if (!c || c->dead) continue;
+        for (uint32_t id = 0; id < c->object_cap; id++)
+            if (c->objects[id].type == T_OUTPUT) output_says(s, c, id);
+    }
+    mwm_flush(s);
 }
 
 static void bind_global(client *c, mwm_msg *m) {
@@ -289,26 +306,22 @@ static void bind_global(client *c, mwm_msg *m) {
         mwm_put_string(c->conn, "display");
         mwm_put_int(c->conn, 0);
         mwm_put_end(c->conn);
-        mwm_put_begin(c->conn, id, OUTPUT_MODE);
-        mwm_put_uint(c->conn, 1); /* current */
-        mwm_put_int(c->conn, s->screen.width);
-        mwm_put_int(c->conn, s->screen.height);
-        mwm_put_int(c->conn, 60000);
-        mwm_put_end(c->conn);
-        output_scale(s, c, id);
+        output_says(s, c, id);
     }
 }
 
 void mwm_server_scale(mwm_server *s, int scale) {
     if (scale < 1 || scale > MAX_SCALE || scale == s->scale) return;
     s->scale = scale;
-    for (int i = 0; i < MWM_MAX_CLIENTS; i++) {
-        client *c = s->clients[i];
-        if (!c || c->dead) continue;
-        for (uint32_t id = 0; id < c->object_cap; id++)
-            if (c->objects[id].type == T_OUTPUT) output_scale(s, c, id);
-    }
-    mwm_flush(s);
+    outputs_say(s);
+}
+
+void mwm_server_screen(mwm_server *s, int width, int height) {
+    if (width < 1 || height < 1 || width > MWM_MAX_SIDE || height > MWM_MAX_SIDE) return;
+    if (width == s->screen_width && height == s->screen_height) return;
+    s->screen_width = width;
+    s->screen_height = height;
+    outputs_say(s);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -464,6 +477,9 @@ mwm_server *mwm_server_new(const mwm_screen *screen) {
     if (!s) return NULL;
     s->screen = *screen;
     s->scale = 1;
+    /* Until the Mac says how large its screen is: an ordinary one, and no larger than the sheet. */
+    s->screen_width = screen->width < 1920 ? screen->width : 1920;
+    s->screen_height = screen->height < 1080 ? screen->height : 1080;
     if (!mwm_seat_init(s)) {
         free(s);
         return NULL;

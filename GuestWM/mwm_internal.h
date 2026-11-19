@@ -282,8 +282,9 @@ struct mwm_server {
     /* Callbacks waiting for the next frame, over all surfaces, and when the last frame was. */
     int frames_waiting;
     uint32_t frame_time;
-    /* What programs are told the screen's scale is. */
+    /* What programs are told the screen's scale is, and its size in units (the Mac's screen, not the sheet). */
     int scale;
+    int screen_width, screen_height;
     /* The pointer and the keyboard (mwm_seat.c). */
     struct {
         /* The window the pointer is over, and where in it. */

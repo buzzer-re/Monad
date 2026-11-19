@@ -260,6 +260,71 @@ static void test_what_was_drawn_is_handed_out_once(void) {
     mwm_server_free(s);
 }
 
+/* Programs are told how large the Mac's screen is, not the sheet: one
+ * that sizes its first window by the screen would open too large. In the
+ * screen's own pixels (its units by the scale), and again when it changes. */
+static void test_programs_are_told_the_macs_screen(void) {
+    mwm_server *s = server();
+    client a = connect_client(s);
+    uint32_t output = bind_global(&a, "wl_output", 2);
+    pump(s, &a);
+    mwm_msg m;
+    int width = 0, height = 0, modes = 0;
+    while (mwm_conn_next(a.c, &m)) {
+        if (m.object != output || m.opcode != 1) continue; /* wl_output.mode */
+        (void)mwm_get_uint(&m);
+        width = mwm_get_int(&m);
+        height = mwm_get_int(&m);
+        modes++;
+    }
+    CHECK(modes == 1 && width == W && height == H); /* until the Mac says: no larger than the sheet */
+    mwm_server_screen(s, 300, 150);
+    drain(s, &a);
+    modes = 0;
+    bool done = false;
+    while (mwm_conn_next(a.c, &m)) {
+        if (m.object == output && m.opcode == 1) {
+            (void)mwm_get_uint(&m);
+            width = mwm_get_int(&m);
+            height = mwm_get_int(&m);
+            modes++;
+        }
+        if (m.object == output && m.opcode == 2) done = true;
+    }
+    CHECK(modes == 1 && done && width == 300 && height == 150);
+    mwm_server_screen(s, 300, 150); /* the same again: nothing is said */
+    drain(s, &a);
+    CHECK(no_event(&a));
+    /* On a Retina screen its pixels are twice its units. */
+    mwm_server_scale(s, 2);
+    drain(s, &a);
+    width = 0;
+    while (mwm_conn_next(a.c, &m)) {
+        if (m.object != output || m.opcode != 1) continue;
+        (void)mwm_get_uint(&m);
+        width = mwm_get_int(&m);
+        height = mwm_get_int(&m);
+    }
+    CHECK(width == 600 && height == 300);
+    /* A program that connects later is told the same. Sizes no screen has change nothing. */
+    mwm_server_screen(s, 0, 100);
+    mwm_server_screen(s, 100, MWM_MAX_SIDE + 1);
+    client b = connect_client(s);
+    output = bind_global(&b, "wl_output", 2);
+    pump(s, &b);
+    width = 0;
+    while (mwm_conn_next(b.c, &m)) {
+        if (m.object != output || m.opcode != 1) continue;
+        (void)mwm_get_uint(&m);
+        width = mwm_get_int(&m);
+        height = mwm_get_int(&m);
+    }
+    CHECK(width == 600 && height == 300);
+    mwm_conn_free(a.c);
+    mwm_conn_free(b.c);
+    mwm_server_free(s);
+}
+
 /* Only what the program says changed is copied to the sheet. */
 static void test_only_what_changed_is_copied(void) {
     mwm_server *s = server();
@@ -648,6 +713,7 @@ int main(void) {
     test_parts_are_drawn_in_their_order();
     test_what_a_program_leaves_open_stays_open();
     test_what_was_drawn_is_handed_out_once();
+    test_programs_are_told_the_macs_screen();
     test_only_what_changed_is_copied();
     test_a_program_draws_at_the_screens_scale();
     test_a_surface_says_how_large_its_picture_shows();

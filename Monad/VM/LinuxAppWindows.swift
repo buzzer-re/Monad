@@ -95,6 +95,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private var layoutObserver: NSObjectProtocol?
     /// What the window manager was last told, to say only what changes.
     private var saidScale = 0
+    private var saidScreen: [Int] = []
     private var saidModifiers = MacKeys.Modifiers(held: 0, locked: 0)
     private var saidFocus: UInt32 = 0
     private var saidPointer: UInt32 = 0
@@ -129,6 +130,8 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         var coming: GuestPicture?
         /// On the screen: a window is first shown when its picture is whole, not empty.
         var revealed = false
+        /// The size of its own that its program was last asked to make smaller (askToFit).
+        var askedToFit: CGSize?
     }
 
     /// The program's picture in a window: a layer that shows the picture's
@@ -175,6 +178,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
 
     func connected(display: GuestDisplaySize) {
         saidScale = 0
+        saidScreen = []
         saidModifiers = MacKeys.Modifiers(held: 0, locked: 0)
         saidFocus = 0
         saidPointer = 0
@@ -276,9 +280,16 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private func sayScale() {
         let screens = shown.values.compactMap { $0.window.screen } + [NSScreen.main].compactMap { $0 }
         let scale = Int((screens.map(\.backingScaleFactor).max() ?? 1).rounded())
-        guard scale != saidScale else { return }
-        saidScale = scale
-        onCommand?(.scale(scale))
+        if scale != saidScale {
+            saidScale = scale
+            onCommand?(.scale(scale))
+        }
+        // The room there is for a window on the screen the user is at: what a program takes its screen to be.
+        guard let room = (NSScreen.main ?? screens.first)?.visibleFrame.size else { return }
+        let size = [Int(room.width.rounded(.down)), Int(room.height.rounded(.down))]
+        guard size != saidScreen, size[0] >= 1, size[1] >= 1 else { return }
+        saidScreen = size
+        onCommand?(.screen(width: size[0], height: size[1]))
     }
 
     private func sayKeys() {
@@ -312,6 +323,26 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         startKeys()
         sayScale()
         showDrawn(guest)
+        askToFit(guest)
+    }
+
+    /// A window its program made larger than the screen has room for: the
+    /// program is asked for a size that fits, and the window moved to
+    /// where that size is all on the screen. Once for each such size: a
+    /// program that keeps it is not asked again and again. (Firefox opens
+    /// at the size it had when it last ran, whatever the screen is now.)
+    private func askToFit(_ guest: GuestWindow) {
+        guard var entry = shown[guest.id], !entry.isPopup, !entry.window.inLiveResize else { return }
+        let size = GuestWindowLayout.contentSize(guest)
+        guard entry.askedToFit != size, let screen = (entry.window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
+        let frame = entry.window.frame
+        let bar = frame.height - (entry.window.contentView?.frame.height ?? frame.height)
+        guard let fits = GuestWindowLayout.sizeThatFits(size, room: CGSize(width: screen.width, height: screen.height - bar)) else { return }
+        entry.askedToFit = size
+        shown[guest.id] = entry
+        entry.window.setFrameTopLeftPoint(NSPoint(x: max(screen.minX, min(frame.minX, screen.maxX - fits.width)),
+                                                  y: min(screen.maxY, max(frame.maxY, screen.minY + fits.height + bar))))
+        onCommand?(.size(window: guest.id, width: max(1, Int(fits.width)), height: max(1, Int(fits.height))))
     }
 
     /// A window's picture is whole for the first time: the window is shown.
@@ -446,8 +477,11 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
             entry.window.title = GuestWindowLayout.title(guest, vm: vmName)
             applyBar(guest, to: entry.window)
             // While the user drags its edge the Mac's window is the user's; it takes the program's size when they let go.
+            // Larger than the Mac's window was: the program's own doing, not the user's dragging.
+            let size = GuestWindowLayout.contentSize(guest), had = entry.window.contentView?.frame.size ?? size
             if !entry.window.inLiveResize { fit(&entry, to: guest) }
             shown[guest.id] = entry
+            if size.width > had.width + 0.5 || size.height > had.height + 0.5 { askToFit(guest) }
         }
         placePopups(on: guest.id)
     }
