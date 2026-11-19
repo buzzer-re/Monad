@@ -48,8 +48,9 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   the devices in the guest, the session at boot, a terminal and a file manager drawn on it, the
   display following a window of 2400×1500 pixels at scale 2. Turning Display on adds the Desktop
   profile where it can be installed. Not seen: the window itself on the Mac's screen (keys,
-  clicks, scrolling in it). Not built: drawing by the Mac's GPU (Apple passes
-  none to a Linux guest: measured), a desktop with a panel (XFCE fails to start this way on Ubuntu
+  clicks, scrolling in it). Not built: drawing by the Mac's GPU on this display (Apple passes
+  none to a Linux guest: measured; programs shown as Mac windows have it, below), a desktop
+  with a panel (XFCE fails to start this way on Ubuntu
   26.04), Debian's and Kali's cloud kernels.
 - **Linux programs as Mac windows** (`docs/WINDOWS.md`), with the App windows profile and no
   display: the VM builds Monad's own window manager (`GuestWM/`, C, with the VM's compiler) from
@@ -76,13 +77,26 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
   animations go as small parts (7 MB a second), a full Retina window of scrolling text at 62
   pictures a second in 9 MB a second. All of it through the Debug tools `drive_window` and
   `read_windows`, which call what the windows' own events call and read their pictures'
-  memory. Not seen since the windows draw their own pixels: the windows on the Mac's screen
-  (that the picture is the right way up, its colours); the Apps menu and panel; the Mac's real
-  clipboard being read or set (macOS may ask before MonadHost reads it).
-  Not built: drawing by the Mac's GPU (what is in a window is drawn by the VM's CPUs, which is
-  most of what a busy window costs), Xwayland, a Dock icon and menus for MonadHost, pictures
-  and files on the clipboard, cursors programs draw themselves, the Mac screen's size told to
-  programs. Not tried: a program that shrinks its shared memory under the window manager (the
+  memory. Programs are told the Mac screen's size and scale, and one that makes its window
+  larger than the screen has room for is asked for a size that fits; a surface's size and
+  part said through `wp_viewporter` are honoured (Firefox draws at the screen's scale that way).
+  Seen on the Mac's screen since the windows draw their own pixels: Firefox, the right way up
+  and in its colours. Not seen there: the other programs, the Apps menu and panel, the Mac's
+  real clipboard being read or set (macOS may ask before MonadHost reads it).
+  **Drawing by the Mac's GPU** (a VM's `gpu` setting, off unless turned on; OpenGL ES 2.0):
+  Monad's own libEGL and libGLESv2 in the guest (`GuestWM/mgl_*`, built by the VM) write each
+  call down as a command, the window manager passes the bytes to MonadHost unread on a vsock
+  port the Mac dials only for such a VM, and MonadHost carries them out with Metal
+  (`Monad/GL`: an OpenGL ES 2.0 state machine, and a translator of GLSL ES 1.00 to Metal's
+  language), the picture shown in the program's window. Run in a Debug VM: es2gears at 60
+  pictures a second, and glmark2's whole default run (29 scenes drawn, 4 refused by glmark2
+  for extensions not offered; build, shading and texture at about 3,000 pictures a second
+  against 600 to 970 drawn by the VM's CPUs), pictures read back upright and in their colours.
+  Not built there: OpenGL ES 3 and desktop OpenGL (GTK 4 and Firefox go on drawing with the
+  VM's CPUs), extensions, X11 programs, a sandboxed process for the drawing (it is MonadHost's
+  own), a bound on the GPU time a draw takes.
+  Not built: Xwayland, a Dock icon and menus for MonadHost, pictures
+  and files on the clipboard, cursors programs draw themselves. Not tried: a program that shrinks its shared memory under the window manager (the
   guard is written, not run), two screens of different scales.
 - **At runtime:** the Mac's time zone, CPUs, memory (balloon), shared folders, port and socket forwards both ways (a
   VM port on any Mac address the user picks, the loopback by default),
@@ -182,8 +196,8 @@ VMs run in MonadHost, so quitting the app leaves them running. Details: `docs/SE
 
 | Suite | Where | What |
 |---|---|---|
-| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server, pointer and keyboard, its channel to MonadHost, the packing of pixels and MonadHost's unpacking), fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
-| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,300 Swift tests |
+| `make -C CTests` | Linux or the Mac | The C backend (emulator, decoders, network stack, netd, guestd, the root step, install.sh, monad-update.sh), the guest's window manager (wire format, server, pointer and keyboard, its channel to MonadHost, the packing of pixels and MonadHost's unpacking, the way through for drawing commands) and the guest's OpenGL ES library against a strict stand-in for the Mac, fuzzers (`fuzz_net`, `fuzz_vt`, `fuzz_decoders`, `fuzz_wm`), the guest scripts' shell tests |
+| `MonadTests` | The Mac, Xcode, no VMs, no windows | About 1,600 Swift tests; those of the drawing (`GLStreamTests`, `GLSLTranslatorTests`) draw with the Mac's GPU and give shaders to Metal's compiler |
 | `MonadUITests` | The Mac, opens windows | 4; skipped in the scheme (they drive the screen) |
 | `scripts/hygiene.sh [base]` | Linux or the Mac | No packages, JSON and shell scripts parse, no personal paths or whitespace errors in a change |
 

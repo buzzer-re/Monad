@@ -106,6 +106,7 @@ it is saved.
 | `startAtLaunch` | true or false | false | Start the VM when Monad opens, without a tab. Written only when true. |
 | `inlineImages` | true or false | false | Programs in the VM can show pictures in its tabs (iTerm2's inline images, as `img` in every VM, neofetch, fastfetch and imgcat use them: PNG, JPEG or GIF, at most 4 MB). Monad decodes image data the VM sends only when this is on. Written only when true. |
 | `display` | true or false | false | Linux only: the VM has a display, a keyboard and a pointer, and its ⋯ menu's Open Desktop shows the display in a window (`docs/DISPLAY.md`). Off: it has none of the three devices. Its programs as windows of their own (the `app-windows` profile, `docs/WINDOWS.md`) need none. Written only when true. Applies at the next start. |
+| `gpu` | true or false | false | Linux only: programs in the VM that draw with OpenGL ES 2.0 are drawn by this Mac's GPU, in their windows on the Mac (`docs/WINDOWS.md`). MonadHost then carries out drawing commands the VM sends, with Monad's own code and Metal. Off: it reads none. Written only when true. Applies to programs started from then on. |
 | `ephemeral` | true or false | false | Deleted when its last tab closes. Never imported. Fixed. |
 | `createdAt` | date | now | ISO 8601 (`2026-10-10T12:00:00Z`). Fixed. |
 | `guestOS` | `linux` or `macos` | `linux` | What runs in the VM, from its distribution's kind. Written only for macOS. Fixed. |

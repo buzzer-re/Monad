@@ -30,11 +30,13 @@ display had its window manager answering MonadHost 25 seconds after its first bo
 **In the guest** (`GuestWM/`, tested in `CTests/test_wm_*.c` and fuzzed by `fuzz_wm`): `monad-wm`
 speaks Wayland to programs with code of its own (the wire format, `wl_compositor` with
 subsurfaces, `wl_shm`, `xdg_wm_base` top-level windows and popups, `wl_seat`, xdg-decoration and
-KDE's decoration protocol, cursor-shape, `wl_data_device`). Each window gets a place of its own
+KDE's decoration protocol, cursor-shape, `wl_data_device`, and `wp_viewporter`, by which Firefox
+says the size of what it draws). Each window gets a place of its own
 on the sheet (8192×8192 pixels; memory is taken only where a window stands), in rows, a gap from
 the next. What the program drew is drawn there from its buffers, only where it says something
-changed, at the scale it drew at (programs are told the Mac screen's), and as it drew it: what a
-program left see-through stays see-through. What changed is kept as a few rectangles, not as
+changed, at the scale it drew at (programs are told the Mac screen's scale and size, not the
+sheet's; a window its program makes larger than the screen has room for is asked, once, for a
+size that fits), and as it drew it: what a program left see-through stays see-through. What changed is kept as a few rectangles, not as
 one around them all: a spinner in one corner and a progress bar in another are two small parts.
 A menu, a tooltip or a list that drops down is a window too, told with the window it is on and
 where the program put it there; a menu that asked for the keyboard has it while it is up.
@@ -127,10 +129,13 @@ The typing, clicking, resizing and closing were done through the Debug tool `dri
 which calls what the window's own events call, and what a window shows was read from its
 picture's memory (`read_windows`). When the windows still showed Apple's view of the display,
 Calculator, the widget factory, foot and FeatherPad were looked at on the screen and used with
-a real pointer. Since they draw their own pixels nobody has looked at them on the screen: that
-the picture is the right way up and in the right colours there is not checked. The Apps menu
-and panel were not looked at either, and the Mac's real clipboard was never read or set (macOS
-may ask before MonadHost reads it; not seen).
+a real pointer. Since they draw their own pixels, Firefox was looked at on the screen (the
+right way up, in its colours; it showed a quarter of its page twice as large until the window
+manager had `wp_viewporter`), and a window drawn by the Mac's GPU was resized by hand there.
+The other programs were not looked at on the screen again. The Apps menu and panel were not
+looked at either, and the Mac's real clipboard was never read or set (macOS may ask before
+MonadHost reads it; not seen). A terminal started larger than the screen (3000×1600 units on
+one of 2304×1296) came out as large as the screen has room for.
 
 ## What was measured (2026-11-18, macOS 27.0.1, an M5 Pro, a 4-CPU Ubuntu 26.04 guest, Retina scale)
 
@@ -153,7 +158,7 @@ is why they draw their own pixels now.
 
 ## Not there yet
 
-- Drawing by the Mac's GPU (below).
+- Drawing by the Mac's GPU beyond OpenGL ES 2.0 (below).
 - X11 programs (through Xwayland).
 - The clipboard carries text only between the Mac and the VM (a picture or files copied in the
   VM paste in the VM).
@@ -161,8 +166,6 @@ is why they draw their own pixels now.
 - A program's header bar is under the Mac's title bar, not in it; programs that read no GNOME
   settings keep window buttons of their own in their headers.
 - A popup is where the program put it, with no regard for the Mac screen's edges.
-- Programs are told the screen is as large as the sheet (8192×8192), not the Mac's: one that
-  sizes its first window by the screen opens too large.
 - MonadHost has no Dock icon or menus, so these windows are not in ⌘Tab.
 - A window with no room left on the sheet is not shown (64 windows at most).
 - Pixels are unpacked and copied on MonadHost's main thread.
@@ -170,14 +173,71 @@ is why they draw their own pixels now.
 
 ## Drawing by the Mac's GPU
 
-Apple passes no GPU to a Linux guest (`docs/DISPLAY.md`, measured), and Virtualization takes no
-device of Monad's own. What remains is to send a program's OpenGL calls out of the guest over
-Monad's channel and run them on the Mac with Metal: a graphics library for the guest and an
-OpenGL-to-Metal implementation with a shader compiler on the Mac, written from nothing (Monad
-takes no third-party code, so not ANGLE, MoltenVK or virglrenderer). Not built. Until then:
-windows are put on screen by the Mac's GPU; what is in them is drawn by the VM's CPUs. That is
-the speed of a Linux desktop without a graphics card: fine for editors, terminals, tools and
-most pages in a browser; slow for WebGL, video at large sizes and 3D programs.
+Off unless a VM's "Drawing by this Mac's GPU" is turned on (its settings › Desktop; `gpu` in its
+settings file). Apple passes no GPU to a Linux guest (`docs/DISPLAY.md`, measured), and
+Virtualization takes no device of Monad's own. So a program's OpenGL calls are sent out of the
+guest and carried out on the Mac with Metal, by code written for Monad from the specifications
+(Monad takes no third-party code, so not ANGLE, MoltenVK or virglrenderer). **OpenGL ES 2.0
+only** so far.
+
+    program ── EGL, OpenGL ES 2.0 ──▶ Monad's libEGL.so.1 and libGLESv2.so.2 (GuestWM/mgl_*.c)
+                 each call written down as a command (GuestWM/mwm_gl_wire.h)
+       ── $XDG_RUNTIME_DIR/monad-gl ──▶ monad-wm, which passes the bytes on unread (mwm_gl.c)
+       ── vsock 1026, dialed by the Mac ──▶ MonadHost (GuestGLClient.swift)
+                 a stream for each program, carried out on a queue of its own:
+                 OpenGL ES 2.0 on Metal (Monad/GL/GLStream.swift and beside it),
+                 its shaders written anew in Metal's language (Monad/GL/GLSL*.swift)
+       ── the picture, in memory the screen is drawn from ──▶ the program's Mac window
+
+- **In the guest**, the library is built by the VM with the window manager (`monad-wm-build.sh`,
+  into `/usr/local/lib/monad/gl/lib`). Programs find it before the system's only while the Mac
+  is there to draw: `/etc/profile.d/monad-windows.sh` and the Apps menu put it on
+  `LD_LIBRARY_PATH` when the socket `monad-gl` exists, and the window manager makes that socket
+  only while MonadHost is connected for drawing. It offers EGL 1.4 on Wayland and pbuffers,
+  six configs (with and without alpha; depth 24 with stencil 8, depth alone, or neither) and
+  OpenGL ES 2.0 with no extensions. Calls that only ask about state it keeps are answered in
+  the VM; the others are written into one buffer and sent at a swap, when it fills, or when a
+  call needs the Mac's answer (a shader's log, `glReadPixels`, `glGetError`).
+- **A window** is the program's own `wl_surface` with a buffer of no pixels attached, made
+  through the window manager's `monad_gl`: it says which stream draws the window, and on which
+  of its surfaces. The window manager tells MonadHost so with the window, sends no pixels of
+  it, and the Mac's window shows the pictures that stream draws. Frames are told sixty times a
+  second.
+- **A swap is answered** once the Mac's GPU has drawn the picture, and the library reads that
+  answer before its next swap: a program is never more than one picture ahead of the Mac.
+  (Without that, glmark2 counted 9,500 pictures a second while a third of them were drawn, and
+  a ten-second scene took thirty-five.)
+- **On the Mac**, each command is decoded with its lengths checked and carried out by a state
+  machine that keeps OpenGL's rules (errors, completeness, what a draw may read). Window
+  surfaces are upright in memory the screen is drawn from; a picture a window shows is marked
+  in use and not drawn into again; MonadHost's main thread is handed only the newest picture
+  of each surface, sixty times a second at most. Shaders are parsed, checked and written anew
+  for Metal: nothing a program wrote reaches Metal's compiler as it is.
+
+Run in a Debug VM (Ubuntu 26.04, 4 CPUs, an M5 Pro; pictures read back from the windows'
+memory with `read_windows`, upright and in their colours):
+
+| | Drawn by the VM's CPUs (Mesa's llvmpipe) | Drawn by the Mac's GPU |
+|---|---|---|
+| `es2gears_wayland` | no window (Mesa found no screen to draw for) | 60 pictures a second; MonadHost 6% of a core, the VM's process 8%, in the guest the program under 1% and the window manager 2% |
+| `glmark2-es2-wayland`, 800×600: build, shading, texture | 818, 606 and 967 a second: score 796 | 2,989, 3,089 and 3,193 a second: score 3,089 |
+| `glmark2-es2-wayland`, its whole default run | not run to its end (four scenes: 863 to 1,013 a second) | score 2,728: 29 scenes drawn, 4 refused by glmark2 for extensions Monad does not offer (`GL_OES_mapbuffer`, `GL_OES_depth_texture`) |
+
+Each of glmark2's pictures here is one trip to the Mac and back (0.3 ms): that, not the GPU,
+is what bounds its count. WindowServer took about 20% of a core more while es2gears' window
+changed sixty times a second.
+
+Not there yet:
+
+- OpenGL ES 3 and desktop OpenGL. GTK 4 and Firefox ask for more than ES 2.0 and go on drawing
+  with the VM's CPUs (Calculator opened that way with the setting on); Qt Quick and most games
+  need more too.
+- No extensions (no depth textures, no mapped buffers, no compressed textures, no anti-aliasing
+  by multisampling); lines are one pixel wide; `glReadPixels` reads RGBA bytes only.
+- X11 programs (`EGL_PLATFORM_X11`), Vulkan, video decoding.
+- The commands are carried out in MonadHost itself, not in a sandboxed helper, and the time a
+  draw takes on the GPU is not bounded (`docs/SECURITY.md`).
+- Checked from the pictures' memory; on the screen only es2gears' window, resized by hand.
 
 ## Security
 
