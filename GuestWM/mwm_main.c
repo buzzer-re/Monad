@@ -24,7 +24,7 @@
  * no such socket and programs draw as they would anyway.
  * Linux only.
  */
-#define _GNU_SOURCE /* accept4 */
+#define _GNU_SOURCE /* accept4, ppoll */
 #include "mwm_ctl.h"
 #include "mwm_gl.h"
 #include "mwm_server.h"
@@ -47,8 +47,8 @@
 #include <time.h>
 #include <unistd.h>
 
-/* A frame every 16 ms while a program waits for one. */
-enum { FRAME_MS = 16 };
+/* Sixty frames a second while a program waits for one. */
+#define FRAME_NS 16666667ull
 
 static volatile sig_atomic_t stopping;
 
@@ -63,10 +63,10 @@ static void on_bus(int sig) {
     _exit(70); /* not while copying a program's pixels: a fault of our own */
 }
 
-static uint32_t now_ms(void) {
+static uint64_t now_ns(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint32_t)((uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000);
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
 
 /* The socket programs connect to, and the lock that says it is ours. */
@@ -246,7 +246,10 @@ int main(int argc, char **argv) {
 
     printf("monad-wm: %dx%d at %s\n", width, height, path);
     fflush(stdout);
-    uint32_t last_frame = now_ms();
+    /* When the next frame is due. Frames keep to a grid of their own: counted
+     * in whole milliseconds from when a program asked, a program that draws
+     * every frame got fifty a second. */
+    uint64_t due = now_ns();
     while (!stopping) {
         enum { FIXED = 5 };
         struct pollfd fds[FIXED + MWM_MAX_SOCKETS + MWM_GL_SOCKETS];
@@ -276,11 +279,12 @@ int main(int argc, char **argv) {
             fds[FIXED + n + i] = (struct pollfd){.fd = gl_fds[i], .events = (short)((gl_reads[i] ? POLLIN : 0) | (gl_writes[i] ? POLLOUT : 0))};
         }
         /* With no program waiting to draw (and no copy waited for), there is nothing to wake up for. */
-        uint32_t now = now_ms();
-        int wait = !mwm_server_wants_frame(server) ? -1 : now - last_frame >= FRAME_MS ? 0 : (int)(FRAME_MS - (now - last_frame));
-        int ready = poll(fds, (nfds_t)(FIXED + n), wait);
+        uint64_t at = now_ns(), left = at >= due ? 0 : due - at;
+        struct timespec wait = {.tv_sec = (time_t)(left / 1000000000ull), .tv_nsec = (long)(left % 1000000000ull)};
+        int ready = ppoll(fds, (nfds_t)(FIXED + n + gl_n), mwm_server_wants_frame(server) ? &wait : NULL, NULL);
         if (ready < 0 && errno != EINTR) break;
-        now = now_ms();
+        at = now_ns();
+        uint32_t now = (uint32_t)(at / 1000000);
         if (ready > 0) {
             if (fds[0].revents & POLLIN) {
                 int fd = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
@@ -312,9 +316,10 @@ int main(int argc, char **argv) {
                 if (fd >= 0) (void)mwm_gl_add(gl, fd);
             }
         }
-        if (mwm_server_wants_frame(server) && now - last_frame >= FRAME_MS) {
+        if (mwm_server_wants_frame(server) && at >= due) {
             mwm_server_frame(server, now);
-            last_frame = now;
+            /* On the grid while frames follow each other; from now when none was asked for a while. */
+            due = at - due > FRAME_NS ? at + FRAME_NS : due + FRAME_NS;
         }
         mwm_ctl_update(ctl);
     }
