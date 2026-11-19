@@ -40,6 +40,9 @@ protocol GuestWindowPresenting: AnyObject {
     func asked(window: UInt32, _ ask: GuestWindowAsk)
     /// What a window shows, where its program drew.
     func pixels(_ pixels: GuestPixels)
+    /// A picture the Mac's GPU drew for a program, of the surface a window
+    /// said it shows: memory the screen is drawn from, upright.
+    func drew(_ surface: GuestGLSurface, picture: GuestGLPicture)
     /// The window manager is gone: so are its windows.
     func disconnected()
 }
@@ -106,6 +109,10 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     private var cascade = NSPoint.zero
     private var clipboard = GuestClipboard()
     private var board = MacClipboard.general
+    /// The last picture the Mac's GPU drew of each surface a program draws
+    /// on: a program may have drawn before its window is told, and may
+    /// then draw nothing more for a while.
+    private var drawnPictures: [GuestGLSurface: GuestGLPicture] = [:]
     /// How the pointer looks over these windows: the word of the program it is over.
     fileprivate var pointerCursor = GuestCursor.arrow
 
@@ -128,8 +135,13 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     /// memory as it is. To look at only: the pointer is the content's.
     private final class PictureView: NSView {
         var picture: GuestPicture? {
-            didSet { changed() }
+            didSet {
+                if picture != nil { drawn = nil }
+                changed()
+            }
         }
+        /// A picture drawn on the Mac for the window's program, in the place of pixels the VM sent.
+        private(set) var drawn: GuestGLPicture?
 
         init() {
             super.init(frame: .zero)
@@ -141,7 +153,12 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         required init?(coder: NSCoder) { fatalError("not from a nib") }
 
         /// The picture changed: the screen is to show the memory it is in now.
-        func changed() { layer?.contents = picture?.surface }
+        func changed() { layer?.contents = picture?.surface ?? drawn?.surface }
+
+        func show(_ drawn: GuestGLPicture) {
+            self.drawn = drawn
+            picture = nil
+        }
     }
 
     /// A popup's window: it never takes the keys from the window it is on.
@@ -249,6 +266,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         if pointerIsOverItsWindow, pointerCursor != .arrow { NSCursor.arrow.set() }
         pointerCursor = .arrow
         windows = []
+        drawnPictures = [:]
         for id in Array(shown.keys) { close(id) }
         stopKeys()
         if let layoutObserver { DistributedNotificationCenter.default().removeObserver(layoutObserver) }
@@ -289,9 +307,11 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         if cascade == .zero, let visible = NSScreen.main?.visibleFrame { cascade = NSPoint(x: visible.minX + 40, y: visible.maxY - 40) }
         cascade = window.cascadeTopLeft(from: cascade)
         // On the screen once its picture came (pixels(_:)): never an empty window first.
-        shown[guest.id] = Shown(window: window, content: content, view: view, coming: GuestPicture(width: guest.width, height: guest.height))
+        shown[guest.id] = Shown(window: window, content: content, view: view,
+                                coming: guest.gl == nil ? GuestPicture(width: guest.width, height: guest.height) : nil)
         startKeys()
         sayScale()
+        showDrawn(guest)
     }
 
     /// A window's picture is whole for the first time: the window is shown.
@@ -319,7 +339,7 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
     /// or of a new size, gets a picture of that size, which takes the old
     /// one's place when all of it came.
     func pixels(_ pixels: GuestPixels) {
-        guard var entry = shown[pixels.window], let guest = guest(pixels.window) else { return }
+        guard var entry = shown[pixels.window], let guest = guest(pixels.window), guest.gl == nil else { return }
         if let coming = entry.coming {
             guard coming.put(pixels), coming.isWhole else { return }
             entry.coming = nil
@@ -331,6 +351,27 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         } else if entry.view.picture?.put(pixels) == true {
             entry.view.changed()
         }
+    }
+
+    /// The Mac's GPU drew a picture for a program (GuestGLClient): it is
+    /// shown in the window that says that surface is what it shows. The
+    /// guest's window list decides which window that is; a picture no
+    /// window asked for is shown nowhere.
+    func drew(_ surface: GuestGLSurface, picture: GuestGLPicture) {
+        // Kept for the window that shows it; no more of them than there can be windows.
+        if drawnPictures[surface] == nil, drawnPictures.count >= GuestWindowReader.maxWindows { drawnPictures.removeAll() }
+        drawnPictures[surface] = picture
+        if let guest = windows.first(where: { $0.gl == surface }) { showDrawn(guest) }
+    }
+
+    /// The window shows the picture last drawn of the surface it names, when there is one.
+    private func showDrawn(_ guest: GuestWindow) {
+        guard let surface = guest.gl, let picture = drawnPictures[surface], var entry = shown[guest.id] else { return }
+        entry.coming = nil
+        entry.view.show(picture)
+        entry.view.frame = GuestWindowLayout.pictureFrame(guest)
+        shown[guest.id] = entry
+        reveal(guest.id)
     }
 
     /// A menu, a tooltip, a list that drops down: a window with no frame,
@@ -385,7 +426,15 @@ final class LinuxAppWindows: NSObject, GuestWindowPresenting, NSWindowDelegate {
         guard var entry = shown[guest.id] else { return }
         // Of another size than its picture: a new picture, shown when all of it came.
         let has = entry.coming ?? entry.view.picture
-        if has?.width != guest.width || has?.height != guest.height {
+        if guest.gl != nil {
+            // The Mac's GPU draws it: no pixels of it come. The picture of now is kept until the next one is drawn.
+            entry.coming = nil
+            entry.view.frame = GuestWindowLayout.pictureFrame(guest)
+            shown[guest.id] = entry
+            showDrawn(guest)
+            guard let now = shown[guest.id] else { return }
+            entry = now
+        } else if has?.width != guest.width || has?.height != guest.height {
             entry.coming = GuestPicture(width: guest.width, height: guest.height)
             shown[guest.id] = entry
         } else if entry.coming == nil {
@@ -715,7 +764,9 @@ extension LinuxAppWindows {
         return shown.keys.sorted().compactMap { id -> String? in
             guard let entry = shown[id] else { return nil }
             let frame = entry.window.frame, content = entry.content.frame.size, at = entry.view.frame
-            let picture = entry.view.picture.map { "\($0.width)×\($0.height) pixels at \(at.minX),\(at.minY) \(at.width)×\(at.height)" } ?? "none yet"
+            let place = "at \(at.minX),\(at.minY) \(at.width)×\(at.height)"
+            let picture = entry.view.picture.map { "\($0.width)×\($0.height) pixels \(place)" }
+                ?? entry.view.drawn.map { "\($0.surface.width)×\($0.surface.height) pixels drawn by this Mac's GPU \(place)" } ?? "none yet"
             let bar = guest(id)?.ownBar.map { String(format: "the program's, #%06x", $0) } ?? "the Mac's"
             return "window \(id) “\(entry.window.title)” at \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))×\(Int(frame.height))"
                 + ", content \(content.width)×\(content.height), picture \(picture)\(entry.coming == nil ? "" : " (one of another size is coming)")"
@@ -740,10 +791,10 @@ extension LinuxAppWindows {
     /// (see-through where the program drew nothing): the picture's memory,
     /// not the screen.
     func debugPicture(window id: UInt32) -> Data? {
-        guard let entry = shown[id], let picture = entry.view.picture, let guest = guest(id) else { return nil }
+        guard let entry = shown[id], let guest = guest(id), let surface = entry.view.picture?.surface ?? entry.view.drawn?.surface else { return nil }
         // The window proper in the picture, whose rows Core Image counts from the bottom.
-        let crop = CGRect(x: guest.innerX, y: picture.height - guest.innerY - guest.innerHeight, width: guest.innerWidth, height: guest.innerHeight)
-        let image = CIImage(ioSurface: unsafeBitCast(picture.surface, to: IOSurfaceRef.self)).cropped(to: crop)
+        let crop = CGRect(x: guest.innerX, y: surface.height - guest.innerY - guest.innerHeight, width: guest.innerWidth, height: guest.innerHeight)
+        let image = CIImage(ioSurface: unsafeBitCast(surface, to: IOSurfaceRef.self)).cropped(to: crop)
         guard !image.extent.isEmpty, let cg = CIContext().createCGImage(image, from: image.extent.integral) else { return nil }
         return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
     }

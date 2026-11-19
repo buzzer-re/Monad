@@ -413,6 +413,10 @@ struct VMDetailView: View {
                     if let note = draft.displayNote {
                         Label(note, systemImage: "info.circle").font(Design.caption).foregroundStyle(.secondary)
                     }
+                    SettingRow(symbol: "cpu", color: .purple, title: "Drawing by this Mac's GPU",
+                               detail: VMSettingsDraft.gpuDetail) {
+                        Toggle("", isOn: $draft.config.gpu).labelsHidden().toggleStyle(.switch)
+                    }
                     if vm.config.display {
                         SettingRow(symbol: "macwindow", color: .blue, title: "Desktop",
                                    detail: "The VM's display in a window. ⌘V there puts this Mac's text on the VM's clipboard. "

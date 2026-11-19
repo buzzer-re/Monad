@@ -320,6 +320,11 @@ struct InstanceConfig: Equatable {
     /// and a pointer, for its desktop and GUI apps. Off: the VM has none of
     /// the three devices. A macOS VM always has its own.
     var display = false
+    /// A Linux VM's programs may draw with this Mac's GPU: their OpenGL ES
+    /// calls are carried out by MonadHost with Metal (docs/WINDOWS.md).
+    /// Off: MonadHost reads no drawing command the VM sends, and its
+    /// programs draw with the VM's CPUs.
+    var gpu = false
     /// The Lima VM whose disk this VM boots in place; nil for Monad's own disk.
     var attached: AttachedDisk? = nil
     /// The Lima VM whose disk this VM's own was copied from ("Copy to
@@ -513,7 +518,7 @@ extension InstanceConfig: Codable {
         case version, name, distro, release, image, user, cpus, memoryGiB, memoryTargetGiB, diskGiB, disks, networks, firewall
         case sharing
         case forwards, autoForward, profiles, theme, ephemeral, createdAt, startAtLaunch, attached
-        case copiedFrom, bridges, sshForwards, inlineImages, display, hostCommands, agents, parent, group, guestOS, restoreImage
+        case copiedFrom, bridges, sshForwards, inlineImages, display, gpu, hostCommands, agents, parent, group, guestOS, restoreImage
         case systemIntegrityProtection, fullDiskAccess, autoLogin, desktopAutofill, bootToRecovery
         // v1 only
         case network, macAddress, sharedDirectory, sharedReadOnly
@@ -542,6 +547,7 @@ extension InstanceConfig: Codable {
         startAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .startAtLaunch) ?? false
         inlineImages = try c.decodeIfPresent(Bool.self, forKey: .inlineImages) ?? false
         display = try c.decodeIfPresent(Bool.self, forKey: .display) ?? false
+        gpu = try c.decodeIfPresent(Bool.self, forKey: .gpu) ?? false
         attached = try c.decodeIfPresent(AttachedDisk.self, forKey: .attached)
         copiedFrom = try c.decodeIfPresent(AttachedDisk.self, forKey: .copiedFrom)
         bridges = try c.decodeIfPresent([CommandBridge].self, forKey: .bridges) ?? []
@@ -633,6 +639,7 @@ extension InstanceConfig: Codable {
         if startAtLaunch { try c.encode(startAtLaunch, forKey: .startAtLaunch) }
         if inlineImages { try c.encode(inlineImages, forKey: .inlineImages) }
         if display { try c.encode(display, forKey: .display) }
+        if gpu { try c.encode(gpu, forKey: .gpu) }
     }
 }
 
@@ -711,6 +718,7 @@ extension InstanceConfig {
         case macOSOnly(String)
         case linuxOnly(String)
         case displayOnMac
+        case gpuOnMac
         case extraDisk(String)
         case extraDiskSize(Int)
         case tooManyExtraDisks
@@ -760,6 +768,7 @@ extension InstanceConfig {
             case .macOSOnly(let what): return "\(what) is a macOS setting."
             case .linuxOnly(let what): return "\(what) is for Linux VMs: in macOS, Disk Utility formats a new disk."
             case .displayOnMac: return "A macOS VM always has its display: the Display setting is for Linux VMs."
+            case .gpuOnMac: return "A macOS VM draws with the Mac's GPU already: GPU drawing is a setting for Linux VMs."
             case .extraDisk(let n): return "“\(n)” cannot name a disk: use lowercase letters, digits and dashes (16 at most, starting with a letter), each name once."
             case .extraDiskSize(let s): return "A disk of \(s) GB cannot be made: from 1 GB to \(InstanceConfig.maxExtraDiskGiB) GB."
             case .tooManyExtraDisks: return "A VM has at most \(InstanceConfig.maxExtraDisks) extra disks."
@@ -925,6 +934,7 @@ extension InstanceConfig {
         if bootToRecovery, guestOS != .macos { throw ValidationError.macOSOnly("Booting to recovery") }
         if desktopAutofill != nil, guestOS != .macos { throw ValidationError.macOSOnly("Auto-fill") }
         if display, guestOS == .macos { throw ValidationError.displayOnMac }
+        if gpu, guestOS == .macos { throw ValidationError.gpuOnMac }
         if guestOS == .macos {
             guard memoryGiB >= Self.macMinimumMemoryGiB else {
                 throw ValidationError.macResources("macOS needs at least \(Self.macMinimumMemoryGiB) GB of memory.")
@@ -1051,6 +1061,7 @@ enum ConfigChange {
             ("start at boot", { $0.startAtLaunch == $1.startAtLaunch }),
             ("inline images", { $0.inlineImages == $1.inlineImages }),
             ("display", { $0.display == $1.display }),
+            ("GPU drawing", { $0.gpu == $1.gpu }),
             ("System Integrity Protection", { $0.systemIntegrityProtection == $1.systemIntegrityProtection }),
             ("full disk access", { $0.fullDiskAccess == $1.fullDiskAccess }),
             ("automatic login", { $0.autoLogin == $1.autoLogin }),

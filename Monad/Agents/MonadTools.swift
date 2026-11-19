@@ -1098,8 +1098,9 @@ final class MonadTools {
         c.forwards = []
         c.sshForwards = []
         c.startAtLaunch = false
-        // No more devices of the Mac's than a VM needs to run programs.
+        // No more devices of the Mac's than a VM needs to run programs, and none of its GPU.
         c.display = false
+        c.gpu = false
     }
 
     // MARK: Argument helpers

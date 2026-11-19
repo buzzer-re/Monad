@@ -190,6 +190,32 @@ final class ConfigV2Tests: XCTestCase {
         }
     }
 
+    /// Drawing by the Mac's GPU for a Linux VM's programs: off unless
+    /// chosen (the VM's programs then speak to Monad's own drawing code
+    /// and to Metal), written only when on, and no setting of a macOS VM.
+    func testGPUDrawingIsOffUnlessChosenAndForLinuxOnly() throws {
+        var c = valid()
+        XCTAssertFalse(c.gpu)
+        XCTAssertFalse(String(decoding: try c.encoded(), as: UTF8.self).contains("gpu"))
+        c.gpu = true
+        XCTAssertNoThrow(try c.validate(maxCPUs: 8, maxMemoryGiB: 16))
+        XCTAssertTrue(String(decoding: try c.encoded(), as: UTF8.self).contains("\"gpu\" : true"))
+        XCTAssertTrue(try InstanceConfig.decode(c.encoded()).gpu)
+        var mac = valid()
+        mac.guestOS = .macos
+        mac.memoryGiB = 8
+        mac.diskGiB = 64
+        mac.gpu = true
+        XCTAssertThrowsError(try mac.validate(maxCPUs: 8, maxMemoryGiB: 16)) { error in
+            XCTAssertEqual(error.localizedDescription, "A macOS VM draws with the Mac's GPU already: GPU drawing is a setting for Linux VMs.")
+        }
+        // It applies to a running VM: programs started after it draw that way.
+        var on = valid()
+        on.gpu = true
+        XCTAssertEqual(ConfigChange.all(from: valid(), to: on), ["GPU drawing"])
+        XCTAssertEqual(ConfigChange.restartOnly(from: valid(), to: on), [])
+    }
+
     /// Every string field has a rule (F-08): `user` and the rest reach
     /// ssh_config, cloud-init and scripts, where a newline adds lines.
     func testEveryFieldIsValidated() {

@@ -83,13 +83,15 @@ enum VMConfigFile {
         var images = false
         /// A Linux VM's display, keyboard and pointer (display).
         var display = false
+        /// The VM's programs drawing with this Mac's GPU (gpu).
+        var gpu = false
         /// Allow rules by address: they may open the Mac and its network
         /// without allowLAN (an address the user typed may).
         var firewallRules: [FirewallRule] = []
 
         var isEmpty: Bool {
             shares.isEmpty && bridges.isEmpty && hostCommands.isEmpty && agents == nil && forwards.isEmpty && !allowLAN && !images
-                && !display && firewallRules.isEmpty && sshForwards.isEmpty
+                && !display && !gpu && firewallRules.isEmpty && sshForwards.isEmpty
         }
 
         /// One line each, in the VM window's words.
@@ -106,6 +108,7 @@ enum VMConfigFile {
                 + (allowLAN ? ["The Mac and its local network are reachable from the VM"] : [])
                 + (images ? ["Images the VM sends are decoded on this Mac and shown in its tabs"] : [])
                 + (display ? ["A display, a keyboard and a pointer for the VM, shown in a window on this Mac"] : [])
+                + (gpu ? ["The VM's programs draw with this Mac's GPU"] : [])
                 + firewallRules.map { "The firewall allows the VM " + ConnectionsModel.describe($0).dropFirst("Allow ".count) }
         }
     }
@@ -138,6 +141,7 @@ enum VMConfigFile {
             c.firewall.allowLAN = macAccess.allowLAN
             c.inlineImages = macAccess.images
             c.display = macAccess.display
+            c.gpu = macAccess.gpu
             c.firewall.rules = rules
             return c
         }
@@ -213,7 +217,7 @@ enum VMConfigFile {
         // What reaches into the Mac, set apart.
         var access = MacAccess(bridges: c.bridges, hostCommands: c.hostCommands, agents: c.agents,
                                forwards: c.forwards.filter(\.needsConfirmation), sshForwards: c.sshForwards,
-                               allowLAN: c.firewall.allowLAN, images: c.inlineImages, display: c.display,
+                               allowLAN: c.firewall.allowLAN, images: c.inlineImages, display: c.display, gpu: c.gpu,
                                firewallRules: c.firewall.rules.filter(\.opensByAddress))
         if c.desktopAutofill != nil {
             notes.append("Auto-fill is asked again when the VM's desktop is first opened.")
@@ -244,6 +248,7 @@ enum VMConfigFile {
         c.firewall.allowLAN = false
         c.inlineImages = false
         c.display = false
+        c.gpu = false
         return Imported(config: c, macAccess: access, notes: notes, forwards: forwards, rules: rules)
     }
 
@@ -274,7 +279,7 @@ enum VMConfigFile {
     private static let keys: [String: Set<String>] = [
         "": ["version", "name", "distro", "release", "image", "user", "cpus", "memoryGiB", "memoryTargetGiB", "diskGiB", "disks",
              "networks", "firewall", "sharing", "forwards", "autoForward", "profiles", "theme", "ephemeral", "createdAt", "guestOS",
-             "startAtLaunch", "inlineImages", "display", "attached", "copiedFrom", "bridges", "sshForwards", "hostCommands", "agents", "parent",
+             "startAtLaunch", "inlineImages", "display", "gpu", "attached", "copiedFrom", "bridges", "sshForwards", "hostCommands", "agents", "parent",
              "systemIntegrityProtection", "fullDiskAccess", "autoLogin", "desktopAutofill", "bootToRecovery"],
         "agents": ["role", "guestPort", "maxChildren", "childCPUs", "childMemoryGiB"],
         "disks": ["name", "sizeGiB", "mount"],
@@ -379,6 +384,7 @@ enum VMConfigFile {
         case .fullDiskAccess?: return "fullDiskAccess"
         case .macOSOnly?: return "autoLogin"
         case .displayOnMac?: return "display"
+        case .gpuOnMac?: return "gpu"
         case .linuxOnly?, .extraDisk?, .extraDiskSize?, .tooManyExtraDisks?: return "disks"
         case .attachedDisk?: return "attached"
         case .sharingDisabled?: return "sharing.runtimeEnabled"
@@ -488,6 +494,7 @@ enum VMConfigFile {
         access.allowLAN = new.firewall.allowLAN && !saved.firewall.allowLAN
         access.images = new.inlineImages && !saved.inlineImages
         access.display = new.display && !saved.display
+        access.gpu = new.gpu && !saved.gpu
         let savedRules = Set(saved.firewall.rules.filter(\.opensByAddress))
         access.firewallRules = new.firewall.rules.filter { $0.opensByAddress && !savedRules.contains($0) }
 

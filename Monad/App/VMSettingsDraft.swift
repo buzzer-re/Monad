@@ -226,6 +226,9 @@ struct VMSettingsDraft {
     /// settings.
     static let displayDetail = "A display, a keyboard and a pointer for the VM, for a desktop: its ⋯ menu's Open Desktop shows it in a window on this Mac. What is on it is drawn by the VM's CPUs (Apple passes no GPU to a Linux VM). Off: the VM has none of the three devices. Programs as windows of their own need none of them. Applies at the next start."
 
+    /// Drawing by the Mac's GPU (gpu), in the VM's settings.
+    static let gpuDetail = "Programs in the VM that draw with OpenGL ES 2.0 are drawn by this Mac's GPU, in their windows on this Mac (the App windows profile). MonadHost then carries out drawing commands the VM sends, with code of Monad's own and Metal. Off: it reads none, and the VM's CPUs draw. Applies to programs started from now on."
+
     /// The profile that puts something on a Linux VM's display: a desktop,
     /// in one window. (The VM's programs as windows of their own, the App
     /// windows profile, need no display.)

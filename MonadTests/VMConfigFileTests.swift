@@ -121,6 +121,24 @@ final class VMConfigFileTests: XCTestCase {
         XCTAssertTrue(try VMConfigFile.read(try VMConfigFile.export(plain), on: mac()).macAccess.isEmpty)
     }
 
+    /// Drawing by the Mac's GPU lets the guest's programs speak to Monad's
+    /// drawing code and to Metal: a file does not bring it in unasked, and
+    /// an edit that turns it on says so.
+    func testGPUDrawingStaysOutUnlessKeptAndIsConfirmedOnEdit() throws {
+        var c = full()
+        c.gpu = true
+        let imported = try VMConfigFile.read(try VMConfigFile.export(c), on: mac())
+        XCTAssertTrue(imported.macAccess.gpu)
+        XCTAssertTrue(imported.macAccess.lines.contains("The VM's programs draw with this Mac's GPU"), "\(imported.macAccess.lines)")
+        XCTAssertFalse(imported.config(named: "web", keepingMacAccess: false).gpu)
+        XCTAssertTrue(imported.config(named: "web", keepingMacAccess: true).gpu)
+        c.gpu = false
+        let check = VMConfigFile.check(try edited(c) { $0["gpu"] = true }, against: c, on: mac())
+        XCTAssertEqual(check.problems, [])
+        XCTAssertEqual(check.changes, ["GPU drawing"])
+        XCTAssertEqual(check.reachesIntoMac, ["The VM's programs draw with this Mac's GPU"])
+    }
+
     /// A display gives the guest three more devices of the Mac's to talk
     /// to: a file does not bring it in unasked, and an edit that turns it
     /// on says so.

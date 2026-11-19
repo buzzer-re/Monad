@@ -122,6 +122,9 @@ final class VMInstance: ObservableObject, Identifiable {
     private var guestWindows: GuestWindowsClient?
     private var guestWindowsTask: Task<Void, Never>?
     private var guestWindowPresenter: GuestWindowPresenting?
+    /// The connection the guest's programs draw with the Mac's GPU through (the VM's GPU drawing setting).
+    private var guestDrawing: GuestGLClient?
+    private var guestDrawingTask: Task<Void, Never>?
 
     private let env: VMEnvironment
     private var machine: VirtualMachineControlling?
@@ -364,6 +367,11 @@ final class VMInstance: ObservableObject, Identifiable {
             runPendingProfiles()
         }
         if newConfig.sharing.shares != old.sharing.shares { applyShares() }
+        if newConfig.gpu != old.gpu {
+            // Live: programs started from now on draw the new way; ones that drew with the GPU lose it.
+            stopGuestDrawing()
+            if newConfig.gpu, guestWindows != nil { connectGuestDrawing() }
+        }
     }
 
     /// The balloon target: the configured one (or all boot memory), never
@@ -1421,6 +1429,7 @@ final class VMInstance: ObservableObject, Identifiable {
                 self.guestWindows = client
                 let disconnected = self.follow(client, showing: presenter)
                 client.start()
+                self.connectGuestDrawing() // what programs draw with the Mac's GPU is shown in these windows
                 for await _ in disconnected {}
                 guard !Task.isCancelled else { return } // the VM is stopping: what it showed was taken down there
                 self.debug("windows: the guest's window manager is gone")
@@ -1438,6 +1447,50 @@ final class VMInstance: ObservableObject, Identifiable {
                 if !Task.isCancelled { await self.env.clock.sleep(seconds: pause) }
             }
         }
+    }
+
+    /// Drawing by the Mac's GPU, for a VM whose owner turned it on: the
+    /// port is dialed that the guest's window manager hands its programs'
+    /// drawing commands on through, and each program's stream is carried
+    /// out here (`env.drawing`), its pictures shown in the window that
+    /// names them. While it is connected, programs in the VM find Monad's
+    /// drawing socket; without, they draw with the VM's CPUs as before.
+    /// Dialed again when it ends, less and less often.
+    private func connectGuestDrawing() {
+        guard config.gpu, config.guestOS == .linux, state == .ready, guestDrawingTask == nil, let make = env.drawing else { return }
+        guestDrawingTask = Task { [weak self] in
+            var delay: TimeInterval = 1
+            while let self, !Task.isCancelled, self.state == .ready, self.config.gpu, let m = self.machine {
+                if let channel = try? await m.openChannel(port: CloudInit.drawingVsockPort, timeout: 5) {
+                    guard !Task.isCancelled, self.state == .ready, self.config.gpu else { return channel.close() }
+                    self.debug("drawing: connected, the VM's programs may draw with this Mac's GPU")
+                    let client = GuestGLClient(channel: channel) { [weak self] stream, reply in
+                        let pictures = GuestGLPictures { surface, picture in
+                            self?.guestWindowPresenter?.drew(GuestGLSurface(stream: stream, surface: surface), picture: picture)
+                        }
+                        return make(pictures.drew, reply)
+                    }
+                    self.guestDrawing = client
+                    let ended = AsyncStream<Void> { cont in client.onDisconnect = { cont.finish() } }
+                    client.start()
+                    for await _ in ended {}
+                    guard !Task.isCancelled else { return } // stopped here: let go there
+                    self.guestDrawing = nil
+                    self.debug("drawing: the connection ended")
+                } else {
+                    self.debug("drawing: no answer on vsock port \(CloudInit.drawingVsockPort), trying again in \(Int(delay)) s")
+                }
+                await self.env.clock.sleep(seconds: delay)
+                delay = min(delay * 2, 30)
+            }
+        }
+    }
+
+    private func stopGuestDrawing() {
+        guestDrawingTask?.cancel()
+        guestDrawingTask = nil
+        guestDrawing?.stop()
+        guestDrawing = nil
     }
 
     /// Joins the connection to the guest's window manager and what shows
@@ -1506,6 +1559,7 @@ final class VMInstance: ObservableObject, Identifiable {
         guestWindowsTask = nil
         guestWindows?.stop()
         guestWindows = nil
+        stopGuestDrawing()
         guestWindowPresenter?.onCommand = nil
         guestWindowPresenter?.disconnected()
         guestWindowPresenter = nil

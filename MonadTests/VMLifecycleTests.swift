@@ -20,6 +20,8 @@ final class VMLifecycleTests: XCTestCase {
     private var sshLegs: FakeSSHLegs!
     /// Settings › Virtual Machines › Full boot messages, for the VM.
     private var bootMessages = BootMessages.quiet
+    /// What was made to carry out programs' drawing, in order.
+    private var drawings: [RecordedDrawing] = []
     /// Every VM a test made: stopped after it, or its agent would keep
     /// trying to connect on the test clock (whose sleeps end at once) for
     /// the rest of the suite, and other tests would measure its CPU.
@@ -70,6 +72,11 @@ final class VMLifecycleTests: XCTestCase {
         env.debugLog = debugLog
         env.sshLegs = sshLegs
         env.bootMessages = { [unowned self] in self.bootMessages }
+        env.drawing = { [unowned self] present, reply in
+            let drawing = RecordedDrawing(present: present, reply: reply)
+            DispatchQueue.main.async { self.drawings.append(drawing) }
+            return drawing
+        }
         env.bridgeServer = { [bridges] in bridges!.make($0, $1) }
         env.hostCommandServer = { [bridges] in bridges!.make($0, $1, $2) }
         if let endpoints { env.mcpEndpoint = { socket, token, _ in endpoints.make(socket, token) } }
@@ -803,14 +810,18 @@ final class VMLifecycleTests: XCTestCase {
     /// A VM whose installer says `windows` when the guest has Monad's window
     /// manager. It needs no display for it: the windows' pixels come over
     /// Monad's channel.
-    private func windowsVM(display: Bool = false, installer: String = "windows-ok\nagent-ok\n") throws -> VMInstance {
+    private func windowsVM(display: Bool = false, installer: String = "windows-ok\nagent-ok\n",
+                           edit: (inout InstanceConfig) -> Void = { _ in }) throws -> VMInstance {
         runner.setHandler { [ssh] call in
             if let r = ssh!.handle(call) { return r }
             if CloudInit.isIsolationCheck(call.arguments.last) { return .ok("ok\n") }
             if call.arguments.last == CloudInit.guestInstallCommand { return .ok(installer) }
             return .ok()
         }
-        return try makeInstance { $0.display = display }
+        return try makeInstance {
+            $0.display = display
+            edit(&$0)
+        }
     }
 
     private var windowDials: Int { factory.machine.openedPorts.filter { $0 == CloudInit.windowsVsockPort }.count }
@@ -876,6 +887,49 @@ final class VMLifecycleTests: XCTestCase {
         vm = try windowsVM(display: true)
         vm.start()
         await assertEventually { self.windowDials >= 1 }
+    }
+
+    /// Drawing by the Mac's GPU is the user's choice for a VM: only then is
+    /// the port dialed that programs' drawing commands come through, once
+    /// the VM's windows are connected; what a program draws is shown in
+    /// the window that names it; and turning the setting off hangs up.
+    func testDrawingIsDialedOnlyWhenTheVMMayUseTheGPU() async throws {
+        var drawingDials: Int { factory.machine.openedPorts.filter { $0 == CloudInit.drawingVsockPort }.count }
+        var vm = try windowsVM()
+        factory.machine.windowChannels = [SocketPairChannel()]
+        vm.start()
+        await assertEventually { self.factory.machine.guestWindows.connects == 0 && self.windowDials == 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(drawingDials, 0, "not asked for: never dialed")
+        await vm.stop()
+
+        vm = try windowsVM { $0.gpu = true }
+        let windows = SocketPairChannel(), drawing = SocketPairChannel()
+        factory.machine.windowChannels = [windows]
+        factory.machine.drawingChannels = [drawing]
+        vm.start()
+        await assertEventually { drawingDials == 1 && self.drawings.count == 0 }
+        // A program connects to draw: its stream is carried out, and its picture reaches the windows.
+        var open = Data()
+        for word in [UInt32(0), 8, 1, 4] { withUnsafeBytes(of: word.littleEndian) { open.append(contentsOf: $0) } }
+        open.withUnsafeBytes { _ = Darwin.write(drawing.peer, $0.baseAddress, $0.count) }
+        await assertEventually { self.drawings.count == 1 }
+        let picture = try XCTUnwrap(IOSurface(properties: [.width: 2, .height: 2, .bytesPerElement: 4, .pixelFormat: UInt32(0x4247_5241)]))
+        drawings[0].present(9, picture)
+        await assertEventually { self.factory.machine.guestWindows.drawn == [GuestGLSurface(stream: 4, surface: 9)] }
+        // Turned off: the connection is let go, and not dialed again.
+        var off = vm.config
+        off.gpu = false
+        try vm.update(off)
+        await assertEventually { drawing.closed }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(drawingDials, 1)
+        // And on again, in the running VM.
+        factory.machine.drawingChannels = [SocketPairChannel()]
+        off.gpu = true
+        try vm.update(off)
+        await assertEventually { drawingDials == 2 }
+        await vm.stop()
     }
 
     /// A window manager that says nonsense is hung up on, shows nothing,

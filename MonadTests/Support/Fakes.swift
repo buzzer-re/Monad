@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import IOSurface
 import XCTest
 @testable import Monad
 
@@ -165,6 +166,8 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
 
     /// Channels handed out to who dials the guest's window manager, in order.
     var windowChannels: [ByteChannel] = []
+    /// And to who dials it for programs' drawing commands.
+    var drawingChannels: [ByteChannel] = []
 
     /// What was typed into its display (US layout; Return as a newline).
     private(set) var typed = ""
@@ -232,12 +235,41 @@ final class FakeVM: VirtualMachineControlling, MacRecoveryInput, DiskAttaching {
             guard !windowChannels.isEmpty else { throw TestError("connection refused") }
             return windowChannels.removeFirst()
         }
+        if port == CloudInit.drawingVsockPort {
+            guard !drawingChannels.isEmpty else { throw TestError("connection refused") }
+            return drawingChannels.removeFirst()
+        }
         guard !channels.isEmpty else { throw TestError("connection refused") }
         return channels.removeFirst()
     }
 
     /// Simulate the guest crashing / VZ reporting an error.
     func emit(_ event: VMRuntimeEvent) { onEvent?(event) }
+}
+
+/// Stands where a VM program's drawing is carried out with the Mac's GPU:
+/// keeps what it was fed, and presents a picture when the test says.
+final class RecordedDrawing: GuestGLDrawing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _fed = Data()
+    private var _closed = 0
+    let present: (UInt32, IOSurface) -> Void
+    let reply: (Data) -> Void
+
+    init(present: @escaping (UInt32, IOSurface) -> Void, reply: @escaping (Data) -> Void) {
+        self.present = present
+        self.reply = reply
+    }
+
+    var fed: Data { lock.withLock { _fed } }
+    var closed: Int { lock.withLock { _closed } }
+
+    func feed(_ data: Data) -> Bool {
+        lock.withLock { _fed.append(data) }
+        return true
+    }
+
+    func close() { lock.withLock { _closed += 1 } }
 }
 
 /// The windows of a VM's programs, recorded instead of shown.
@@ -268,6 +300,9 @@ final class FakeGuestWindows: GuestWindowPresenting {
     func asked(window: UInt32, _ ask: GuestWindowAsk) { asks.append(ask) }
 
     func pixels(_ pixels: GuestPixels) { self.pixels.append(pixels) }
+
+    private(set) var drawn: [GuestGLSurface] = []
+    func drew(_ surface: GuestGLSurface, picture: GuestGLPicture) { drawn.append(surface) }
 
     func disconnected() {
         windows = []

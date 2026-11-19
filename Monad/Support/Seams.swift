@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import IOSurface
 import os
 
 // MARK: Helper processes
@@ -361,6 +362,11 @@ struct VMEnvironment {
     var profiles: () -> ProfileCatalog = {
         (try? ProfileCatalog.bundled(custom: ProfileStore())) ?? ProfileCatalog(builtIn: [], custom: [])
     }
+    /// Makes what carries out one program's drawing commands with this
+    /// Mac's GPU (GLStream, with Metal): `present` is handed each finished
+    /// picture of one of its surfaces, `reply` sends the program an
+    /// answer. nil: nothing here draws for VMs (tests that do not ask).
+    var drawing: ((_ present: @escaping (UInt32, IOSurface) -> Void, _ reply: @escaping (Data) -> Void) -> GuestGLDrawing)? = nil
     /// Settings › Logs.
     var debugLog: DebugLog = .shared
     /// Settings › Virtual Machines › Full boot messages, as it is now.
@@ -404,6 +410,7 @@ struct VMEnvironment {
         env.allowsMacGuests = GuestOS.ready.contains(.macos)
         env.disksAttachWhileRunning = MNDVirtualMachine.canAttachDisksWhileRunning()
         env.sshLegs = SSHHostManager.shared
+        env.drawing = GLDrawing.make
         return env
     }
 }

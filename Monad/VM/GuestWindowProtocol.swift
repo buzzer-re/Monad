@@ -22,6 +22,14 @@ struct GuestDisplaySize: Equatable, Sendable {
     let height: Int
 }
 
+/// What draws a window whose picture is drawn by the Mac's GPU: a stream
+/// of drawing commands (a program's), and that stream's surface
+/// (GuestWM/mwm_gl_wire.h).
+struct GuestGLSurface: Hashable, Sendable {
+    let stream: UInt32
+    let surface: UInt32
+}
+
 /// A program's window as it is on the VM's display.
 struct GuestWindow: Equatable, Sendable, Identifiable {
     let id: UInt32
@@ -44,6 +52,10 @@ struct GuestWindow: Equatable, Sendable, Identifiable {
     /// title bar takes so that the two read as one. nil: the frame is all
     /// the Mac's.
     var ownBar: UInt32?
+    /// Its picture is drawn by the Mac's GPU from the program's own
+    /// drawing commands, and no pixels of it are sent; nil for a window
+    /// of pixels.
+    var gl: GuestGLSurface?
 
     var isPopup: Bool { parent != 0 }
 }
@@ -256,6 +268,14 @@ struct GuestWindowReader {
             guard let expected, list.count < expected, let window = window(words), !list.contains(where: { $0.id == window.id })
             else { return broken() }
             list.append(window)
+            return nil
+        case "gl":
+            // Of the window just told: what draws it.
+            guard expected != nil, words.count == 4, let last = list.last, last.gl == nil,
+                  Self.number(words[1], 1...Int(UInt32.max)) == Int(last.id),
+                  let stream = Self.number(words[2], 1...Int(UInt32.max)), let surface = Self.number(words[3], 1...Int(UInt32.max))
+            else { return broken() }
+            list[list.count - 1].gl = GuestGLSurface(stream: UInt32(stream), surface: UInt32(surface))
             return nil
         case "end":
             guard let count = expected, list.count == count, words.count == 1, Self.popupsHold(list), let display,

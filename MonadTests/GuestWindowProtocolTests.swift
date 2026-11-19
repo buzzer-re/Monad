@@ -207,6 +207,36 @@ final class GuestWindowProtocolTests: XCTestCase {
         XCTAssertTrue(early.isBroken, "before anything was said")
     }
 
+    /// A window whose picture the Mac's GPU draws says which stream of
+    /// drawing commands draws it, on a line after its own.
+    func testAWindowDrawnByTheMacsGPUSaysWhatDrawsIt() {
+        var reader = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\n", into: &reader)
+        let one = "window 1 0 0 400 300 1 0 0 400 300 0 0 0 - app Gears\n", two = "window 2 416 0 100 50 1 0 0 100 50 0 0 0 - app Plain\n"
+        let events = read("windows 4 2\n" + one + "gl 1 7 3\n" + two + "end\n", into: &reader)
+        guard case .windows(let windows)? = events.first, windows.count == 2 else { return XCTFail("no list: \(events), broken \(reader.isBroken)") }
+        XCTAssertEqual(windows[0].gl, GuestGLSurface(stream: 7, surface: 3))
+        XCTAssertNil(windows[1].gl)
+        let hostile: [(String, String)] = [
+            ("gl 1 7 3\n" + one, "before its window"),
+            (one + "gl 2 7 3\n", "of another window than the one just told"),
+            (one + "gl 1 7 3\ngl 1 8 3\n", "said twice"),
+            (one + "gl 1 0 3\n", "no stream"),
+            (one + "gl 1 7 0\n", "no surface"),
+            (one + "gl 1 7\n", "a word too few"),
+            (one + "gl 1 7 3 4\n", "a word too many"),
+            (one + "gl 1 -7 3\n", "a number that is none"),
+        ]
+        for (lines, what) in hostile {
+            var reader = GuestWindowReader()
+            _ = read("monad-wm 1 1920 1200\nwindows 4 1\n" + lines + "end\n", into: &reader)
+            XCTAssertTrue(reader.isBroken, what)
+        }
+        var outside = GuestWindowReader()
+        _ = read("monad-wm 1 1920 1200\ngl 1 7 3\n", into: &outside)
+        XCTAssertTrue(outside.isBroken, "with no list being told")
+    }
+
     /// A program that draws its own title bar (GTK's header bars) is told
     /// with the colour it has at its top; one whose frame is the Mac's with none.
     func testAProgramsOwnTitleBarIsToldWithItsColour() {
