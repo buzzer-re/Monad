@@ -10,6 +10,11 @@
  *   window <id> <x> <y> <width> <height> <scale> <inner x> <inner y>
  *          <inner width> <inner height> <parent> <offset x> <offset y>
  *          <bar> <app id> <title>                            count times
+ *   gl <window> <stream> <surface>                    after its window's line,
+ *                                                     for a window whose picture
+ *                                                     the Mac's GPU draws
+ *                                                     (mwm_gl_wire.h): no pixels
+ *                                                     of it are sent
  *   end
  *   cursor <shape>                    how the pointer is to look where it
  *                                     is, when that changes: 0 hidden, 1 the

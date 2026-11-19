@@ -66,6 +66,10 @@ typedef struct {
      * made to continue it. False: the frame is all the Mac's. */
     bool own_bar;
     uint32_t bar_color;
+    /* What is in it is drawn by the Mac's GPU, not sent as pixels: the
+     * stream that draws it and that stream's surface (mwm_gl_wire.h); 0
+     * for a window of pixels. */
+    uint32_t gl_stream, gl_surface;
     /* Plain text of the program's choosing; never NULL. */
     const char *title;
     const char *app_id;

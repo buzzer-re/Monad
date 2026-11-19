@@ -7,6 +7,7 @@
  * It takes no display: the windows are drawn on a sheet of memory.
  *
  *   monad-wm [--size WIDTHxHEIGHT] [--owner UID] [--control vsock:PORT | unix:PATH]
+ *            [--gl vsock:PORT | unix:PATH]
  *
  * --size: the sheet, which every window has a place of its own on: the
  * room there is for windows (8192x8192 unless said; memory is only taken
@@ -17,10 +18,15 @@
  * --control: where MonadHost connects. vsock:PORT is a port only the Mac
  * can dial (a connection from inside the VM is refused); unix:PATH is for
  * trying it by hand. Without it, nothing moves the pointer.
+ * --gl: where MonadHost connects for drawing by the Mac's GPU (mwm_gl.h).
+ * While it is connected, programs find $XDG_RUNTIME_DIR/monad-gl, which
+ * Monad's own OpenGL library in the VM draws through; without, there is
+ * no such socket and programs draw as they would anyway.
  * Linux only.
  */
 #define _GNU_SOURCE /* accept4 */
 #include "mwm_ctl.h"
+#include "mwm_gl.h"
 #include "mwm_server.h"
 
 #include <errno.h>
@@ -130,6 +136,24 @@ static int listen_for_host(const char *where, long owner, bool *vsock) {
     return fd;
 }
 
+/* Where programs' OpenGL libraries connect, while MonadHost is there to
+ * draw for them: the user's own socket in the user's own folder. */
+static int listen_for_programs(const char *dir, char *path, size_t pathlen) {
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    if (snprintf(addr.sun_path, sizeof addr.sun_path, "%s/" MWM_GL_SOCKET, dir) >= (int)sizeof addr.sun_path) return -1;
+    unlink(addr.sun_path);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    mode_t before = umask(0177);
+    bool ok = fd >= 0 && bind(fd, (struct sockaddr *)&addr, sizeof addr) == 0 && listen(fd, 16) == 0;
+    umask(before);
+    if (!ok) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    snprintf(path, pathlen, "%s", addr.sun_path);
+    return fd;
+}
+
 /* MonadHost's connection, or -1: on a vsock port only the Mac's is taken. */
 static int accept_host(int listener, bool vsock) {
     struct sockaddr_vm peer;
@@ -160,7 +184,7 @@ static bool become(long owner) {
 int main(int argc, char **argv) {
     int width = MWM_MAX_SIDE, height = MWM_MAX_SIDE;
     long owner = -1;
-    const char *control = NULL;
+    const char *control = NULL, *drawing = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--size") == 0 && i + 1 < argc && sscanf(argv[i + 1], "%dx%d", &width, &height) == 2) {
             i++;
@@ -168,8 +192,11 @@ int main(int argc, char **argv) {
             owner = strtol(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--control") == 0 && i + 1 < argc) {
             control = argv[++i];
+        } else if (strcmp(argv[i], "--gl") == 0 && i + 1 < argc) {
+            drawing = argv[++i];
         } else {
-            fprintf(stderr, "usage: monad-wm [--size WIDTHxHEIGHT] [--owner UID] [--control vsock:PORT | unix:/PATH]\n");
+            fprintf(stderr, "usage: monad-wm [--size WIDTHxHEIGHT] [--owner UID] [--control vsock:PORT | unix:/PATH]"
+                            " [--gl vsock:PORT | unix:/PATH]\n");
             return 64;
         }
     }
@@ -197,12 +224,19 @@ int main(int argc, char **argv) {
     bool vsock = false;
     int host_listener = control ? listen_for_host(control, owner, &vsock) : -1;
     if (control && host_listener < 0) return 69;
+    bool gl_vsock = false;
+    int gl_listener = drawing ? listen_for_host(drawing, owner, &gl_vsock) : -1;
+    if (drawing && gl_listener < 0) return 69;
     if (owner >= 0 && !become(owner)) return 77;
 
     mwm_screen screen = {.pixels = sheet, .width = width, .height = height, .stride = width};
     mwm_server *server = mwm_server_new(&screen);
     mwm_ctl *ctl = server ? mwm_ctl_new(server) : NULL;
-    if (!ctl) return 70;
+    mwm_gl *gl = mwm_gl_new();
+    if (!ctl || !gl) return 70;
+    /* Where programs connect to draw, while MonadHost is connected for it. */
+    int gl_programs = -1;
+    char gl_path[sizeof(((struct sockaddr_un *)0)->sun_path)] = "";
 
     signal(SIGPIPE, SIG_IGN);
     struct sigaction stop = {.sa_handler = on_stop}, bus = {.sa_handler = on_bus};
@@ -214,16 +248,32 @@ int main(int argc, char **argv) {
     fflush(stdout);
     uint32_t last_frame = now_ms();
     while (!stopping) {
-        enum { FIXED = 3 };
-        struct pollfd fds[FIXED + MWM_MAX_SOCKETS];
+        enum { FIXED = 5 };
+        struct pollfd fds[FIXED + MWM_MAX_SOCKETS + MWM_GL_SOCKETS];
         int sockets[MWM_MAX_SOCKETS];
         bool wants[MWM_MAX_SOCKETS];
         int n = mwm_server_sockets(server, sockets, wants, MWM_MAX_SOCKETS);
         fds[0] = (struct pollfd){.fd = listener, .events = POLLIN};
         fds[1] = (struct pollfd){.fd = host_listener, .events = POLLIN};
         fds[2] = (struct pollfd){.fd = mwm_ctl_fd(ctl), .events = (short)(POLLIN | (mwm_ctl_wants_write(ctl) ? POLLOUT : 0))};
+        /* The programs' drawing socket is there exactly while MonadHost is connected for drawing. */
+        if (mwm_gl_attached(gl) && gl_programs < 0) {
+            gl_programs = listen_for_programs(dir, gl_path, sizeof gl_path);
+        } else if (!mwm_gl_attached(gl) && gl_programs >= 0) {
+            close(gl_programs);
+            unlink(gl_path);
+            gl_programs = -1;
+        }
+        fds[3] = (struct pollfd){.fd = gl_listener, .events = POLLIN};
+        fds[4] = (struct pollfd){.fd = gl_programs, .events = POLLIN};
         for (int i = 0; i < n; i++) {
             fds[FIXED + i] = (struct pollfd){.fd = sockets[i], .events = (short)(POLLIN | (wants[i] ? POLLOUT : 0))};
+        }
+        int gl_fds[MWM_GL_SOCKETS];
+        bool gl_reads[MWM_GL_SOCKETS], gl_writes[MWM_GL_SOCKETS];
+        int gl_n = mwm_gl_sockets(gl, gl_fds, gl_reads, gl_writes, MWM_GL_SOCKETS);
+        for (int i = 0; i < gl_n; i++) {
+            fds[FIXED + n + i] = (struct pollfd){.fd = gl_fds[i], .events = (short)((gl_reads[i] ? POLLIN : 0) | (gl_writes[i] ? POLLOUT : 0))};
         }
         /* With no program waiting to draw (and no copy waited for), there is nothing to wake up for. */
         uint32_t now = now_ms();
@@ -248,6 +298,19 @@ int main(int argc, char **argv) {
                                        (fds[FIXED + i].revents & POLLOUT) != 0);
                 }
             }
+            /* Drawing: what there was to poll before anything below changes it. */
+            for (int i = 0; i < gl_n; i++) {
+                short got = fds[FIXED + n + i].revents;
+                if (got) mwm_gl_service(gl, gl_fds[i], (got & (POLLIN | POLLHUP | POLLERR)) != 0, (got & POLLOUT) != 0);
+            }
+            if (fds[3].revents & POLLIN) {
+                int fd = accept_host(gl_listener, gl_vsock);
+                if (fd >= 0) mwm_gl_attach(gl, fd);
+            }
+            if (gl_programs >= 0 && (fds[4].revents & POLLIN)) {
+                int fd = accept4(gl_programs, NULL, NULL, SOCK_CLOEXEC);
+                if (fd >= 0) (void)mwm_gl_add(gl, fd);
+            }
         }
         if (mwm_server_wants_frame(server) && now - last_frame >= FRAME_MS) {
             mwm_server_frame(server, now);
@@ -256,6 +319,8 @@ int main(int argc, char **argv) {
         mwm_ctl_update(ctl);
     }
     mwm_ctl_free(ctl);
+    mwm_gl_free(gl);
+    if (gl_programs >= 0) unlink(gl_path);
     mwm_server_free(server);
     unlink(path);
     munmap(sheet, bytes);

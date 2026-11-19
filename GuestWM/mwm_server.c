@@ -38,6 +38,7 @@ static const struct {
     {"zxdg_decoration_manager_v1", 1, T_DECORATION_MANAGER},
     {"wp_cursor_shape_manager_v1", 2, T_SHAPE_MANAGER},
     {"org_kde_kwin_server_decoration_manager", 1, T_KDE_DECORATION_MANAGER},
+    {"monad_gl", 1, T_GL},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -226,6 +227,25 @@ static void create_buffer(client *c, pool *p, mwm_msg *m) {
     p->refs++;
 }
 
+/* monad_gl.create_buffer: a buffer with no pixels, which says that what
+ * its surface shows is drawn on the Mac by a stream (mwm_gl_wire.h). */
+static void create_gl_buffer(client *c, mwm_msg *m) {
+    uint32_t id = mwm_get_uint(m), stream = mwm_get_uint(m), drawn_on = mwm_get_uint(m);
+    int32_t width = mwm_get_int(m), height = mwm_get_int(m);
+    if (m->bad) return;
+    if (stream == 0 || drawn_on == 0 || width <= 0 || height <= 0 || width > MWM_MAX_SIDE || height > MWM_MAX_SIDE) {
+        mwm_fail(c, m->object, E_INVALID_OBJECT, "no such drawing, or a size no window has");
+        return;
+    }
+    buffer *b = calloc(1, sizeof *b);
+    if (!b) {
+        mwm_fail(c, m->object, E_NO_MEMORY, "out of memory");
+        return;
+    }
+    *b = (buffer){.owner = c, .id = id, .width = width, .height = height, .gl_stream = stream, .gl_surface = drawn_on};
+    if (!mwm_add(c, id, T_BUFFER, b)) free(b);
+}
+
 /* ------------------------------------------------------------------------ */
 /* The registry and the output                                               */
 
@@ -368,6 +388,11 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_OUTPUT:
         if (m->opcode == 0) mwm_del(c, m->object); /* release */
         else mwm_fail(c, m->object, E_INVALID_METHOD, "wl_output has no such request");
+        break;
+    case T_GL:
+        if (m->opcode == 0) mwm_del(c, m->object);
+        else if (m->opcode == 1) create_gl_buffer(c, m);
+        else mwm_fail(c, m->object, E_INVALID_METHOD, "monad_gl has no such request");
         break;
     case T_SEAT:
     case T_POINTER:
@@ -555,7 +580,7 @@ int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
         if (out && n < max) {
             const xdg *x = w->surface ? w->surface->xdg : NULL;
             box inner = mwm_shell_inner(w);
-            bool own_bar = mwm_shell_own_bar(w);
+            bool own_bar = mwm_shell_own_bar(w) && w->gl_stream == 0; /* what the Mac draws has the Mac's frame */
             /* A popup: the window it is on, and where it stands from that window's own top left, in that window's pixels. */
             const window *on = mwm_shell_parent(w);
             out[n] = (mwm_window){.id = w->id, .x = w->x, .y = w->y, .width = w->width, .height = w->height, .scale = w->scale,
@@ -563,6 +588,7 @@ int mwm_server_windows(const mwm_server *s, mwm_window *out, int max) {
                                   .inner_height = inner.y2 - inner.y1, .parent = on ? on->id : 0,
                                   .offset_x = on ? x->px * on->scale : 0, .offset_y = on ? x->py * on->scale : 0,
                                   .own_bar = own_bar, .bar_color = own_bar ? w->bar_color : 0,
+                                  .gl_stream = w->gl_stream, .gl_surface = w->gl_surface,
                                   .title = x ? x->title : "", .app_id = x ? x->app_id : ""};
         }
         n++;

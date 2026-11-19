@@ -50,6 +50,7 @@ typedef enum {
     T_SHAPE_DEVICE,
     T_KDE_DECORATION_MANAGER,
     T_KDE_DECORATION,
+    T_GL,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -110,8 +111,11 @@ typedef struct {
     client *owner;
     /* 0 once the program destroyed it while a surface still shows it. */
     uint32_t id;
+    /* NULL for a buffer with no pixels: what it shows is drawn on the Mac (`gl_stream`). */
     pool *pool;
     int32_t offset, width, height, stride;
+    /* Drawn by the Mac's GPU (mwm_gl_wire.h): the stream that draws it and that stream's surface; 0 for pixels. */
+    uint32_t gl_stream, gl_surface;
     /* ARGB8888: its pixels say how much of what is under them shows. */
     bool alpha;
     /* The surfaces showing it. */
@@ -131,6 +135,8 @@ typedef struct {
     uint32_t bar_color;
     /* What was drawn of it and not handed out yet (mwm_server_take_drawn), in its pixels. */
     region drawn;
+    /* Its picture is drawn on the Mac (its buffer's gl_stream and gl_surface); 0 when it is pixels. */
+    uint32_t gl_stream, gl_surface;
     surface *surface;
 } window;
 

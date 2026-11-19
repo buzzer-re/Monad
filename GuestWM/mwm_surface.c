@@ -163,7 +163,7 @@ typedef struct {
  * window there (its round corners, around a menu). */
 static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom) {
     const buffer *b = f->current;
-    if (!b) return;
+    if (!b || !b->pool) return; /* nothing, or nothing of pixels (the Mac draws it) */
     int scale = p->w->scale;
     int64_t width = (int64_t)b->width * scale / f->scale, height = (int64_t)b->height * scale / f->scale;
     box r = common(p->area, (box){near(ox), near(oy), near(ox + width), near(oy + height)});
@@ -248,7 +248,7 @@ bool mwm_server_take_drawn(mwm_server *s, uint32_t id, int max_pixels, mwm_drawn
 void mwm_server_drawn_again(mwm_server *s) {
     for (int i = 0; i < MWM_MAX_WINDOWS; i++) {
         window *w = &s->windows[i];
-        if (w->used) w->drawn = (region){.count = 1, .boxes = {{0, 0, w->width, w->height}}};
+        if (w->used && w->gl_stream == 0) w->drawn = (region){.count = 1, .boxes = {{0, 0, w->width, w->height}}};
     }
 }
 
@@ -334,14 +334,21 @@ static bool window_follows(mwm_server *s, surface *f) {
         for (int i = 0; i < MWM_MAX_WINDOWS && !w; i++)
             if (!s->windows[i].used) w = &s->windows[i];
         if (!w || !place(s, NULL, width, height, &x, &y)) return false; /* as many as there may be, or no room: not shown */
-        *w = (window){.used = true, .id = ++s->next_window, .x = x, .y = y, .width = width, .height = height, .scale = f->scale, .surface = f};
+        *w = (window){.used = true, .id = ++s->next_window, .x = x, .y = y, .width = width, .height = height, .scale = f->scale, .surface = f,
+                      .gl_stream = b->gl_stream, .gl_surface = b->gl_surface};
         f->window = w;
         s->order[s->window_count++] = (int)(w - s->windows);
         mwm_shell_window_new(s, w);
         s->generation++;
         return true;
     }
-    if (width == w->width && height == w->height && f->scale == w->scale) return false;
+    bool other = b->gl_stream != w->gl_stream || b->gl_surface != w->gl_surface;
+    if (other) { /* who draws it changed: the Mac is told, and has no pixel of it yet */
+        w->gl_stream = b->gl_stream;
+        w->gl_surface = b->gl_surface;
+        s->generation++;
+    }
+    if (width == w->width && height == w->height && f->scale == w->scale) return other;
     window before = *w;
     if (width != w->width || height != w->height) {
         /* Where it stands while it fits there, else a place of its own; with
@@ -351,7 +358,8 @@ static bool window_follows(mwm_server *s, surface *f) {
             w->width = width;
             w->height = height;
         } else if (place(s, w, width, height, &x, &y)) {
-            *w = (window){.used = true, .id = w->id, .x = x, .y = y, .width = width, .height = height, .surface = f};
+            *w = (window){.used = true, .id = w->id, .x = x, .y = y, .width = width, .height = height, .surface = f,
+                          .gl_stream = b->gl_stream, .gl_surface = b->gl_surface};
         } else {
             w->width = width < w->width ? width : w->width;
             w->height = height < w->height ? height : w->height;
@@ -443,6 +451,10 @@ static void changed(mwm_server *s, surface *f, bool all) {
     if (!w) return;
     region parts = {0};
     take_dirty(w, root, 0, 0, 0, &parts);
+    if (w->gl_stream != 0) { /* the Mac draws it: there are no pixels of it to keep or to send */
+        w->drawn.count = 0;
+        return;
+    }
     if (all) parts = (region){.count = 1, .boxes = {{0, 0, w->width, w->height}}};
     for (int i = 0; i < parts.count; i++) {
         if (paint(s, w, parts.boxes[i])) continue;

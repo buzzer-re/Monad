@@ -190,6 +190,7 @@ static void tell_windows(mwm_ctl *c) {
         say(c, "window %u %d %d %d %d %d %d %d %d %d %u %d %d %s %s %s\n", list[i].id, list[i].x, list[i].y, list[i].width,
             list[i].height, list[i].scale, list[i].inner_x, list[i].inner_y, list[i].inner_width, list[i].inner_height,
             list[i].parent, list[i].offset_x, list[i].offset_y, bar, app, title);
+        if (list[i].gl_stream != 0) say(c, "gl %u %u %u\n", list[i].id, list[i].gl_stream, list[i].gl_surface);
     }
     say(c, "end\n");
     c->told = generation;
