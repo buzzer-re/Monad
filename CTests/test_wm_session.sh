@@ -97,8 +97,8 @@ check "plain: the user's session, and its desktop's name" "loginctl enable-linge
 systemctl start user@1000.service
 $AS_USER systemctl --user set-environment XDG_CURRENT_DESKTOP=Monad
 systemctl --user set-environment XDG_CURRENT_DESKTOP=Monad
-$AS_USER systemctl --user try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service
-systemctl --user try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service" "$(calls)"
+$AS_USER systemctl --user --no-block try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service
+systemctl --user --no-block try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service" "$(calls)"
 check "plain: no override written where no schemas are" no "$([ -e "$OVERRIDE" ] && echo yes || echo no)"
 
 # With schemas: the override for programs under Monad's window manager, compiled once.
@@ -143,8 +143,8 @@ run -- stop dev
 check "stop: status" 0 "$status"
 check "stop: the desktop's name is taken back" "$AS_USER systemctl --user unset-environment XDG_CURRENT_DESKTOP
 systemctl --user unset-environment XDG_CURRENT_DESKTOP
-$AS_USER systemctl --user try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service
-systemctl --user try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service" "$(calls)"
+$AS_USER systemctl --user --no-block try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service
+systemctl --user --no-block try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service" "$(calls)"
 run FAILS="runuser systemctl" -- stop dev
 check "stop: never fails" 0 "$status"
 

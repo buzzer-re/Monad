@@ -38,12 +38,14 @@ as_user() {
     runuser -u "$user" -- env "XDG_RUNTIME_DIR=/run/user/$uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" "$@" >/dev/null 2>&1
 }
 # What tells programs the desktop's settings reads them when it starts: it starts again, if it runs.
+# Not waited for: with the window manager gone it has no display to start
+# on, and the service's stop waited a minute and a half for it.
 portals="xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service xdg-desktop-portal.service"
 
 if [ "$word" = stop ]; then
     as_user systemctl --user unset-environment XDG_CURRENT_DESKTOP
     # shellcheck disable=SC2086
-    as_user systemctl --user try-restart $portals
+    as_user systemctl --user --no-block try-restart $portals
     exit 0
 fi
 
@@ -73,5 +75,5 @@ button-layout=':'"
 fi
 as_user systemctl --user set-environment XDG_CURRENT_DESKTOP=Monad
 # shellcheck disable=SC2086
-as_user systemctl --user try-restart $portals
+as_user systemctl --user --no-block try-restart $portals
 exit 0
