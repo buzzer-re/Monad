@@ -51,6 +51,8 @@ typedef enum {
     T_KDE_DECORATION_MANAGER,
     T_KDE_DECORATION,
     T_GL,
+    T_VIEWPORTER,
+    T_VIEWPORT,
 } obj_type;
 
 /* wl_display.error codes. */
@@ -178,6 +180,22 @@ struct xdg {
     char title[TEXT], app_id[TEXT];
 };
 
+/* What of its buffer a surface shows, and how large (wp_viewport): a
+ * program that draws at the screen's scale may say so this way and never
+ * by a buffer scale (Firefox does). */
+typedef struct {
+    /* Only a part of the buffer shows: where, in 1/256 of the program's units. */
+    bool cut;
+    int32_t x, y, width, height;
+    /* The size it shows at, in the program's units; 0: the part's own. */
+    int32_t to_width, to_height;
+} view;
+
+/* A surface's wp_viewport. */
+typedef struct {
+    surface *surface; /* NULL once it went */
+} viewport;
+
 /* What a commit makes take effect. */
 typedef struct {
     buffer *buffer;
@@ -185,6 +203,7 @@ typedef struct {
     /* What changed since the last commit: in the buffer's pixels, and in the program's units. */
     region damage, surface_damage;
     int32_t scale; /* 0: as it was */
+    view view;
     uint32_t frames[MAX_FRAMES];
     int frame_count;
 } state;
@@ -208,6 +227,10 @@ struct surface {
     state pending;
     buffer *current;
     int32_t scale;
+    /* What its viewport said last, and what of that a commit made take effect. */
+    view asked, view;
+    viewport *viewport;
+    uint32_t viewport_id;
     /* What of it changed and is not on the sheet yet, in its buffer's pixels. */
     region dirty;
     uint32_t frames_waiting[MAX_FRAMES];

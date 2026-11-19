@@ -397,6 +397,110 @@ static void test_a_program_draws_at_the_screens_scale(void) {
     mwm_server_free(s);
 }
 
+/* A surface that says how large its picture shows, and what of it
+ * (wp_viewport). Firefox says the size of what it draws this way, never
+ * by a buffer scale: without it, a quarter of its page showed twice as large. */
+static void test_a_surface_says_how_large_its_picture_shows(void) {
+    mwm_server *s = server();
+    mwm_server_scale(s, 2);
+    client a = connect_client(s);
+    uint32_t sub = bind_global(&a, "wl_subcompositor", 1), viewporter = bind_global(&a, "wp_viewporter", 1);
+    window v = open_window(s, &a, "W", "app", 0x00101000, 64, 32);
+    request(&a, v.surface, 8, 1, 2); /* set_buffer_scale: 32 × 16 units */
+    request(&a, v.surface, 6, 0);
+    part p = add_part(&a, sub, v.surface, 4, 2);
+    uint32_t px[48], pool = a.next++, view = a.next++;
+    for (int i = 0; i < 48; i++) px[i] = 0xffa00000u + (uint32_t)i;
+    p.buffer = a.next++;
+    make_drawn(&a, pool, p.buffer, px, 8, 6);
+    request(&a, viewporter, 1, 2, view, p.surface); /* get_viewport */
+    request(&a, view, 2, 2, 4, 3);                  /* set_destination: 4 × 3 units, a pixel of the buffer for each of the screen's */
+    show(&a, p.surface, p.buffer, 4, 3);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(at(8, 4) == px[0] && at(9, 4) == px[1] && at(8, 5) == px[8] && at(15, 9) == px[47]);
+    CHECK(at(16, 4) == pattern(0x00101000, 16, 4, 64) && at(8, 10) == pattern(0x00101000, 8, 10, 64));
+
+    /* What changed, said in the buffer's pixels or in units, is where it shows. */
+    (void)drawn(s, v.id);
+    request(&a, p.surface, 9, 4, 2, 2, 2, 2); /* damage_buffer */
+    request(&a, p.surface, 6, 0);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(drew(s, v.id, 10, 6, 2, 2));
+    request(&a, p.surface, 2, 4, 1, 1, 1, 1); /* damage: a unit is two pixels of this buffer */
+    request(&a, p.surface, 6, 0);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(drew(s, v.id, 10, 6, 2, 2));
+
+    /* A part of the buffer only, at the part's own size: 4 × 3 units from (2, 1), each pixel twice. */
+    request(&a, view, 1, 4, 2 * 256, 1 * 256, 4 * 256, 3 * 256); /* set_source */
+    request(&a, view, 2, 2, (uint32_t)-1, (uint32_t)-1);         /* no size said */
+    request(&a, p.surface, 6, 0);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(at(8, 4) == px[10] && at(9, 4) == px[10] && at(10, 4) == px[11] && at(8, 5) == px[10] && at(8, 6) == px[18]);
+    CHECK(at(15, 9) == px[3 * 8 + 5] && at(16, 9) == pattern(0x00101000, 16, 9, 64));
+
+    /* Without it the buffer shows as it is again: at 1 on a window at 2, twice as large. */
+    request(&a, view, 0, 0);
+    request(&a, p.surface, 6, 0);
+    request(&a, v.surface, 6, 0);
+    pump(s, &a);
+    CHECK(at(8, 4) == px[0] && at(9, 4) == px[0] && at(10, 4) == px[1] && at(23, 15) == px[47]);
+
+    /* A window's own surface: its size is the one it says, in the pixels of the Mac's screen. */
+    mwm_msg m;
+    while (mwm_conn_next(a.c, &m)) CHECK(m.object != 1 || m.opcode != DISPLAY_ERROR); /* nothing so far was wrong */
+    window r = open_window(s, &a, "R", "app", 0x00202000, 40, 20);
+    view = a.next++;
+    request(&a, viewporter, 1, 2, view, r.surface); /* the surface had one before: none of it is left */
+    request(&a, view, 2, 2, 20, 10);
+    request(&a, r.surface, 6, 0);
+    pump(s, &a);
+    mwm_window list[4];
+    CHECK(mwm_server_windows(s, list, 4) == 2 && list[1].id == r.id && list[1].width == 40 && list[1].height == 20 && list[1].scale == 2);
+    request(&a, view, 2, 2, 30, 10);
+    request(&a, r.surface, 6, 0);
+    pump(s, &a);
+    CHECK(mwm_server_windows(s, list, 4) == 2 && list[1].width == 60 && list[1].height == 20 && list[1].scale == 2);
+    CHECK(at(list[1].x, list[1].y) == pattern(0x00202000, 0, 0, 40) && at(list[1].x + 59, list[1].y + 19) == pattern(0x00202000, 39, 19, 40));
+
+    /* What a program may not say of it: each drops it, with wp_viewport's own word. */
+    uint32_t object;
+    struct {
+        int request; /* 1 set_source, 2 set_destination */
+        uint32_t args[4];
+        bool again, gone;
+        int code;
+    } wrong[] = {
+        {.again = true, .code = 0},                                                 /* a second one for a surface */
+        {.request = 2, .args = {0, 5}, .code = 0},                                  /* no size */
+        {.request = 2, .args = {(uint32_t)-1, 5}, .code = 0},                       /* half a size */
+        {.request = 1, .args = {(uint32_t)-256, 0, 256, 256}, .code = 0},           /* from before the buffer */
+        {.request = 1, .args = {0, 0, 0, 256}, .code = 0},                          /* nothing of it */
+        {.request = 1, .args = {0, 0, 384, 256}, .code = 1},                        /* a unit and a half, and no size said */
+        {.request = 1, .args = {0, 0, 100 * 256, 256}, .code = 2},                  /* more than the buffer holds */
+        {.request = 2, .args = {4, 4}, .gone = true, .code = 3},                    /* of a surface that went */
+    };
+    for (size_t i = 0; i < sizeof wrong / sizeof wrong[0]; i++) {
+        client b = connect_client(s);
+        uint32_t porter = bind_global(&b, "wp_viewporter", 1);
+        window o = open_window(s, &b, "O", "app", 0x00303000, 8, 6);
+        uint32_t one = b.next++;
+        request(&b, porter, 1, 2, one, o.surface);
+        if (wrong[i].again) request(&b, porter, 1, 2, b.next++, o.surface);
+        if (wrong[i].gone) request(&b, o.surface, 0, 0);
+        if (wrong[i].request == 1) request(&b, one, 1, 4, wrong[i].args[0], wrong[i].args[1], wrong[i].args[2], wrong[i].args[3]);
+        if (wrong[i].request == 2) request(&b, one, 2, 2, wrong[i].args[0], wrong[i].args[1]);
+        if (!wrong[i].gone) request(&b, o.surface, 6, 0);
+        CHECK(dropped_with(s, &b, &object) == wrong[i].code && object == (wrong[i].again ? porter : one));
+    }
+    CHECK(mwm_server_windows(s, list, 4) == 2); /* theirs went with them */
+    mwm_server_free(s);
+}
+
 /* What a program may not make of its surfaces. */
 static void test_surfaces_misused_drop_the_program(void) {
     mwm_server *s = server();
@@ -546,6 +650,7 @@ int main(void) {
     test_what_was_drawn_is_handed_out_once();
     test_only_what_changed_is_copied();
     test_a_program_draws_at_the_screens_scale();
+    test_a_surface_says_how_large_its_picture_shows();
     test_surfaces_misused_drop_the_program();
     test_the_window_inside_its_shadow_is_told();
     test_windows_are_placed_in_rows();

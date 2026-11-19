@@ -39,6 +39,7 @@ static const struct {
     {"wp_cursor_shape_manager_v1", 2, T_SHAPE_MANAGER},
     {"org_kde_kwin_server_decoration_manager", 1, T_KDE_DECORATION_MANAGER},
     {"monad_gl", 1, T_GL},
+    {"wp_viewporter", 1, T_VIEWPORTER},
 };
 enum { GLOBALS = sizeof globals / sizeof globals[0] };
 
@@ -350,6 +351,8 @@ static void dispatch(mwm_server *s, client *c, mwm_msg *m) {
     case T_REGION:
     case T_SUBCOMPOSITOR:
     case T_SUBSURFACE:
+    case T_VIEWPORTER:
+    case T_VIEWPORT:
         mwm_surface_request(s, c, o, m);
         break;
     case T_CALLBACK: /* told once and gone: it takes no request */
@@ -442,7 +445,7 @@ static void client_free(mwm_server *s, client *c) {
         object *o = &c->objects[i];
         switch ((obj_type)o->type) {
         case T_BUFFER: buffer_destroy(c, o->data, false); break;
-        case T_XDG_SURFACE: case T_SUBSURFACE: case T_POSITIONER: case T_DATA_SOURCE: free(o->data); break;
+        case T_XDG_SURFACE: case T_SUBSURFACE: case T_POSITIONER: case T_DATA_SOURCE: case T_VIEWPORT: free(o->data); break;
         default: continue;
         }
         o->type = T_NONE;

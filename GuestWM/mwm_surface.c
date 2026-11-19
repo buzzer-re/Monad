@@ -21,6 +21,7 @@
 #include <string.h>
 
 enum { SURFACE_INVALID_SCALE = 0, SUBCOMPOSITOR_BAD_SURFACE = 0, SUBSURFACE_BAD_SURFACE = 0 };
+enum { VIEWPORTER_EXISTS = 0, VIEWPORT_BAD_VALUE = 0, VIEWPORT_BAD_SIZE = 1, VIEWPORT_OUT_OF_BUFFER = 2, VIEWPORT_NO_SURFACE = 3 };
 /* Beyond any buffer there can be: sizes a program gives are cut to it before they are added up. */
 enum { FAR = 1 << 20 };
 
@@ -149,6 +150,37 @@ static uint32_t over(uint32_t src, uint32_t dst) {
     return (a > 255 ? 255 : a) << 24 | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
 }
 
+/* Where a surface's picture comes from and how large it shows. */
+typedef struct {
+    /* The part of its buffer that shows, in 1/256 of a pixel: never more than the buffer holds. */
+    int64_t x, y, w, h;
+    /* Its size, in the pixels of a window drawn at the scale asked about. */
+    int64_t width, height;
+} picture;
+
+static bool viewed(const surface *f) { return f->view.cut || f->view.to_width > 0; }
+
+/* The picture of a surface that has a buffer, in a window drawn at `scale`. */
+static picture picture_of(const surface *f, int scale) {
+    const buffer *b = f->current;
+    const view *v = &f->view;
+    picture p = {0, 0, (int64_t)b->width * 256, (int64_t)b->height * 256, (int64_t)b->width * scale / f->scale,
+                 (int64_t)b->height * scale / f->scale};
+    if (v->cut) {
+        int64_t x = (int64_t)v->x * f->scale, y = (int64_t)v->y * f->scale;
+        int64_t w = (int64_t)v->width * f->scale, h = (int64_t)v->height * f->scale;
+        if (x > p.w - 1) x = p.w - 1;
+        if (y > p.h - 1) y = p.h - 1;
+        p = (picture){x, y, w < p.w - x ? w : p.w - x, h < p.h - y ? h : p.h - y, (int64_t)v->width * scale / 256,
+                      (int64_t)v->height * scale / 256};
+    }
+    if (v->to_width > 0) {
+        p.width = (int64_t)v->to_width * scale;
+        p.height = (int64_t)v->to_height * scale;
+    }
+    return p;
+}
+
 typedef struct {
     mwm_server *s;
     const window *w;
@@ -164,23 +196,25 @@ typedef struct {
 static void draw(const painter *p, const surface *f, int ox, int oy, bool bottom) {
     const buffer *b = f->current;
     if (!b || !b->pool) return; /* nothing, or nothing of pixels (the Mac draws it) */
-    int scale = p->w->scale;
-    int64_t width = (int64_t)b->width * scale / f->scale, height = (int64_t)b->height * scale / f->scale;
-    box r = common(p->area, (box){near(ox), near(oy), near(ox + width), near(oy + height)});
+    picture pic = picture_of(f, p->w->scale);
+    if (pic.width <= 0 || pic.height <= 0) return;
+    box r = common(p->area, (box){near(ox), near(oy), near(ox + pic.width), near(oy + pic.height)});
     if (empty(r)) return;
     const uint8_t *pixels = b->pool->map + b->offset;
-    bool same = f->scale == scale;
+    /* A pixel of the buffer for each of the window's, from (left, top) of it. */
+    bool same = pic.w == pic.width * 256 && pic.h == pic.height * 256 && ((pic.x | pic.y) & 255) == 0;
+    int left = (int)(pic.x >> 8), top = (int)(pic.y >> 8);
     for (int y = r.y1; y < r.y2; y++) {
         uint32_t *dst = p->s->screen.pixels + (size_t)(p->w->y + y) * (size_t)p->s->screen.stride + p->w->x + r.x1;
-        int sy = (int)((int64_t)(y - oy) * f->scale / scale);
+        int sy = same ? top + y - oy : (int)((pic.y + (int64_t)(y - oy) * pic.h / pic.height) >> 8);
         if (sy >= b->height) sy = b->height - 1;
         const uint8_t *row = pixels + (size_t)sy * (size_t)b->stride;
         if (same && bottom && b->alpha) { /* a row as it is: most of what is ever drawn */
-            memcpy(dst, row + (size_t)(r.x1 - ox) * 4, (size_t)(r.x2 - r.x1) * 4);
+            memcpy(dst, row + (size_t)(left + r.x1 - ox) * 4, (size_t)(r.x2 - r.x1) * 4);
             continue;
         }
         for (int x = r.x1; x < r.x2; x++, dst++) {
-            int sx = same ? x - ox : (int)((int64_t)(x - ox) * f->scale / scale);
+            int sx = same ? left + x - ox : (int)((pic.x + (int64_t)(x - ox) * pic.w / pic.width) >> 8);
             if (sx >= b->width) sx = b->width - 1;
             uint32_t v;
             memcpy(&v, row + (size_t)sx * 4, 4);
@@ -327,14 +361,22 @@ static bool window_follows(mwm_server *s, surface *f) {
         return false;
     }
     window *w = f->window;
-    int width = b->width < s->screen.width ? b->width : s->screen.width;
-    int height = b->height < s->screen.height ? b->height : s->screen.height;
+    int scale = f->scale;
+    int64_t wide = b->width, high = b->height;
+    if (viewed(f)) { /* the size it says, in the pixels of the Mac's screen */
+        scale = s->scale;
+        picture pic = picture_of(f, scale);
+        wide = pic.width < 1 ? 1 : pic.width;
+        high = pic.height < 1 ? 1 : pic.height;
+    }
+    int width = wide < s->screen.width ? (int)wide : s->screen.width;
+    int height = high < s->screen.height ? (int)high : s->screen.height;
     if (!w) {
         int x, y;
         for (int i = 0; i < MWM_MAX_WINDOWS && !w; i++)
             if (!s->windows[i].used) w = &s->windows[i];
         if (!w || !place(s, NULL, width, height, &x, &y)) return false; /* as many as there may be, or no room: not shown */
-        *w = (window){.used = true, .id = ++s->next_window, .x = x, .y = y, .width = width, .height = height, .scale = f->scale, .surface = f,
+        *w = (window){.used = true, .id = ++s->next_window, .x = x, .y = y, .width = width, .height = height, .scale = scale, .surface = f,
                       .gl_stream = b->gl_stream, .gl_surface = b->gl_surface};
         f->window = w;
         s->order[s->window_count++] = (int)(w - s->windows);
@@ -348,7 +390,7 @@ static bool window_follows(mwm_server *s, surface *f) {
         w->gl_surface = b->gl_surface;
         s->generation++;
     }
-    if (width == w->width && height == w->height && f->scale == w->scale) return other;
+    if (width == w->width && height == w->height && scale == w->scale) return other;
     window before = *w;
     if (width != w->width || height != w->height) {
         /* Where it stands while it fits there, else a place of its own; with
@@ -365,7 +407,7 @@ static bool window_follows(mwm_server *s, surface *f) {
             w->height = height < w->height ? height : w->height;
         }
     }
-    w->scale = f->scale;
+    w->scale = scale;
     if (before.x != w->x || before.y != w->y || before.width > w->width || before.height > w->height) {
         clear(s, before.x, before.y, before.width, before.height); /* what the old place or size left */
     }
@@ -387,6 +429,22 @@ static void frame_waits(mwm_server *s, client *c, surface *f, uint32_t id) {
     }
 }
 
+static bool same_view(const view *a, const view *b) {
+    return a->cut == b->cut && a->to_width == b->to_width && a->to_height == b->to_height
+           && (!a->cut || (a->x == b->x && a->y == b->y && a->width == b->width && a->height == b->height));
+}
+
+/* A rectangle in the program's units, in the pixels of the surface's buffer (outward). */
+static box in_buffer(const surface *f, box units) {
+    if (!f->current || !viewed(f)) return (box){units.x1 * f->scale, units.y1 * f->scale, units.x2 * f->scale, units.y2 * f->scale};
+    picture pic = picture_of(f, 1);
+    units = common(units, (box){0, 0, near(pic.width), near(pic.height)});
+    if (empty(units)) return (box){0, 0, 0, 0};
+    return (box){(int32_t)((pic.x + units.x1 * pic.w / pic.width) >> 8), (int32_t)((pic.y + units.y1 * pic.h / pic.height) >> 8),
+                 (int32_t)((pic.x + (units.x2 * pic.w + pic.width - 1) / pic.width + 255) >> 8),
+                 (int32_t)((pic.y + (units.y2 * pic.h + pic.height - 1) / pic.height + 255) >> 8)};
+}
+
 /* Makes a commit's state the surface's, and that of the parts waiting for
  * it. *all: the whole window is to be drawn again, not only what changed. */
 static void apply(mwm_server *s, client *c, surface *f, state *st, bool *all, int depth) {
@@ -402,11 +460,21 @@ static void apply(mwm_server *s, client *c, surface *f, state *st, bool *all, in
         if (new) new->shown++;
         mwm_buffer_unshown(old);
     }
-    for (int i = 0; i < st->damage.count; i++) region_add(&f->dirty, st->damage.boxes[i]);
-    for (int i = 0; i < st->surface_damage.count; i++) {
-        box units = st->surface_damage.boxes[i];
-        region_add(&f->dirty, (box){units.x1 * f->scale, units.y1 * f->scale, units.x2 * f->scale, units.y2 * f->scale});
+    if (!same_view(&st->view, &f->view)) {
+        f->view = st->view;
+        *all = true;
     }
+    if (f->current && f->viewport && f->view.cut) {
+        const view *v = &f->view;
+        if (v->to_width == 0 && ((v->width | v->height) & 255) != 0) {
+            mwm_fail(c, f->viewport_id, VIEWPORT_BAD_SIZE, "a part of a unit, and no size said");
+        } else if (((int64_t)v->x + v->width) * f->scale > (int64_t)f->current->width * 256
+                   || ((int64_t)v->y + v->height) * f->scale > (int64_t)f->current->height * 256) {
+            mwm_fail(c, f->viewport_id, VIEWPORT_OUT_OF_BUFFER, "more than the buffer holds");
+        }
+    }
+    for (int i = 0; i < st->damage.count; i++) region_add(&f->dirty, st->damage.boxes[i]);
+    for (int i = 0; i < st->surface_damage.count; i++) region_add(&f->dirty, in_buffer(f, st->surface_damage.boxes[i]));
     memset(st, 0, sizeof *st);
     if (depth >= MAX_DEPTH) return;
     for (int i = 0; i < f->stack_count; i++) {
@@ -427,13 +495,19 @@ static void apply(mwm_server *s, client *c, surface *f, state *st, bool *all, in
 /* What changed in the tree and is not drawn yet is added to `all`, in the
  * window's pixels; the surfaces are then up to date. */
 static void take_dirty(const window *w, surface *f, int ox, int oy, int depth, region *all) {
-    for (int i = 0; f->current && i < f->dirty.count; i++) {
-        box d = common(f->dirty.boxes[i], (box){0, 0, f->current->width, f->current->height});
-        if (empty(d)) continue;
-        /* Outward, when the window is drawn at another scale than this part. */
-        region_add(all, (box){ox + (int32_t)((int64_t)d.x1 * w->scale / f->scale), oy + (int32_t)((int64_t)d.y1 * w->scale / f->scale),
-                              ox + (int32_t)(((int64_t)d.x2 * w->scale + f->scale - 1) / f->scale),
-                              oy + (int32_t)(((int64_t)d.y2 * w->scale + f->scale - 1) / f->scale)});
+    picture pic = f->current ? picture_of(f, w->scale) : (picture){0};
+    for (int i = 0; pic.width > 0 && pic.height > 0 && i < f->dirty.count; i++) {
+        /* The part of it that shows, from where the picture starts in the buffer. */
+        int64_t x1 = (int64_t)f->dirty.boxes[i].x1 * 256 - pic.x, x2 = (int64_t)f->dirty.boxes[i].x2 * 256 - pic.x;
+        int64_t y1 = (int64_t)f->dirty.boxes[i].y1 * 256 - pic.y, y2 = (int64_t)f->dirty.boxes[i].y2 * 256 - pic.y;
+        if (x1 < 0) x1 = 0;
+        if (y1 < 0) y1 = 0;
+        if (x2 > pic.w) x2 = pic.w;
+        if (y2 > pic.h) y2 = pic.h;
+        if (x2 <= x1 || y2 <= y1) continue;
+        /* Outward, when a pixel of the buffer is not one of the window's. */
+        region_add(all, (box){near(ox + x1 * pic.width / pic.w), near(oy + y1 * pic.height / pic.h),
+                              near(ox + (x2 * pic.width + pic.w - 1) / pic.w), near(oy + (y2 * pic.height + pic.h - 1) / pic.h)});
     }
     f->dirty.count = 0;
     for (int i = 0; depth < MAX_DEPTH && i < f->stack_count; i++) {
@@ -474,6 +548,7 @@ static void keep(mwm_server *s, client *c, surface *f) {
     for (int i = 0; i < from->damage.count; i++) region_add(&to->damage, from->damage.boxes[i]);
     for (int i = 0; i < from->surface_damage.count; i++) region_add(&to->surface_damage, from->surface_damage.boxes[i]);
     if (from->scale != 0) to->scale = from->scale;
+    to->view = from->view;
     for (int i = 0; i < from->frame_count; i++) {
         if (to->frame_count < MAX_FRAMES) {
             to->frames[to->frame_count++] = from->frames[i];
@@ -488,6 +563,7 @@ static void keep(mwm_server *s, client *c, surface *f) {
 
 static void commit(mwm_server *s, client *c, surface *f) {
     mwm_shell_commit(s, c, f);
+    f->pending.view = f->asked;
     if (f->sub && waits(f)) {
         keep(s, c, f);
         return;
@@ -523,6 +599,7 @@ void mwm_surface_destroy(mwm_server *s, client *c, surface *f, bool tell) {
     mwm_seat_surface_gone(s, f);
     mwm_window_gone(s, f->window);
     if (f->xdg) f->xdg->surface = NULL;
+    if (f->viewport) f->viewport->surface = NULL;
     /* Its parts show nowhere from now on. */
     for (int i = 0; i < f->stack_count; i++) {
         if (f->stack[i] != f && f->stack[i]->sub) f->stack[i]->sub->parent = NULL;
@@ -636,6 +713,77 @@ static void get_subsurface(client *c, mwm_msg *m) {
     parent->stack[parent->stack_count++] = f; /* on top; it shows at the parent's next commit */
 }
 
+static void get_viewport(client *c, mwm_msg *m) {
+    uint32_t id = mwm_get_uint(m), surface_id = mwm_get_uint(m);
+    if (m->bad) return;
+    surface *f = mwm_find_as(c, surface_id, T_SURFACE);
+    if (!f) {
+        mwm_fail(c, m->object, E_INVALID_OBJECT, "not a surface");
+        return;
+    }
+    if (f->viewport) {
+        mwm_fail(c, m->object, VIEWPORTER_EXISTS, "the surface has a viewport already");
+        return;
+    }
+    viewport *v = calloc(1, sizeof *v);
+    if (!v) {
+        mwm_fail(c, m->object, E_NO_MEMORY, "out of memory");
+        return;
+    }
+    v->surface = f;
+    if (!mwm_add(c, id, T_VIEWPORT, v)) {
+        free(v);
+        return;
+    }
+    f->viewport = v;
+    f->viewport_id = id;
+}
+
+/* What a viewport says takes effect at its surface's next commit. */
+static void viewport_request(client *c, viewport *v, mwm_msg *m) {
+    surface *f = v->surface;
+    if (m->opcode == 0) { /* destroy: the buffer as it is again */
+        if (f) {
+            f->viewport = NULL;
+            f->asked = (view){0};
+        }
+        mwm_del(c, m->object);
+        free(v);
+        return;
+    }
+    if (m->opcode > 2) {
+        mwm_fail(c, m->object, E_INVALID_METHOD, "wp_viewport has no such request");
+        return;
+    }
+    int32_t n[4] = {0};
+    for (int i = 0; i < (m->opcode == 1 ? 4 : 2); i++) n[i] = mwm_get_int(m);
+    if (m->bad) return;
+    if (!f) {
+        mwm_fail(c, m->object, VIEWPORT_NO_SURFACE, "its surface is gone");
+        return;
+    }
+    if (m->opcode == 1) { /* set_source, in 1/256 of a unit: all of it -1 is the whole buffer */
+        bool none = n[0] == -256 && n[1] == -256 && n[2] == -256 && n[3] == -256;
+        if (!none && (n[0] < 0 || n[1] < 0 || n[2] <= 0 || n[3] <= 0)) {
+            mwm_fail(c, m->object, VIEWPORT_BAD_VALUE, "no part of a buffer");
+            return;
+        }
+        f->asked.cut = !none;
+        f->asked.x = n[0];
+        f->asked.y = n[1];
+        f->asked.width = n[2];
+        f->asked.height = n[3];
+    } else { /* set_destination, in units: -1 and -1 is the part's own size */
+        bool none = n[0] == -1 && n[1] == -1;
+        if (!none && (n[0] <= 0 || n[1] <= 0)) {
+            mwm_fail(c, m->object, VIEWPORT_BAD_VALUE, "no size");
+            return;
+        }
+        f->asked.to_width = none ? 0 : near(n[0]);
+        f->asked.to_height = none ? 0 : near(n[1]);
+    }
+}
+
 static void subsurface_request(mwm_server *s, client *c, subsurface *sub, mwm_msg *m) {
     surface *f = sub->surface;
     switch (m->opcode) {
@@ -725,6 +873,14 @@ void mwm_surface_request(mwm_server *s, client *c, object *o, mwm_msg *m) {
         break;
     case T_SUBSURFACE:
         subsurface_request(s, c, o->data, m);
+        break;
+    case T_VIEWPORTER:
+        if (m->opcode == 0) mwm_del(c, m->object);
+        else if (m->opcode == 1) get_viewport(c, m);
+        else mwm_fail(c, m->object, E_INVALID_METHOD, "wp_viewporter has no such request");
+        break;
+    case T_VIEWPORT:
+        viewport_request(c, o->data, m);
         break;
     default:
         break;

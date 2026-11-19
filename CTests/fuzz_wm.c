@@ -318,6 +318,20 @@ static void open_window(program *p, input *in) {
     words(p, surface, 1, 3, (uint32_t[]){buffer, 0, 0});
     if (byte(in) % 4 == 0) words(p, surface, 8, 1, (uint32_t[]){byte(in) % 6}); /* set_buffer_scale, 0 and 5 being none */
     words(p, surface, 6, 0, NULL);
+    if (byte(in) % 3 == 0) { /* how large its picture shows and what of it, said rightly or not */
+        uint32_t viewporter = p->next++, view = p->next++;
+        mwm_put_begin(p->conn, registry, 0);
+        mwm_put_uint(p->conn, 12);
+        mwm_put_string(p->conn, "wp_viewporter");
+        mwm_put_uint(p->conn, 1);
+        mwm_put_uint(p->conn, viewporter);
+        mwm_put_end(p->conn);
+        words(p, viewporter, 1, 2, (uint32_t[]){view, byte(in) % 8 ? surface : number(in)});
+        if (byte(in) % 2) words(p, view, 1, 4, (uint32_t[]){number(in) << 8, number(in) << 8, number(in) << (byte(in) % 9), number(in) << (byte(in) % 9)});
+        if (byte(in) % 2) words(p, view, 2, 2, (uint32_t[]){number(in), number(in)});
+        words(p, surface, 6, 0, NULL);
+        if (byte(in) % 4 == 0) words(p, view, 0, 0, NULL);
+    }
     if (byte(in) % 2) {
         uint32_t subcompositor = p->next++, part = p->next++, role = p->next++;
         mwm_put_begin(p->conn, registry, 0);

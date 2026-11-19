@@ -15,7 +15,9 @@
  * wl_region, wl_subcompositor, wl_shm (ARGB8888 and XRGB8888), wl_output,
  * xdg_wm_base with top-level windows and popups, wl_seat with a pointer
  * and a keyboard, wl_data_device_manager (the clipboard), xdg-decoration
- * and KDE's decoration protocol, wp_cursor_shape. A window's own surface
+ * and KDE's decoration protocol, wp_cursor_shape, wp_viewporter (what of a
+ * buffer shows and how large: Firefox's way to say it draws at the
+ * screen's scale). A window's own surface
  * takes the pointer wherever it is over the window: its subsurfaces are
  * drawn, and not told of the pointer.
  */
