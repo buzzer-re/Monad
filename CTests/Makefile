@@ -12,7 +12,7 @@ BUILD ?= build
 
 VT_SRC := $(wildcard $(SRC)/vt/*.c)
 
-TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server test_wm_surface test_wm_popup test_wm_frame test_wm_seat test_wm_data test_wm_ctl test_wm_pack test_wm_gl fuzz_wm
+TESTS := test_vt test_vt_images test_qcow2 test_iso9660 test_bridge test_pty test_xz test_tar test_unpack test_rotlog test_net_frame test_net_dhcp test_net_dns test_net_switch test_net_gateway test_net_dnsfwd test_net_udp test_net_icmp test_net_tcp test_net_fw test_net_conns test_net_peers fuzz_net fuzz_vt fuzz_decoders test_loop test_netd test_netd_ctl test_netd_serve test_netd_main test_guestd test_diskcheck test_wm_wire test_wm_server test_wm_surface test_wm_popup test_wm_frame test_wm_seat test_wm_data test_wm_ctl test_wm_pack test_wm_gl test_gl_lib fuzz_wm
 
 all: run
 
@@ -164,6 +164,13 @@ $(BUILD)/test_wm_pack: test_wm_pack.c $(WM)/mwm_pack.c $(WM)/mwm_pack.h $(SRC)/m
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/test_wm_gl: test_wm_gl.c $(WM_SERVER) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
+
+# The library that stands where a Linux VM's EGL and OpenGL ES would, as its
+# test builds it: without its Wayland side (mgl_wayland.c), which the test has its own of.
+GL_LIB := $(WM)/mgl_conn.c $(WM)/mgl_state.c $(WM)/mgl_gles.c $(WM)/mgl_egl.c $(WM)/mgl_api.h $(WM)/mgl_internal.h $(WM)/mwm_gl_wire.h gl_test_host.h
+
+$(BUILD)/test_gl_lib: test_gl_lib.c $(GL_LIB) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(WM) -o $@ $(filter %.c,$^) $(LDFLAGS)
 
 $(BUILD)/test_wm_frame: test_wm_frame.c $(WM_SERVER) | $(BUILD)

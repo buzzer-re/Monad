@@ -89,6 +89,7 @@ cat > "$BIN/probe" <<EOF
     printf '\nfolder: %s\n' "\$(pwd -P)"
     printf 'display: %s %s %s %s %s\n' "\$XDG_RUNTIME_DIR" "\$WAYLAND_DISPLAY" "\$XDG_SESSION_TYPE" "\$MOZ_ENABLE_WAYLAND" "\$QT_QPA_PLATFORM"
     printf 'desktop: %s\n' "\${XDG_CURRENT_DESKTOP-none}"
+    printf 'libraries: %s\n' "\${LD_LIBRARY_PATH-none}"
     printf 'locale: %s\n' "\${LC_ALL-none}"
 } > "$WORK/probe.new"
 mv "$WORK/probe.new" "$WORK/probe.out"
@@ -102,12 +103,13 @@ DATA_HOME=
 DATA_DIRS=
 RECORD=
 LOCALE=
+LIBRARIES=
 mkdir -p "$RUNTIME"
 
 apps() { # apps ARGUMENT...: the script on the fake tree; its output, errors and status are kept
     env -i PATH="$TOOLS" HOME=/home/dev MONAD_ROOT="$ROOT" XDG_RUNTIME_DIR="$RUNTIME" \
         ${DATA_HOME:+XDG_DATA_HOME="$DATA_HOME"} ${DATA_DIRS:+XDG_DATA_DIRS="$DATA_DIRS"} \
-        ${RECORD:+MONAD_APPS_RUN="$RECORD"} ${LOCALE:+LC_ALL="$LOCALE"} \
+        ${RECORD:+MONAD_APPS_RUN="$RECORD"} ${LOCALE:+LC_ALL="$LOCALE"} ${LIBRARIES:+LD_LIBRARY_PATH="$LIBRARIES"} \
         "$SH_PATH" "$SCRIPT" "$@" > "$WORK/out" 2> "$WORK/err"
     status=$?
 }
@@ -489,10 +491,28 @@ lead" "$(cat "$RECORD")"
 folder: $(cd "$ROOT/opt/tool" && pwd -P)
 display: $RUNTIME wayland-0 wayland 1 wayland;xcb
 desktop: Monad
+libraries: none
 locale: POSIX" "$(started)"
     LOCALE=
     apps launch probe
     check "start, no locale: the script's own is not handed on" "locale: none" "$(started | tail -n 1)"
+
+    # Drawing by the Mac's GPU: while the Mac is there for it (the window manager's drawing socket) and Monad's
+    # own OpenGL library is built, the program finds that library before the system's; else it is as it was.
+    mkdir -p "$ROOT/usr/local/lib/monad/gl/lib"
+    : > "$ROOT/usr/local/lib/monad/gl/lib/libEGL.so.1"
+    apps launch probe
+    check "start, the Mac not there to draw: the system's libraries" "libraries: none" "$(started | grep libraries)"
+    python3 -c 'import os, socket, sys; os.chdir(sys.argv[1]); socket.socket(socket.AF_UNIX).bind("monad-gl")' "$RUNTIME"
+    apps launch probe
+    check "start, the Mac draws: Monad's library first" "libraries: /usr/local/lib/monad/gl/lib" "$(started | grep libraries)"
+    LIBRARIES=/opt/lib
+    apps launch probe
+    check "start, the Mac draws: before the ones the caller had" "libraries: /usr/local/lib/monad/gl/lib:/opt/lib" "$(started | grep libraries)"
+    LIBRARIES=
+    rm "$ROOT/usr/local/lib/monad/gl/lib/libEGL.so.1"
+    apps launch probe
+    check "start, no library built: the system's" "libraries: none" "$(started | grep libraries)"
 else
     echo "test_apps.sh: no python3 to make a socket with; what launch starts is not checked" >&2
 fi

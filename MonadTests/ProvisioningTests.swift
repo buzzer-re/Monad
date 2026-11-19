@@ -428,10 +428,21 @@ final class CloudInitTests: XCTestCase {
         XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("WAYLAND_DISPLAY=wayland-0"))
         XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("XDG_CURRENT_DESKTOP=Monad"), "the session's name, for the settings Monad gives it")
         XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("if [ -S "), "only while the window manager is there")
+        // The library programs draw with the Mac's GPU through: its sources in a folder of their own, where the
+        // build script makes them a library; and programs are pointed at it only while the Mac is there to draw.
+        let drawing = try CloudInit.drawingLibrarySources()
+        XCTAssertTrue(drawing.contains { $0.name == "mgl_egl.c" } && drawing.allSatisfy { $0.name.hasPrefix("mgl_") })
+        XCTAssertFalse(sources.contains { $0.name.hasPrefix("mgl_") }, "none of it is built into the window manager")
+        for source in drawing {
+            XCTAssertTrue(script.contains("install_file /usr/local/lib/monad/gl/\(source.name) 0644 '\(b64(source.text))'\n"), source.name)
+        }
+        XCTAssertTrue(script.contains("for f in /usr/local/lib/monad/gl/*; do\n    case ${f##*/} in \(drawing.map(\.name).joined(separator: "|"))|built|lib) ;; *) rm -f \"$f\" ;; esac\ndone\n"))
+        XCTAssertTrue(CloudInit.windowsEnvironmentScript.contains("if [ -S \"$XDG_RUNTIME_DIR/monad-gl\" ] && [ -e /usr/local/lib/monad/gl/lib/libEGL.so.1 ]; then\n"
+            + "        LD_LIBRARY_PATH=\"/usr/local/lib/monad/gl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"))
         // The build script comes last: the App windows profile takes it for the sign that the rest is here.
         let last = try XCTUnwrap(script.range(of: "install_file /usr/local/lib/monad/wm-build ")).lowerBound
         for other in ["/usr/local/lib/monad/wm-session ", "/etc/profile.d/monad-windows.sh ", "/etc/systemd/system/monad-wm.service ",
-                      "/usr/local/lib/monad/wm/mwm_main.c "] {
+                      "/usr/local/lib/monad/wm/mwm_main.c ", "/usr/local/lib/monad/gl/mgl_egl.c "] {
             XCTAssertLessThan(try XCTUnwrap(script.range(of: "install_file " + other)).lowerBound, last, other)
         }
         // A source this Monad no longer has would be built into the program: it goes.
@@ -450,7 +461,8 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(unit.contains("/dev/dri"), unit)
         XCTAssertFalse(unit.contains("Conflicts="), unit)
         XCTAssertFalse(unit.contains("--size"), "the sheet the windows are drawn on is as large as it gets: only what is used takes memory")
-        XCTAssertTrue(unit.contains("--owner \"$$uid\" --control vsock:\(CloudInit.windowsVsockPort)"), "a $ for the shell is $$ in a unit")
+        XCTAssertTrue(unit.contains("--owner \"$$uid\" --control vsock:\(CloudInit.windowsVsockPort) --gl vsock:\(CloudInit.drawingVsockPort)'"),
+                      "a $ for the shell is $$ in a unit; a port of its own for what programs draw with the Mac's GPU")
         XCTAssertTrue(unit.contains("id -u dev"))
         XCTAssertTrue(unit.contains("WantedBy=multi-user.target\n"))
         // The user's session before it starts, and taken back after it stopped.
@@ -468,6 +480,7 @@ final class CloudInitTests: XCTestCase {
         XCTAssertFalse(CloudInit.saysWindows("agent-ok\n"))
         XCTAssertFalse(CloudInit.saysWindows("no windows-ok here\nagent-ok\n"), "the line, not the words somewhere")
         XCTAssertEqual(CloudInit.windowsVsockPort, 1025)
+        XCTAssertEqual(CloudInit.drawingVsockPort, 1026)
         XCTAssertEqual(CloudInit.windowsCheckCommand, "systemctl is-enabled --quiet monad-wm.service 2>/dev/null && echo windows-ok || true")
     }
 

@@ -17,6 +17,9 @@ enum CloudInit {
     /// The host dials the guest's window manager here (GuestWM/mwm_main.c),
     /// when the guest has it.
     static let windowsVsockPort: UInt32 = 1025
+    /// And here for what the VM's programs draw with the Mac's GPU
+    /// (GuestWM/mwm_gl.c): dialed only for a VM whose GPU drawing is on.
+    static let drawingVsockPort: UInt32 = 1026
 
     /// Whether the installer's answer says the guest has Monad's window
     /// manager set up: the line, by itself.
@@ -47,6 +50,19 @@ enum CloudInit {
         return try names.map { ($0, try String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8)) }
     }
 
+    /// The sources of the library the VM's programs draw with the Mac's
+    /// GPU through (GuestWM/mgl_*: Monad's own libEGL and libGLESv2, which
+    /// write a program's OpenGL ES calls down for MonadHost to carry out),
+    /// built in the guest beside the window manager.
+    static func drawingLibrarySources() throws -> [(name: String, text: String)] {
+        guard let folder = Bundle.main.resourceURL?.appendingPathComponent("GuestWM"),
+              let files = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
+            throw MonadError("The drawing library's sources (GuestWM) are missing from the app bundle")
+        }
+        let names = files.filter { $0.range(of: "^mgl_[a-z0-9_]+\\.[ch]$", options: .regularExpression) != nil }.sorted()
+        return try names.map { ($0, try String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8)) }
+    }
+
     /// Builds the window manager in the guest when its sources changed (Guest/monad-wm-build.sh).
     static func windowManagerBuildScript() throws -> String { try bundled("monad-wm-build", "sh") }
 
@@ -73,6 +89,12 @@ enum CloudInit {
             MOZ_ENABLE_WAYLAND=1
             QT_QPA_PLATFORM="wayland;xcb"
             export XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP MOZ_ENABLE_WAYLAND QT_QPA_PLATFORM
+            # While the Mac is there to draw (GPU drawing, in the VM's settings in Monad), programs
+            # find Monad's own OpenGL ES library before the system's, and draw with the Mac's GPU.
+            if [ -S "$XDG_RUNTIME_DIR/monad-gl" ] && [ -e /usr/local/lib/monad/gl/lib/libEGL.so.1 ]; then
+                LD_LIBRARY_PATH="/usr/local/lib/monad/gl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                export LD_LIBRARY_PATH
+            fi
         fi
 
         """
@@ -95,7 +117,7 @@ enum CloudInit {
             [Service]
             ExecStartPre=/bin/sh \(windowManagerDirectory)/wm-session start \(user)
             # $$ is systemd's way to write a $ meant for the shell.
-            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --owner "$$uid" --control vsock:\(windowsVsockPort)'
+            ExecStart=/bin/sh -c 'uid=$$(id -u \(user)) && XDG_RUNTIME_DIR=/run/user/$$uid exec \(windowManagerDirectory)/monad-wm --owner "$$uid" --control vsock:\(windowsVsockPort) --gl vsock:\(drawingVsockPort)'
             ExecStopPost=-/bin/sh \(windowManagerDirectory)/wm-session stop \(user)
             Restart=on-failure
             RestartSec=2
@@ -326,7 +348,7 @@ enum CloudInit {
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
         var windowFiles = "", windowsSaid = ""
         if let windowsUser {
-            let sources = try windowManagerSources()
+            let sources = try windowManagerSources(), drawing = try drawingLibrarySources()
             let lib = windowManagerDirectory
             // What changes here (the sources apart, which wm-build tells of) is noted by itself: the service starts again for it.
             windowFiles = "before_windows=$changed\nchanged=0\n"
@@ -338,6 +360,9 @@ enum CloudInit {
                 + sources.map { "install_file \(lib)/wm/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
                 // A source this Monad no longer has would be built into the program.
                 + "for f in \(lib)/wm/*; do\n    case ${f##*/} in \(sources.map(\.name).joined(separator: "|"))) ;; *) rm -f \"$f\" ;; esac\ndone\n"
+                // The library programs draw with the Mac's GPU through: its sources, beside what the build makes of them.
+                + drawing.map { "install_file \(lib)/gl/\($0.name) 0644 '\(b64($0.text))'\n" }.joined()
+                + (drawing.isEmpty ? "" : "for f in \(lib)/gl/*; do\n    case ${f##*/} in \(drawing.map(\.name).joined(separator: "|"))|built|lib) ;; *) rm -f \"$f\" ;; esac\ndone\n")
                 // Last: the App windows profile takes this file for the sign that the rest is here.
                 + "install_file \(lib)/wm-build 0755 '\(b64(try windowManagerBuildScript()))'\n"
             // Once the Windows profile turned the service on: the program is kept built from these

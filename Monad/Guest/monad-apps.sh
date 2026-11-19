@@ -327,6 +327,13 @@ launch() { # launch ID
     MOZ_ENABLE_WAYLAND=1
     QT_QPA_PLATFORM="wayland;xcb"
     export XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP MOZ_ENABLE_WAYLAND QT_QPA_PLATFORM
+    # While the Mac is there to draw (GPU drawing, in the VM's settings in Monad),
+    # the program finds Monad's own OpenGL ES library before the system's.
+    gl=/usr/local/lib/monad/gl/lib
+    if [ -S "$runtime/monad-gl" ] && [ -e "$ROOT$gl/libEGL.so.1" ]; then
+        LD_LIBRARY_PATH=$gl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+        export LD_LIBRARY_PATH
+    fi
     [ -z "$dir" ] || [ ! -d "$dir" ] || CDPATH= cd -- "$dir" 2>/dev/null || :
     # A session of its own and nothing of ssh's left open, or the program
     # would end with the ssh command, or keep it from ending. The Exec line

@@ -3,7 +3,8 @@
 # from the sources beside it with the VM's own compiler, only when the
 # sources are not the ones it was built from; a compiler that fails leaves
 # the program that was there. Stand-ins for cc and sha256sum, a folder of
-# its own.
+# its own. The library programs draw with the Mac's GPU through is built
+# beside it the same way, and its failing is not the window manager's.
 # Usage: test_wm_build.sh [workdir]
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -28,7 +29,7 @@ check() { # check NAME EXPECTED ACTUAL
 # The tools the script may use, and nothing else: the machine's own cc must never be found.
 SYS="$WORK/sys"
 mkdir -p "$SYS"
-for tool in cat chmod cut ls mv rm; do
+for tool in cat chmod cut ln ls mkdir mv rm; do
     real=$(command -v "$tool") || { echo "test_wm_build.sh: no $tool" >&2; exit 1; }
     ln -s "$real" "$SYS/$tool"
 done
@@ -50,6 +51,7 @@ cat > "$BIN/cc" <<EOF
 #!$SH_PATH
 echo "\$*" >> "$WORK/cc.calls"
 [ -n "\${CC_FAILS:-}" ] && { echo "error: expected ';'" >&2; exit 1; }
+case " \$* " in *" -shared "*) [ -n "\${CC_FAILS_GL:-}" ] && { echo "error: no such header" >&2; exit 1; } ;; esac
 out=
 while [ \$# -gt 0 ]; do [ "\$1" = -o ] && out=\$2; shift; done
 [ -n "\${CC_EMPTY:-}" ] && { : > "\$out"; exit 0; }
@@ -70,7 +72,7 @@ calls() { [ -f "$WORK/cc.calls" ] && wc -l < "$WORK/cc.calls" | tr -d ' ' || ech
 mkdir -p "$LIB"
 run
 check "no sources: status" 69 "$status"
-check "no sources: says so" "monad-wm-build: Monad has put no sources in $LIB/wm (it does for a VM whose Display is on)" "$(cat "$WORK/err")"
+check "no sources: says so" "monad-wm-build: Monad has put no sources in $LIB/wm (it does when the VM starts)" "$(cat "$WORK/err")"
 check "no sources: the compiler was not run" 0 "$(calls)"
 
 mkdir -p "$LIB/wm"
@@ -81,7 +83,7 @@ echo '#define ONE 1' > "$LIB/wm/mwm.h"
 # No compiler.
 env -i PATH="$SYS" "$SH_PATH" "$SCRIPT" "$LIB" > "$WORK/out" 2> "$WORK/err"
 check "no compiler: status" 69 "$?"
-check "no compiler: says so" "monad-wm-build: this VM has no C compiler (cc); the Windows profile installs one" "$(cat "$WORK/err")"
+check "no compiler: says so" "monad-wm-build: this VM has no C compiler (cc); the App windows profile installs one" "$(cat "$WORK/err")"
 check "no compiler: no program" "" "$(ls "$LIB" | grep -v '^wm$')"
 
 # The first build.
@@ -136,6 +138,44 @@ check "compiler writes nothing: the old program stays" "build 6" "$(cat "$LIB/mo
 run
 check "tried again: built" "built" "$(cat "$WORK/out")"
 check "tried again: the program" "build 7" "$(cat "$LIB/monad-wm")"
+
+# The library programs draw with the Mac's GPU through: built from its own sources into a folder of its
+# own, under the two names programs look for, when its sources (or the protocol it shares with the window
+# manager) are not the ones it was built from. Nothing is said for it: no service starts again.
+mkdir -p "$LIB/gl"
+echo 'int eglInitialize(void) { return 1; }' > "$LIB/gl/mgl_egl.c"
+echo 'void glClear(void) {}' > "$LIB/gl/mgl_gles.c"
+echo '#define OP 1' > "$LIB/wm/mwm_gl_wire.h"
+: > "$WORK/cc.calls"
+run
+check "library: status" 0 "$status"
+check "library: the window manager too, its sources having changed" built "$(cat "$WORK/out")"
+check "library: the compiler's arguments" "-std=gnu11 -O2 -fPIC -shared -fvisibility=hidden -I$LIB/wm -o $LIB/gl/lib/libmonad-gl.so.new $LIB/gl/mgl_egl.c $LIB/gl/mgl_gles.c -ldl -lpthread" "$(head -n 1 "$WORK/cc.calls")"
+check "library: built" "build 8" "$(cat "$LIB/gl/lib/libmonad-gl.so")"
+check "library: under the names programs look for" "build 8 build 8" "$(cat "$LIB/gl/lib/libEGL.so.1") $(cat "$LIB/gl/lib/libGLESv2.so.2")"
+check "library: nothing half done" "libEGL.so.1 libGLESv2.so.2 libmonad-gl.so " "$(ls "$LIB/gl/lib" | tr '\n' ' ')"
+: > "$WORK/cc.calls"
+run
+check "library, nothing changed: silent, nothing built" " 0" "$(cat "$WORK/out")$(cat "$WORK/err") $(calls)"
+echo 'void glClear(void) { }' > "$LIB/gl/mgl_gles.c"
+run
+check "library, a source changed: built again, and nothing said" " 1 build 10" "$(cat "$WORK/out") $(calls) $(cat "$LIB/gl/lib/libEGL.so.1")"
+# The protocol changed: both are built.
+echo '#define OP 2' > "$LIB/wm/mwm_gl_wire.h"
+: > "$WORK/cc.calls"
+run
+check "protocol changed: both built" "built 2" "$(cat "$WORK/out") $(calls)"
+# It does not build: said, the one that was there stays, and the window manager is none the worse.
+echo 'void glClear(void) { oops }' > "$LIB/gl/mgl_gles.c"
+old=$(cat "$LIB/gl/lib/libmonad-gl.so")
+run CC_FAILS_GL=1
+check "library fails: not the window manager's failure" 0 "$status"
+check "library fails: says so" "error: no such header
+monad-wm-build: the library programs draw with the Mac's GPU through did not build (status 1): they go on as before" "$(cat "$WORK/err")"
+check "library fails: the old one stays" "$old" "$(cat "$LIB/gl/lib/libmonad-gl.so")"
+check "library fails: nothing half done" "libEGL.so.1 libGLESv2.so.2 libmonad-gl.so " "$(ls "$LIB/gl/lib" | tr '\n' ' ')"
+run
+check "library, tried again: built" "0 " "$status $(cat "$WORK/err")"
 
 echo "test_wm_build.sh ($SH): $checks checks, $failures failures"
 [ "$failures" -eq 0 ]
