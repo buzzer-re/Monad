@@ -114,9 +114,9 @@ static void test_gtk_says_which_of_its_windows_have_a_bar(void) {
 
 static uint32_t asked_window;
 static int asked_what, asked_times;
-static void asked(void *ctx, uint32_t window, mwm_ask what) {
+static void asked(void *ctx, uint32_t id, mwm_ask what) {
     (void)ctx;
-    asked_window = window;
+    asked_window = id;
     asked_what = (int)what;
     asked_times++;
 }

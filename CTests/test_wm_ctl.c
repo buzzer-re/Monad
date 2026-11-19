@@ -35,6 +35,10 @@ static host attach(mwm_ctl *c) {
     int sv[2];
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
     CHECK(fcntl(sv[0], F_SETFL, O_NONBLOCK) == 0);
+    /* As little as a Mac's socket takes at once, on Linux too (which takes 200 KB): what
+     * waits for a MonadHost that does not read is then the same in both places. */
+    int room = 8192;
+    CHECK(setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &room, sizeof room) == 0);
     mwm_ctl_attach(c, sv[1]);
     CHECK(mwm_ctl_fd(c) == sv[1]);
     return (host){.fd = sv[0]};
@@ -331,6 +335,7 @@ static void test_the_macs_screen_is_passed_on(void) {
     }
     CHECK(modes >= 1 && width == 1728 * 2 && height == 1079 * 2);
     close(h.fd);
+    mwm_conn_free(a.c);
     mwm_ctl_free(c);
     mwm_server_free(s);
 }

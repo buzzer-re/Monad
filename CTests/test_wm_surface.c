@@ -563,6 +563,7 @@ static void test_a_surface_says_how_large_its_picture_shows(void) {
         CHECK(dropped_with(s, &b, &object) == wrong[i].code && object == (wrong[i].again ? porter : one));
     }
     CHECK(mwm_server_windows(s, list, 4) == 2); /* theirs went with them */
+    mwm_conn_free(a.c);
     mwm_server_free(s);
 }
 
