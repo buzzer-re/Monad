@@ -18,8 +18,9 @@ Ubuntu 26.04): add the App windows profile to a VM, in the New VM sheet, the VM'
 from the VM's ⋯ menu › Apps. The window manager is C, and a Mac cannot build a Linux program, so
 the VM builds it: Monad's installer puts its sources (`GuestWM/`, as they are in the app), a
 build script (`monad-wm-build.sh`), its service (`monad-wm.service`, off) and what programs need
-to find it (`/etc/profile.d/monad-windows.sh`) in every Linux VM at each boot; the profile
-installs a C compiler and a terminal (foot), builds the program and turns the service on. From
+to find it (`/etc/profile.d/monad-windows.sh`, which a zsh login shell is made to read too) in
+every Linux VM at each boot; the profile installs a C compiler and a terminal (foot), builds the
+program and turns the service on. From
 then on the installer rebuilds it at a boot where this Monad's sources are not the ones it was
 built from, so the window manager is always this Monad's. The service starts as root, for the
 user's session to be there (`monad-wm-session.sh`: the user's services run, so a program finds

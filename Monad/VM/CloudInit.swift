@@ -74,6 +74,30 @@ enum CloudInit {
     /// one, for the Apps menu (Guest/monad-apps.sh; GuestApps reads it).
     static func guestAppsScript() throws -> String { try bundled("monad-apps", "sh") }
 
+    /// The line that gives a zsh login shell Monad's files of /etc/profile.d
+    /// (where things are, the windows' environment). zsh reads that folder
+    /// only where its own profile reads /etc/profile, which Debian's and
+    /// Ubuntu's does not: a tab whose shell is zsh had none of it there, and
+    /// a Qt program started from it looked for X11.
+    static func zshProfileLine(profiles: String = "/etc/profile.d") -> String {
+        "for monad_file in \(profiles)/monad*.sh(N); do . \"$monad_file\"; done; unset monad_file # Monad: zsh reads no /etc/profile.d here"
+    }
+
+    /// The installer's step for it: the line is in zsh's profile for login
+    /// shells, once, where zsh is installed (no file of zsh's is made: it
+    /// would be in its package's way) and does not read /etc/profile itself.
+    static func zshProfileStep(etc: String = "/etc") -> String {
+        """
+        zprofile='\(etc)/zsh/zprofile'
+        zline='\(zshProfileLine())'
+        if [ -f "$zprofile" ] && ! grep -qxF "$zline" "$zprofile" && ! grep -Eq '^[^#]*(\\.|source)[[:space:]]+/etc/profile' "$zprofile"; then
+            kept=$(grep -v 'monad_file' "$zprofile" || true)
+            { [ -z "$kept" ] || printf '%s\\n' "$kept"; printf '%s\\n' "$zline"; } > "$zprofile"
+        fi
+
+        """
+    }
+
     /// What a program started from a tab needs to open as a window on the
     /// Mac, while the VM's window manager is there (/etc/profile.d).
     /// XDG_CURRENT_DESKTOP names the session, for the settings Monad gives
@@ -417,7 +441,7 @@ enum CloudInit {
             install_file \(selinuxModulePath) 0644 '\(b64(cil))'
             install_file \(selinuxScriptPath) 0755 '\(b64(selinux))'
             install_file /etc/profile.d/monad.sh 0644 '\(b64(GuestDiscovery.profileScript))'
-            \(windowFiles)\(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
+            \(zshProfileStep())\(windowFiles)\(img)[ "$changed" -eq 0 ] || systemctl daemon-reload
             sh \(selinuxScriptPath)
             systemctl enable --now monad-agent.socket >/dev/null 2>&1
             systemctl enable monad-health.service >/dev/null 2>&1 || true

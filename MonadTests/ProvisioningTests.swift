@@ -551,6 +551,64 @@ final class CloudInitTests: XCTestCase {
         XCTAssertEqual(CloudInit.metaData(config: c, instanceID: "i"), "instance-id: i\nlocal-hostname: lima-my-vm-1\n")
     }
 
+    /// zsh on Debian and Ubuntu reads no /etc/profile.d, so a tab whose shell
+    /// is zsh had none of what Monad puts there: a Qt program started from
+    /// it looked for X11 and found no display. The installer gives zsh's
+    /// login shells Monad's files, once, where zsh is installed and does
+    /// not read /etc/profile already; and the line it adds is zsh's own.
+    func testZshLoginShellsReadMonadsProfileFiles() throws {
+        let tmp = TempDir()
+        func run(_ shell: String, _ arguments: [String]) throws -> (out: String, status: Int32) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: shell)
+            p.arguments = arguments
+            p.environment = ["PATH": "/usr/bin:/bin"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = out
+            try p.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return (String(decoding: data, as: UTF8.self), p.terminationStatus)
+        }
+        func step(_ etc: URL) throws { XCTAssertEqual(try run("/bin/sh", ["-c", CloudInit.zshProfileStep(etc: etc.path)]).status, 0) }
+        XCTAssertTrue(try CloudInit.guestInstallScript(guest: ubuntu).contains(CloudInit.zshProfileStep()))
+
+        // No zsh in the VM: nothing of zsh's is made (a file there would be in its package's way).
+        let bare = tmp.url.appendingPathComponent("bare")
+        try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+        try step(bare)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bare.appendingPathComponent("zsh").path))
+
+        // Debian's: a profile of comments. The line is added, once however often the installer runs.
+        let debian = tmp.url.appendingPathComponent("debian"), profile = debian.appendingPathComponent("zsh/zprofile")
+        try FileManager.default.createDirectory(at: debian.appendingPathComponent("zsh"), withIntermediateDirectories: true)
+        try "# /etc/zsh/zprofile: system-wide .zprofile file for zsh(1).\n".write(to: profile, atomically: true, encoding: .utf8)
+        try step(debian)
+        try step(debian)
+        let text = try String(contentsOf: profile, encoding: .utf8)
+        XCTAssertEqual(text, "# /etc/zsh/zprofile: system-wide .zprofile file for zsh(1).\n\(CloudInit.zshProfileLine())\n")
+
+        // One that reads /etc/profile already (Arch's): left as it is.
+        let arch = tmp.url.appendingPathComponent("arch"), reads = "emulate sh -c 'source /etc/profile'\n"
+        try FileManager.default.createDirectory(at: arch.appendingPathComponent("zsh"), withIntermediateDirectories: true)
+        try reads.write(to: arch.appendingPathComponent("zsh/zprofile"), atomically: true, encoding: .utf8)
+        try step(arch)
+        XCTAssertEqual(try String(contentsOf: arch.appendingPathComponent("zsh/zprofile"), encoding: .utf8), reads)
+
+        // The line, in zsh: Monad's files are read, nobody else's, and a folder with none is no error.
+        let profiles = tmp.url.appendingPathComponent("profile.d")
+        try FileManager.default.createDirectory(at: profiles, withIntermediateDirectories: true)
+        let line = CloudInit.zshProfileLine(profiles: profiles.path)
+        var said = try run("/bin/zsh", ["-f", "-c", line + "\necho \"none ${ONE-} $?\""])
+        XCTAssertEqual(said.out, "none  0\n")
+        try "export ONE=1\n".write(to: profiles.appendingPathComponent("monad.sh"), atomically: true, encoding: .utf8)
+        try CloudInit.windowsEnvironmentScript.write(to: profiles.appendingPathComponent("monad-windows.sh"), atomically: true, encoding: .utf8)
+        try "export OTHER=3\n".write(to: profiles.appendingPathComponent("other.sh"), atomically: true, encoding: .utf8)
+        said = try run("/bin/zsh", ["-f", "-c", line + "\necho \"$ONE ${OTHER-none} ${monad_file-gone}\""])
+        XCTAssertEqual(said.out, "1 none gone\n")
+    }
+
     /// The check fails closed: where sudo asks for a password (a Lima VM can
     /// be set up so) the listening ports are still read, and a check that
     /// cannot read them never says "ok".

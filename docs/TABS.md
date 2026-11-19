@@ -76,7 +76,9 @@ split of a host shell opens in the folder that shell is in.
 
 A VM's shell says where it is with OSC 7 at each prompt. `/etc/profile.d/monad.sh`
 (`GuestDiscovery.profileScript`, pushed at every boot; `~/.monad/profile.sh` in a macOS guest)
-makes an interactive bash or zsh do it. Other shells need it in their own prompt:
+makes an interactive bash or zsh do it (zsh on Debian and Ubuntu reads no `/etc/profile.d`: the
+installer adds a line to `/etc/zsh/zprofile` that reads Monad's files there, at the first boot
+after zsh was installed). Other shells need it in their own prompt:
 
 ```sh
 printf '\033]7;file://%s%s\033\\' "$HOSTNAME" "$PWD"
